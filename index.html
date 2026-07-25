@@ -114,6 +114,23 @@
   .out audio { width:100%; margin-top:2px; }
   .dim { color:var(--muted); font-size:13.5px; }
   .warn { color:#ffd479; font-size:12.5px; margin-top:8px; }
+  /* ---- books ---- */
+  .bookgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(104px,1fr)); gap:14px; }
+  .bookcard { cursor:pointer; min-width:0; }
+  .bookcard .art { width:100%; aspect-ratio:2/3; border-radius:9px; overflow:hidden;
+                   background:#2a2640; border:1px solid var(--line); display:flex;
+                   align-items:center; justify-content:center; }
+  .bookcard .art img { width:100%; height:100%; object-fit:cover; display:block; }
+  .bookcard .art .noart { font-size:26px; opacity:.5; }
+  .bookcard .bt { font-size:13px; margin-top:6px; line-height:1.3; overflow:hidden;
+                  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+  .bookcard .ba { font-size:11.5px; color:var(--muted); overflow:hidden;
+                  text-overflow:ellipsis; white-space:nowrap; }
+  .bookcard .bp { font-size:11px; color:var(--accent); margin-top:2px; }
+  /* the cover beside the title in the reader */
+  .bookhead { display:flex; gap:12px; align-items:flex-start; }
+  .bookhead img { width:78px; aspect-ratio:2/3; object-fit:cover; border-radius:8px;
+                  border:1px solid var(--line); flex:none; }
   /* a select with a play-the-sample button beside it */
   .pickrow { display:flex; gap:8px; align-items:center; }
   .pickrow select { flex:1; min-width:0; }
@@ -326,9 +343,13 @@
   <div id="reader" hidden>
     <div class="chatbar">
       <button id="bookBack" class="iconbtn" title="All books" aria-label="All books">‹</button>
-      <div style="flex:1;min-width:0">
-        <div id="bookTitle" style="font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
-        <div id="bookAuthor" class="dim" style="font-size:13px"></div>
+      <div class="bookhead" style="flex:1;min-width:0">
+        <img id="bookCover" alt="" hidden>
+        <div style="min-width:0">
+          <div id="bookTitle" style="font-weight:700"></div>
+          <div id="bookAuthor" class="dim" style="font-size:13px"></div>
+          <div id="bookStats" class="dim" style="font-size:12px;margin-top:4px"></div>
+        </div>
       </div>
       <button id="bookCog" class="iconbtn" title="Book settings" aria-label="Book settings">⚙</button>
     </div>
@@ -340,6 +361,10 @@
         <button id="bookVoicePlay" class="iconbtn" title="Hear this voice" aria-label="Hear this voice">▶</button>
       </div>
       <label class="check"><input type="checkbox" id="bookHeadings"> Read chapter headings aloud</label>
+      <label for="bookCoverFile">Replace the cover</label>
+      <input type="file" id="bookCoverFile" accept="image/*">
+      <div class="hint">Taken from the EPUB when it declares one. Shows in the list and on
+        your phone's lock screen while it plays.</div>
       <div class="hint" id="bookSkipped"></div>
       <div class="acts" style="margin-top:14px">
         <button id="bookDel" class="btn del">🗑 Delete book</button>
@@ -1255,16 +1280,25 @@ async function loadBooks(){
   BOOKS = d.books || [];
   const box = $("#bookList");
   if(!BOOKS.length){ box.innerHTML = '<p class="dim">No books yet — add an EPUB below.</p>'; return; }
+  box.className = "bookgrid";
   box.innerHTML = "";
   BOOKS.forEach(b => {
     const el = document.createElement("div");
-    el.className = "clip";
+    el.className = "bookcard";
     const hrs = (b.words / 146 / 60).toFixed(1);
     const at  = (b.position && b.position.chapter) || 0;
-    el.innerHTML = `<div class="cliphead"><div class="nm">${esc(b.title)}</div>
-        <div class="dur">${hrs} h</div></div>
-      <div class="tr">${esc(b.author || "")} · ${b.chapters} chapters · ${b.ready} narrated${
-        at ? " · at chapter " + (at + 1) : ""}</div>`;
+    // Always try the cover: books added before covers existed have one made on demand, so
+    // the stored flag isn't the authority — whether the image loads is.
+    el.innerHTML = `<div class="art"><img src="/cover/${b.id}/thumb.jpg" alt="" loading="lazy">
+        <span class="noart" hidden>📖</span></div>
+      <div class="bt">${esc(b.title)}</div>
+      <div class="ba">${esc(b.author || "")}</div>
+      <div class="bp">${at ? "at ch. " + (at + 1) : hrs + " h"}</div>`;
+    const img = el.querySelector("img");
+    img.addEventListener("error", ()=>{
+      img.remove();
+      el.querySelector(".noart").hidden = false;
+    });
     el.addEventListener("click", ()=> openBook(b.id));
     box.appendChild(el);
   });
@@ -1294,6 +1328,13 @@ async function openBook(id){
   $("#reader").hidden  = false;
   $("#bookTitle").textContent  = BOOK.title;
   $("#bookAuthor").textContent = BOOK.author || "";
+  const words = (BOOK.chapters || []).reduce((n, c) => n + (c.words || 0), 0);
+  $("#bookStats").textContent =
+    `${BOOK.chapters.length} chapters · ${(words / 146 / 60).toFixed(1)} h`;
+  const cov = $("#bookCover");
+  cov.hidden = false;
+  cov.onerror = ()=> { cov.hidden = true; };
+  cov.src = `/cover/${BOOK.id}/full.jpg?v=${BOOK.updated || 0}`;
   pickOption($("#bookVoice"), BOOK.voice);
   $("#bookHeadings").checked = !!BOOK.read_headings;
   $("#bookSkipped").textContent = (BOOK.skipped || []).length
@@ -1387,8 +1428,13 @@ function playChapter(ci, si, offset){
 
 function setMediaSession(){
   if(!("mediaSession" in navigator) || !BOOK) return;
+  // The 512×512 padded cover: iOS crops a tall book cover awkwardly on the lock screen, so
+  // the server pads it square rather than letting the phone cut it.
   navigator.mediaSession.metadata = new MediaMetadata({
-    title: BOOK.chapters[PLAY.chapter].name, artist: BOOK.author || "", album: BOOK.title});
+    title: BOOK.chapters[PLAY.chapter].name,
+    artist: BOOK.author || "",
+    album: BOOK.title,
+    artwork: [{src: `/cover/${BOOK.id}/lock.jpg`, sizes: "512x512", type: "image/jpeg"}]});
 }
 
 bookAudio().addEventListener("ended", ()=>{
@@ -1454,6 +1500,25 @@ async function changeBook(patch){
   } else setStatus("Saved.");
 }
 $("#bookVoicePlay").addEventListener("click", e => previewVoice($("#bookVoice"), e.currentTarget));
+$("#bookCoverFile").addEventListener("change", async e => {
+  const f = e.target.files[0];
+  if(!f || !BOOK) return;
+  const fd = new FormData();
+  fd.append("id", BOOK.id);
+  fd.append("file", f);
+  setStatus('<span class="spin"></span>Setting the cover…');
+  try{
+    const d = await (await fetch("/api/books/cover", {method:"POST", body:fd})).json();
+    if(!d.ok){ setStatus("❌ " + (d.msg || "couldn't use that image"), true); return; }
+    // cache-bust: the file name is unchanged, so the browser would keep the old one
+    const v = Date.now();
+    const cov = $("#bookCover");
+    cov.hidden = false;
+    cov.src = `/cover/${BOOK.id}/full.jpg?v=${v}`;
+    setStatus("✅ Cover updated.");
+  }catch(err){ setStatus("❌ " + err, true); }
+  e.target.value = "";
+});
 $("#bookDel").addEventListener("click", async ()=>{
   if(!BOOK || !confirm(`Delete “${BOOK.title}” and everything narrated from it?`)) return;
   await fetch("/api/books/delete", {method:"POST", headers:{"Content-Type":"application/json"},

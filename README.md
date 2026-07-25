@@ -196,6 +196,17 @@ nothing is narrated until you ask for it — a full book is hours of work.
 - **Playing** — parts are ordinary opus files played by an `<audio>` element, chaining into
   the next part and then the next chapter. Position is saved server-side every 5 seconds, so
   the phone resumes where the PC left off. Speed is adjustable 0.75–2×.
+- **Covers** come from the EPUB, in the library grid, beside the title, and on the phone's
+  lock screen while it plays. Three sizes are derived once with ffmpeg — 200 px for the grid,
+  600 px for the reader, and **512×512 padded** for the lock screen, because iOS crops a tall
+  cover badly and 43 KB beats sending the 1.9 MB original every time. ⚙ has a **Replace the
+  cover** upload for books that declare none.
+
+  The cover is whichever image the book *declares* — EPUB 3 `properties="cover-image"`, then
+  the EPUB 2 `<meta name="cover">` id, then the guide reference. Never the first or biggest
+  image: The Institute ships six `buylink_*_cover.jpg` files, which are the covers of other
+  novels advertised in the back matter. Books added before covers existed get one made on
+  demand from the stored EPUB, so nothing needs re-adding.
 
 **Why files rather than streaming.** iOS suspends a page's timers when the screen locks, so
 the sentence-at-a-time approach Chat uses would stall the moment the phone goes in a pocket.

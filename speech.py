@@ -451,7 +451,7 @@ def book_summary(b):
     chapters = b.get("chapters") or []
     ready = sum(1 for c in chapters if c.get("state") == "ready")
     return {k: b.get(k) for k in ("id", "title", "author", "language", "voice",
-                                  "added", "position")} | \
+                                  "added", "position", "cover")} | \
            {"chapters": len(chapters), "ready": ready,
             "words": sum(c.get("words", 0) for c in chapters)}
 
@@ -465,6 +465,50 @@ def update_book(book_id, fn):
                 fn(b)
                 b["updated"] = int(time.time())
         write_books(items)
+
+# Three derivations of the cover, made once on upload. The original is often ~2 MB, which is
+# wasteful to send a phone repeatedly; and iOS crops a tall cover awkwardly on the lock screen
+# unless it's given something square, so that one is padded rather than cropped.
+COVER_SIZES = {
+    "thumb": "scale=200:-2",
+    "full":  "scale=600:-2",
+    "lock":  "scale=512:512:force_original_aspect_ratio=decrease,"
+             "pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x15131f",
+}
+
+def cover_path(book_id, size):
+    return book_dir(book_id, f"cover-{size}.jpg")
+
+def make_covers(book_id, raw):
+    """raw = the original image bytes. Returns True if at least the thumbnail came out."""
+    os.makedirs(book_dir(book_id), exist_ok=True)
+    src = book_dir(book_id, "cover-src")
+    with open(src, "wb") as f:
+        f.write(raw)
+    made = 0
+    try:
+        for size, vf in COVER_SIZES.items():
+            r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-i", src, "-vf", vf,
+                                "-q:v", "4", cover_path(book_id, size)],
+                               capture_output=True, text=True, timeout=120)
+            made += int(r.returncode == 0 and os.path.exists(cover_path(book_id, size)))
+    finally:
+        if os.path.exists(src): os.remove(src)
+    return made > 0
+
+def ensure_cover(book_id):
+    """Covers are made on upload, but books added before that feature exists — or whose
+    extraction failed — get one lazily from the stored EPUB rather than needing a re-add."""
+    if os.path.exists(cover_path(book_id, "thumb")):
+        return True
+    src = book_dir(book_id, "book.epub")
+    if not os.path.exists(src):
+        return False
+    try:
+        raw = epub.cover(src)
+    except Exception:
+        return False
+    return bool(raw) and make_covers(book_id, raw)
 
 def split_segments(text, limit=SEGMENT_CHARS):
     """Cut a chapter into segment-sized pieces on sentence boundaries."""
@@ -1074,10 +1118,16 @@ def api_book_add():
     for i, c in enumerate(chapters):
         with open(book_dir(bid, "text", f"ch{i:03d}.txt"), "w") as fh:
             fh.write(c["text"])
+    try:
+        raw_cover = epub.cover(src)
+    except Exception:
+        raw_cover = None
+    has_cover = bool(raw_cover) and make_covers(bid, raw_cover)
     # A Dutch book should land on a Dutch voice without being told.
     dutch = (meta.get("language") or "").startswith("nl")
     voice = (piper_voice_ids()[0] if dutch and piper_voice_ids() else "af_heart")
-    entry = {"id": bid, "title": meta["title"], "author": meta["author"],
+    entry = {"id": bid, "cover": has_cover,
+             "title": meta["title"], "author": meta["author"],
              "language": meta["language"], "voice": voice, "read_headings": False,
              "added": int(time.time()), "updated": int(time.time()),
              "position": {"chapter": 0, "segment": 0, "offset": 0},
@@ -1115,9 +1165,13 @@ def api_book_update():
     resets = ((d.get("voice") and d["voice"] != book.get("voice"))
               or (d.get("read_headings") is not None
                   and bool(d["read_headings"]) != bool(book.get("read_headings"))))
-    resume = 0
+    chapters = book.get("chapters") or []
+    # Nothing rendered yet means nothing to throw away: just change it.
+    if resets and not any(c.get("state") == "ready" for c in chapters):
+        resets = False
+        d.pop("confirm", None)
+    resume = None
     if resets:
-        chapters = book.get("chapters") or []
         ready = [c["i"] for c in chapters if c.get("state") == "ready"]
         # "where you'd carry on from": your listening position, or the furthest chapter that
         # had been narrated if you'd rendered ahead of yourself
@@ -1175,6 +1229,32 @@ def api_book_render():
             threading.Thread(target=render_chapter, args=(book["id"], i), daemon=True).start()
             started.append(i)
     return jsonify(ok=True, started=started)
+
+@app.post("/api/books/cover")
+def api_book_cover():
+    """Replace the cover by hand — for books that declare none, or when you'd rather use a
+    different image than the publisher's."""
+    bid = request.form.get("id") or ""
+    book = find_book(bid)
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify(ok=False, msg="no image"), 400
+    if not make_covers(bid, f.read()):
+        return jsonify(ok=False, msg="couldn't read that image"), 400
+    update_book(bid, lambda b: b.update(cover=True))
+    return jsonify(ok=True)
+
+@app.get("/cover/<book_id>/<size>.jpg")
+def book_cover(book_id, size):
+    if size not in COVER_SIZES:
+        return jsonify(error="unknown size"), 404
+    if not ensure_cover(book_id) or not os.path.exists(cover_path(book_id, size)):
+        return jsonify(error="no cover"), 404
+    r = send_from_directory(book_dir(book_id), f"cover-{size}.jpg", conditional=True)
+    r.headers["Cache-Control"] = "private, max-age=86400"
+    return r
 
 @app.get("/book/<book_id>/<path:filename>")
 def book_audio(book_id, filename):

@@ -107,6 +107,53 @@ def extract(path):
     return meta, chapters, skipped
 
 
+def cover(path):
+    """The cover image bytes, or None.
+
+    Always follow what the book declares. Guessing by filename picks the wrong image often
+    enough to matter — The Institute ships six `buylink_*_cover.jpg` files, which are the
+    covers of *other* novels advertised in the back matter.
+    """
+    z = zipfile.ZipFile(path)
+    opf = _opf_path(z)
+    soup = BeautifulSoup(z.read(opf), "xml")
+    items = {i["id"]: unquote(urljoin(opf, i["href"]))
+             for i in soup.find_all("item") if i.get("id") and i.get("href")}
+
+    def read(href):
+        try:
+            return z.read(href)
+        except KeyError:
+            return None
+
+    # EPUB 3 declares it on the manifest item
+    for i in soup.find_all("item"):
+        if "cover-image" in (i.get("properties") or ""):
+            data = read(unquote(urljoin(opf, i["href"])))
+            if data:
+                return data
+    # EPUB 2 points at a manifest id from a <meta>
+    m = soup.find("meta", attrs={"name": "cover"})
+    if m and items.get(m.get("content")):
+        data = read(items[m["content"]])
+        if data:
+            return data
+    # Older books only have a guide entry pointing at a page that holds the image
+    g = soup.find("reference", attrs={"type": "cover"})
+    if g and g.get("href"):
+        page = unquote(urljoin(opf, g["href"])).split("#")[0]
+        raw = read(page)
+        if raw:
+            ps = BeautifulSoup(raw, "html.parser")
+            el = ps.find("img") or ps.find("image")
+            src = el and (el.get("src") or el.get("xlink:href") or el.get("href"))
+            if src:
+                data = read(unquote(urljoin(page, src)))
+                if data:
+                    return data
+    return None
+
+
 def minutes(words):
     return words / WORDS_PER_MIN
 
