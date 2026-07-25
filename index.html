@@ -1079,14 +1079,19 @@ function syncStop(){
 }
 $("#chatStop").addEventListener("click", stopSpeech);
 
-// One <audio> per reply, so there's always a manual fallback if autoplay is refused.
+// One <audio> per reply, so there's always a manual fallback if autoplay is refused. The
+// reply is several files, so the element walks them in order and then rewinds — without the
+// rewind it would sit on the last chunk and pressing play again would replay only that.
 function attachPlayer(bubble, urls){
   if(!bubble || !urls.length) return;
   bubble.querySelectorAll("audio").forEach(a => a.remove());
   const au = document.createElement("audio");
   au.controls = true; au.preload = "none"; au.src = urls[0];
   let i = 0;
-  au.addEventListener("ended", ()=>{ if(++i < urls.length){ au.src = urls[i]; au.play(); } });
+  au.addEventListener("ended", ()=>{
+    if(++i < urls.length){ au.src = urls[i]; au.play(); }
+    else { i = 0; au.src = urls[0]; }      // back to the start, ready to play the whole reply
+  });
   bubble.appendChild(au);
 }
 
