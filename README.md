@@ -7,7 +7,7 @@ local Qwen model through Ollama and have its replies read back to you in a Kokor
 Everything runs locally — speech on the CPU, the language model on the Radeon; nothing is
 sent to a cloud service.
 
-The header has two modes: **Studio** (the three speech panels) and **Chat**.
+The header has three modes: **Studio** (the three speech panels), **Chat**, and **Books**.
 
 ## URLs
 
@@ -179,6 +179,38 @@ which of the two is happening. Note that the per-request `keep_alive` in `speech
 the server's `OLLAMA_KEEP_ALIVE` — change it there, not in the unit file, to affect this app.
 It's kept short on purpose: a resident 8B model holds ~5.2 GB of the card's 16 GB.
 
+## 5 · Books (EPUB narration)
+
+Add an EPUB, pick a narrator, and listen on your phone. Chapters are extracted on upload but
+nothing is narrated until you ask for it — a full book is hours of work.
+
+- **Adding** — `epub.py` reads the spine for reading order and the `.ncx` for chapter names,
+  then drops covers, colophons, adverts, dedications and part-title pages. The Institute comes
+  out as 192 chapters from 213 spine documents, 177,350 words, 20.2 h of audio.
+- **Narrator** — the same picker as everywhere else, Kokoro English and Piper Dutch. A book
+  declaring `nl` gets a Dutch voice by default. Changing it after rendering discards that
+  book's audio, so it asks first.
+- **Rendering** is per chapter, in **~10-minute parts**, and each part appears as soon as it's
+  finished — you can start on part 1 while part 2 is still being made. At the measured 2.4×
+  realtime, a 5-minute chapter takes ~2 minutes.
+- **Playing** — parts are ordinary opus files played by an `<audio>` element, chaining into
+  the next part and then the next chapter. Position is saved server-side every 5 seconds, so
+  the phone resumes where the PC left off. Speed is adjustable 0.75–2×.
+
+**Why files rather than streaming.** iOS suspends a page's timers when the screen locks, so
+the sentence-at-a-time approach Chat uses would stall the moment the phone goes in a pocket.
+Measured instead: with the phone locked, three files played back to back, each advancing in
+**under a second**, and the page's own beacons still arrived — so iOS kept the JavaScript
+running as well as the audio. That result is what makes ~10-minute parts safe; without it the
+design would need whole chapters in single files.
+
+**Rendering doesn't monopolise the machine.** `run_lock` is taken per ~600-character chunk and
+released between them, so a chat reply or a transcription slots in between rather than waiting
+out a chapter. One book renders at a time.
+
+Storage is `books.json` for the index and `books/<id>/` for the EPUB, extracted text and audio.
+At 32 kbps opus a 20-hour book is ~290 MB. Both are gitignored, as is `*.epub`.
+
 ## How it fits together
 
 ```
@@ -232,6 +264,7 @@ all 12 cores, so overlapping a clone with a transcription would just make both c
 
 ```
 setup.sh      one-time install of the app venv and all three speech engines
+epub.py       EPUB -> chapters of narratable prose
 speech.py     Flask app (port 8600). Named speech.py, not app.py, so restart.sh can't
               collide with comfy-webui's (which kills anything matching "app.py").
 kokoro_worker.py  resident Kokoro process (English), run with Kokoro's venv interpreter
@@ -240,6 +273,8 @@ index.html    the whole UI — one file, no build step
 clips/        normalized input clips (gitignored)
 presets/      saved voices — own copy of the reference audio (gitignored)
 samples/      cached one-line voice previews, one wav per voice (gitignored)
+books/        per book: the epub, extracted chapter text, rendered audio (gitignored)
+books.json    book index: chapters, narrator, render state, listening position (gitignored)
 outputs/      generated audio (gitignored)
 clips.json    clip index + cached transcripts (gitignored)
 presets.json  saved voices: name, reference transcript, source clip (gitignored)

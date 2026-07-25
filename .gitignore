@@ -9,3 +9,6 @@ presets/
 presets.json
 chats.json
 samples/
+books/
+*.epub
+books.json

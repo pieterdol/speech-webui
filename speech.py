@@ -18,14 +18,18 @@ Reach it from your phone over Tailscale at https://your-machine.your-tailnet.ts.
 import json, os, queue, re, select, shutil, subprocess, tempfile, threading, time, urllib.error, urllib.request, uuid
 from flask import Flask, Response, jsonify, request, send_from_directory
 
+import epub
+
 HERE         = os.path.dirname(os.path.abspath(__file__))
 CLIPS_DIR    = os.path.join(HERE, "clips")
 OUT_DIR      = os.path.join(HERE, "outputs")
 PRESETS_DIR  = os.path.join(HERE, "presets")
 SAMPLES_DIR  = os.path.join(HERE, "samples")
+BOOKS_DIR    = os.path.join(HERE, "books")
 INDEX_FILE   = os.path.join(HERE, "clips.json")
 PRESETS_FILE = os.path.join(HERE, "presets.json")
 CHATS_FILE   = os.path.join(HERE, "chats.json")
+BOOKS_FILE   = os.path.join(HERE, "books.json")
 PORT         = int(os.environ.get("SPEECH_PORT", "8600"))
 
 F5     = os.path.expanduser("~/.local/bin/f5-tts")
@@ -47,6 +51,7 @@ os.makedirs(CLIPS_DIR, exist_ok=True)
 os.makedirs(OUT_DIR, exist_ok=True)
 os.makedirs(PRESETS_DIR, exist_ok=True)
 os.makedirs(SAMPLES_DIR, exist_ok=True)
+os.makedirs(BOOKS_DIR, exist_ok=True)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024   # 200 MB — long recordings are fine
@@ -412,6 +417,166 @@ def chat_worker(jid, chat_id, user_text, model, voice=None, speed=1.0, english_o
                 q.put(None)           # let the speaker drain and mark audio_done
             else:
                 job["audio_done"] = True
+
+# ---- books (books.json + books/<id>/) ----
+# A book is a lot of text and a lot of audio, so books.json holds only the index: chapter
+# names, word counts, which segments have been rendered, and where you'd got to. The prose
+# lives in books/<id>/text/ and the audio in books/<id>/audio/.
+#
+# Rendering is per chapter, on demand, because the whole of The Institute is 8.4 hours of
+# work — you'd never wait for that. Chapters are cut into ~10 minute segments so the first
+# audio arrives in a few minutes rather than sixteen, which is safe now that iOS is confirmed
+# to advance between files with the screen locked.
+SEGMENT_CHARS = 8000      # ≈10 min of speech at the measured ~13.6 characters per second
+CHUNK_CHARS   = 600       # one Kokoro/Piper call ≈45 s of audio ≈17 s of work
+render_lock   = threading.Lock()      # one book render at a time
+
+def load_books():
+    try:
+        with open(BOOKS_FILE) as f: return json.load(f)
+    except Exception:
+        return []
+
+def write_books(items):
+    with open(BOOKS_FILE, "w") as f: json.dump(items, f, indent=2)
+
+def find_book(book_id):
+    return next((b for b in load_books() if b.get("id") == book_id), None)
+
+def book_dir(book_id, *parts):
+    return os.path.join(BOOKS_DIR, book_id, *parts)
+
+def book_summary(b):
+    """Enough for the library list without shipping every chapter."""
+    chapters = b.get("chapters") or []
+    ready = sum(1 for c in chapters if c.get("state") == "ready")
+    return {k: b.get(k) for k in ("id", "title", "author", "language", "voice",
+                                  "added", "position")} | \
+           {"chapters": len(chapters), "ready": ready,
+            "words": sum(c.get("words", 0) for c in chapters)}
+
+def update_book(book_id, fn):
+    """Read-modify-write one book under the index lock. Renders mutate chapter state from a
+    worker thread while the page is reading, so this is never done in place."""
+    with index_lock:
+        items = load_books()
+        for b in items:
+            if b.get("id") == book_id:
+                fn(b)
+                b["updated"] = int(time.time())
+        write_books(items)
+
+def split_segments(text, limit=SEGMENT_CHARS):
+    """Cut a chapter into segment-sized pieces on sentence boundaries."""
+    out, buf = [], ""
+    for para in text.split("\n"):
+        para = para.strip()
+        if not para:
+            continue
+        if len(buf) + len(para) + 1 > limit and buf:
+            out.append(buf.strip())
+            buf = ""
+        if len(para) > limit:                 # a single huge paragraph: cut it at sentences
+            pending = para
+            while len(pending) > limit:
+                pieces, pending = cut_sentences(pending[:limit], 0, flush=True)[0], pending[limit:]
+                out.append(" ".join(pieces))
+            buf = (buf + " " + pending).strip()
+        else:
+            buf = (buf + "\n" + para).strip()
+    if buf.strip():
+        out.append(buf.strip())
+    return out
+
+def split_chunks(text, limit=CHUNK_CHARS):
+    """Segment -> TTS-sized chunks, so run_lock is released between calls and a chat reply or
+    a transcription can get in. Whole sentences only."""
+    out, buf = [], ""
+    for para in text.split("\n"):
+        sentences, tail = cut_sentences(para.strip() + " ", 0, flush=True)
+        for s in sentences:
+            if len(buf) + len(s) + 1 > limit and buf:
+                out.append(buf.strip())
+                buf = ""
+            buf = (buf + " " + s).strip()
+    if buf.strip():
+        out.append(buf.strip())
+    return out
+
+def render_chapter(book_id, index):
+    """Render one chapter to opus, a segment at a time. Marks progress in books.json as it
+    goes so the page can show it."""
+    with render_lock:
+        book = find_book(book_id)
+        if not book:
+            return
+        chapters = book.get("chapters") or []
+        if not (0 <= index < len(chapters)):
+            return
+        chapter = chapters[index]
+        if chapter.get("state") == "ready":
+            return
+        voice = book.get("voice") or "af_heart"
+        txt_path = book_dir(book_id, "text", f"ch{index:03d}.txt")
+        try:
+            with open(txt_path) as f:
+                text = f.read()
+        except OSError as e:
+            update_book(book_id, lambda b: b["chapters"][index].update(
+                state="error", error=f"missing text: {e}"[:200]))
+            return
+        if not book.get("read_headings", False):
+            text = epub.strip_heading(text, chapter.get("name") or "")
+
+        update_book(book_id, lambda b: b["chapters"][index].update(
+            state="rendering", error=None, done=0, segments=[]))
+        audio_dir = book_dir(book_id, "audio")
+        os.makedirs(audio_dir, exist_ok=True)
+        segments = split_segments(text)
+        made = []
+        try:
+            for si, seg_text in enumerate(segments):
+                name = f"ch{index:03d}-s{si:02d}.opus"
+                out  = os.path.join(audio_dir, name)
+                if not os.path.exists(out):
+                    _render_segment(seg_text, voice, out)
+                made.append({"file": name, "seconds": audio_seconds(out)})
+                # publish each finished segment: you can start listening to segment 1 while
+                # segment 2 is still being made
+                update_book(book_id, lambda b, m=list(made), n=len(segments):
+                            b["chapters"][index].update(segments=m, done=len(m), total=n))
+            update_book(book_id, lambda b: b["chapters"][index].update(
+                state="ready", error=None,
+                seconds=round(sum(s["seconds"] for s in made), 1)))
+        except Exception as e:
+            update_book(book_id, lambda b: b["chapters"][index].update(
+                state="error", error=str(e)[:200]))
+
+def _render_segment(text, voice, out_path):
+    """One segment = many TTS calls concatenated. run_lock is taken per chunk, not for the
+    whole segment, so hours of narration don't starve everything else."""
+    tmpdir = tempfile.mkdtemp(prefix="book-")
+    parts = []
+    try:
+        for ci, chunk in enumerate(split_chunks(text)):
+            wav = os.path.join(tmpdir, f"{ci:04d}.wav")
+            with run_lock:
+                tts_say(voice, respell(chunk), 1.0, wav)
+            parts.append(wav)
+        if not parts:
+            raise RuntimeError("nothing to say in this segment")
+        listing = os.path.join(tmpdir, "list.txt")
+        with open(listing, "w") as f:
+            for p in parts:
+                f.write(f"file '{p}'\n")
+        # 32 kbps opus: ~290 MB for a 20 hour book, against 3.5 GB as wav
+        r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-f", "concat", "-safe", "0",
+                            "-i", listing, "-c:a", "libopus", "-b:a", "32k", out_path],
+                           capture_output=True, text=True, timeout=1800)
+        if r.returncode != 0 or not os.path.exists(out_path):
+            raise RuntimeError("ffmpeg failed: " + (r.stderr or "")[-200:])
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 def save_transcript(clip_id, text):
     with index_lock:
@@ -886,6 +1051,141 @@ def api_dictate():
     jid = new_job("dictate")
     threading.Thread(target=dictate_worker, args=(jid, wav, model, lang), daemon=True).start()
     return jsonify(job_id=jid)
+
+# ---- books ----
+@app.post("/api/books")
+def api_book_add():
+    """Take an EPUB, pull the chapters out, and keep the prose on disk ready to narrate."""
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify(ok=False, msg="no file"), 400
+    bid = uuid.uuid4().hex[:12]
+    os.makedirs(book_dir(bid, "text"), exist_ok=True)
+    src = book_dir(bid, "book.epub")
+    f.save(src)
+    try:
+        meta, chapters, skipped = epub.extract(src)
+    except Exception as e:
+        shutil.rmtree(book_dir(bid), ignore_errors=True)
+        return jsonify(ok=False, msg=f"couldn't read that EPUB: {str(e)[:150]}"), 400
+    if not chapters:
+        shutil.rmtree(book_dir(bid), ignore_errors=True)
+        return jsonify(ok=False, msg="no readable chapters in that EPUB"), 400
+    for i, c in enumerate(chapters):
+        with open(book_dir(bid, "text", f"ch{i:03d}.txt"), "w") as fh:
+            fh.write(c["text"])
+    # A Dutch book should land on a Dutch voice without being told.
+    dutch = (meta.get("language") or "").startswith("nl")
+    voice = (piper_voice_ids()[0] if dutch and piper_voice_ids() else "af_heart")
+    entry = {"id": bid, "title": meta["title"], "author": meta["author"],
+             "language": meta["language"], "voice": voice, "read_headings": False,
+             "added": int(time.time()), "updated": int(time.time()),
+             "position": {"chapter": 0, "segment": 0, "offset": 0},
+             "skipped": skipped[:40],
+             "chapters": [{"i": i, "name": c["name"], "words": c["words"],
+                           "state": "pending", "segments": [], "error": None}
+                          for i, c in enumerate(chapters)]}
+    with index_lock:
+        items = load_books()
+        items.insert(0, entry)
+        write_books(items)
+    return jsonify(ok=True, book=book_summary(entry))
+
+@app.get("/api/books")
+def api_books():
+    return jsonify(books=[book_summary(b) for b in load_books()])
+
+@app.get("/api/books/<book_id>")
+def api_book(book_id):
+    b = find_book(book_id)
+    if not b:
+        return jsonify(error="unknown book"), 404
+    return jsonify(book=b)
+
+@app.post("/api/books/update")
+def api_book_update():
+    d = request.get_json(force=True, silent=True) or {}
+    book = find_book(d.get("id") or "")
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    # Changing voice or heading handling makes the existing audio wrong — it was made with the
+    # old setting, and mixing two narrators inside one book would be worse than re-rendering.
+    # Only the chapter you're actually at is re-made now, though; the rest come back when you
+    # reach them, so switching narrator costs one chapter's wait, not the whole book's.
+    resets = ((d.get("voice") and d["voice"] != book.get("voice"))
+              or (d.get("read_headings") is not None
+                  and bool(d["read_headings"]) != bool(book.get("read_headings"))))
+    resume = 0
+    if resets:
+        chapters = book.get("chapters") or []
+        ready = [c["i"] for c in chapters if c.get("state") == "ready"]
+        # "where you'd carry on from": your listening position, or the furthest chapter that
+        # had been narrated if you'd rendered ahead of yourself
+        resume = max([(book.get("position") or {}).get("chapter", 0)] + ready) if chapters else 0
+    if resets and not d.get("confirm"):
+        rendered = sum(1 for c in book.get("chapters") or [] if c.get("state") == "ready")
+        name = (book.get("chapters") or [{}])[resume].get("name", f"chapter {resume + 1}") \
+               if book.get("chapters") else ""
+        return jsonify(ok=False, needs_confirm=True, rendered=rendered, resume=resume,
+                       msg=(f"the audio for {rendered} chapter(s) was made with the old voice "
+                            f"and gets discarded — only “{name}” is re-made now"), ), 409
+    def apply(b):
+        if d.get("title"):  b["title"] = d["title"][:200]
+        if d.get("voice") and tts_engine_of(d["voice"]): b["voice"] = d["voice"]
+        if d.get("read_headings") is not None: b["read_headings"] = bool(d["read_headings"])
+        if isinstance(d.get("position"), dict): b["position"] = d["position"]
+        if resets:
+            for c in b["chapters"]:
+                c.update(state="pending", segments=[], error=None)
+    update_book(book["id"], apply)
+    if resets:
+        shutil.rmtree(book_dir(book["id"], "audio"), ignore_errors=True)
+        # Re-make just the one you'd carry on from, so the new narrator is ready to listen to
+        # without re-rendering everything you'd already been through.
+        threading.Thread(target=render_chapter, args=(book["id"], resume), daemon=True).start()
+    return jsonify(ok=True, book=find_book(book["id"]), resume=resume)
+
+@app.post("/api/books/delete")
+def api_book_delete():
+    d = request.get_json(force=True, silent=True) or {}
+    book = find_book(d.get("id") or "")
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    with index_lock:
+        write_books([b for b in load_books() if b.get("id") != book["id"]])
+    shutil.rmtree(book_dir(book["id"]), ignore_errors=True)
+    return jsonify(ok=True)
+
+@app.post("/api/books/render")
+def api_book_render():
+    """Ask for a chapter (and optionally the one after it, to stay ahead of the listener)."""
+    d = request.get_json(force=True, silent=True) or {}
+    book = find_book(d.get("id") or "")
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    try:
+        index = int(d.get("chapter"))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, msg="which chapter?"), 400
+    wanted = [index] + ([index + 1] if d.get("ahead") else [])
+    started = []
+    for i in wanted:
+        chapters = book.get("chapters") or []
+        if 0 <= i < len(chapters) and chapters[i].get("state") in ("pending", "error"):
+            threading.Thread(target=render_chapter, args=(book["id"], i), daemon=True).start()
+            started.append(i)
+    return jsonify(ok=True, started=started)
+
+@app.get("/book/<book_id>/<path:filename>")
+def book_audio(book_id, filename):
+    path = safe_path(book_dir(book_id, "audio"), filename)
+    if not path:
+        return jsonify(error="not found"), 404
+    # Cacheable on purpose: during the lock-screen test no-store made Safari re-fetch the
+    # same file several times. send_from_directory handles range requests, so seeking works.
+    r = send_from_directory(book_dir(book_id, "audio"), filename, conditional=True)
+    r.headers["Cache-Control"] = "private, max-age=86400"
+    return r
 
 @app.get("/api/models")
 def api_models():

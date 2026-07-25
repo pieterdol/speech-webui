@@ -18,7 +18,7 @@ set -euo pipefail
 KOKORO_PKG="kokoro-onnx==0.5.0"
 PIPER_PKG="piper-tts==1.6.0"
 F5_PKG="f5-tts==1.1.22"
-APP_PKGS="flask faster-whisper"
+APP_PKGS="flask faster-whisper beautifulsoup4 lxml"
 PYVER="3.12"
 
 # Model files for Kokoro, from the kokoro-onnx release (sizes checked after download).

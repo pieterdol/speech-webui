@@ -158,6 +158,7 @@
   <nav class="modes">
     <button class="mode on" data-mode="studio">Studio</button>
     <button class="mode" data-mode="chat">Chat</button>
+    <button class="mode" data-mode="books">Books</button>
   </nav>
 </header>
 <main id="studioView">
@@ -309,6 +310,57 @@
   <label class="check"><input type="checkbox" id="autoSpeak"> 🔊 Speak replies out loud</label>
   <button id="chatStop" class="btn wide" style="display:none">⏹ Stop speaking</button>
 </main>
+
+<main id="booksView" hidden>
+  <div id="library">
+    <h2>Your books</h2>
+    <div class="card" id="bookList"><p class="dim">No books yet — add an EPUB below.</p></div>
+    <div class="card" style="margin-top:12px">
+      <label for="bookFile">Add an EPUB</label>
+      <input type="file" id="bookFile" accept=".epub,application/epub+zip">
+      <div class="hint">Chapters are pulled out on upload. Nothing is narrated until you ask
+        for it — a full book is hours of rendering.</div>
+    </div>
+  </div>
+
+  <div id="reader" hidden>
+    <div class="chatbar">
+      <button id="bookBack" class="iconbtn" title="All books" aria-label="All books">‹</button>
+      <div style="flex:1;min-width:0">
+        <div id="bookTitle" style="font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
+        <div id="bookAuthor" class="dim" style="font-size:13px"></div>
+      </div>
+      <button id="bookCog" class="iconbtn" title="Book settings" aria-label="Book settings">⚙</button>
+    </div>
+
+    <div id="bookSettings" class="card" style="display:none;margin-top:10px">
+      <label for="bookVoice">Narrator</label>
+      <div class="pickrow">
+        <select id="bookVoice"></select>
+        <button id="bookVoicePlay" class="iconbtn" title="Hear this voice" aria-label="Hear this voice">▶</button>
+      </div>
+      <label class="check"><input type="checkbox" id="bookHeadings"> Read chapter headings aloud</label>
+      <div class="hint" id="bookSkipped"></div>
+      <div class="acts" style="margin-top:14px">
+        <button id="bookDel" class="btn del">🗑 Delete book</button>
+      </div>
+    </div>
+
+    <div class="card" id="nowPlaying" style="margin-top:12px;display:none">
+      <div class="outhead"><span class="nm" id="npChapter"></span></div>
+      <audio id="bookAudio" controls preload="none" style="width:100%"></audio>
+      <div class="row" style="margin-top:10px;align-items:center">
+        <div style="flex:0 0 auto"><label for="bookSpeed" style="margin:0">Speed <span id="bookSpeedVal" class="dim">1.0×</span></label></div>
+        <div><input type="range" id="bookSpeed" min="0.75" max="2" step="0.05" value="1"></div>
+      </div>
+      <div class="hint" id="npHint"></div>
+    </div>
+
+    <h2>Chapters</h2>
+    <div class="card" id="chapterList"></div>
+  </div>
+  <div id="bookStatus"></div>
+</main>
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => (s||"").replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -319,7 +371,7 @@ const secure = window.isSecureContext;
 // whichever one the user is actually looking at — including shared code like upload().
 let MODE = "studio";
 function setStatus(html, err=false){
-  const el = MODE === "chat" ? $("#chatStatus") : $("#status");
+  const el = MODE === "chat" ? $("#chatStatus") : MODE === "books" ? $("#bookStatus") : $("#status");
   el.style.display = "block";
   el.className = err ? "err" : "";
   el.innerHTML = html;
@@ -761,9 +813,11 @@ function setMode(m){
   MODE = m;
   $("#studioView").hidden = m !== "studio";
   $("#chatView").hidden   = m !== "chat";
+  $("#booksView").hidden  = m !== "books";
   document.querySelectorAll(".mode").forEach(b => b.classList.toggle("on", b.dataset.mode === m));
   store.set("mode", m);
   if(m === "chat" && !CHATS.length && !CHAT) loadChats();
+  if(m === "books" && !BOOKS.length && !BOOK) loadBooks();
 }
 document.querySelectorAll(".mode").forEach(b =>
   b.addEventListener("click", ()=> setMode(b.dataset.mode)));
@@ -1190,6 +1244,223 @@ async function dictate(blob, name){
   }catch(e){ setStatus("❌ " + e.message, true); }
 }
 
+// ---- books ----
+// Narration is rendered per chapter, in ~10 minute segments, and played as ordinary audio
+// files. That's deliberate: one long <audio> keeps playing with the phone locked, and the
+// lock-screen test confirmed the page can still advance to the next file when it ends.
+let BOOKS = [], BOOK = null, bookPoll = null;
+
+async function loadBooks(){
+  const d = await (await fetch("/api/books")).json();
+  BOOKS = d.books || [];
+  const box = $("#bookList");
+  if(!BOOKS.length){ box.innerHTML = '<p class="dim">No books yet — add an EPUB below.</p>'; return; }
+  box.innerHTML = "";
+  BOOKS.forEach(b => {
+    const el = document.createElement("div");
+    el.className = "clip";
+    const hrs = (b.words / 146 / 60).toFixed(1);
+    const at  = (b.position && b.position.chapter) || 0;
+    el.innerHTML = `<div class="cliphead"><div class="nm">${esc(b.title)}</div>
+        <div class="dur">${hrs} h</div></div>
+      <div class="tr">${esc(b.author || "")} · ${b.chapters} chapters · ${b.ready} narrated${
+        at ? " · at chapter " + (at + 1) : ""}</div>`;
+    el.addEventListener("click", ()=> openBook(b.id));
+    box.appendChild(el);
+  });
+}
+
+$("#bookFile").addEventListener("change", async e => {
+  const f = e.target.files[0];
+  if(!f) return;
+  const fd = new FormData();
+  fd.append("file", f);
+  setStatus('<span class="spin"></span>Reading the EPUB…');
+  try{
+    const d = await (await fetch("/api/books", {method:"POST", body:fd})).json();
+    if(!d.ok){ setStatus("❌ " + (d.msg || "couldn't add it"), true); return; }
+    setStatus(`✅ Added “${d.book.title}”`);
+    await loadBooks();
+    openBook(d.book.id);
+  }catch(err){ setStatus("❌ " + err, true); }
+  e.target.value = "";
+});
+
+async function openBook(id){
+  const r = await fetch("/api/books/" + id);
+  if(!r.ok) return loadBooks();
+  BOOK = (await r.json()).book;
+  $("#library").hidden = true;
+  $("#reader").hidden  = false;
+  $("#bookTitle").textContent  = BOOK.title;
+  $("#bookAuthor").textContent = BOOK.author || "";
+  pickOption($("#bookVoice"), BOOK.voice);
+  $("#bookHeadings").checked = !!BOOK.read_headings;
+  $("#bookSkipped").textContent = (BOOK.skipped || []).length
+    ? `Left out ${BOOK.skipped.length} sections that look like front or back matter.` : "";
+  renderChapterList();
+  watchRenders();
+}
+$("#bookBack").addEventListener("click", ()=>{
+  stopWatching();
+  BOOK = null;
+  $("#reader").hidden = true;
+  $("#library").hidden = false;
+  loadBooks();
+});
+$("#bookCog").addEventListener("click", ()=>{
+  const b = $("#bookSettings");
+  b.style.display = b.style.display === "none" ? "block" : "none";
+});
+
+function renderChapterList(){
+  const box = $("#chapterList");
+  box.innerHTML = "";
+  (BOOK.chapters || []).forEach(c => {
+    const el = document.createElement("div");
+    el.className = "clip";
+    let note = `${c.words.toLocaleString()} words · ~${(c.words / 146).toFixed(0)} min`;
+    if(c.state === "rendering") note = `⏳ narrating… ${c.done || 0}/${c.total || "?"} parts`;
+    else if(c.state === "ready") note = `▶ ${fmt(c.seconds)} · ready`;
+    else if(c.state === "error") note = "❌ " + (c.error || "failed");
+    el.innerHTML = `<div class="cliphead"><div class="nm">${esc(c.name)}</div>
+        <div class="dur">${c.state === "ready" ? "✓" : ""}</div></div>
+      <div class="tr">${esc(note)}</div>`;
+    el.addEventListener("click", ()=> chapterTapped(c.i));
+    box.appendChild(el);
+  });
+}
+
+async function chapterTapped(i){
+  const c = BOOK.chapters[i];
+  if(c.state === "ready" || (c.state === "rendering" && (c.done || 0) > 0))
+    return playChapter(i, 0, 0);
+  if(c.state === "rendering"){ setStatus("Still narrating that one…"); return; }
+  setStatus('<span class="spin"></span>Narrating — roughly '
+    + Math.max(1, Math.round(c.words / 146 / 2.4)) + ' min of work for '
+    + Math.round(c.words / 146) + ' min of audio.');
+  await fetch("/api/books/render", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: BOOK.id, chapter: i})});
+  watchRenders();
+}
+
+// While anything is rendering, refresh so parts appear as they finish — you can start
+// listening to part 1 while part 2 is still being made.
+function watchRenders(){
+  stopWatching();
+  bookPoll = setInterval(async ()=>{
+    if(!BOOK) return stopWatching();
+    const r = await fetch("/api/books/" + BOOK.id);
+    if(!r.ok) return stopWatching();
+    const b = (await r.json()).book;
+    const busy = (b.chapters || []).some(c => c.state === "rendering");
+    BOOK = b;
+    renderChapterList();
+    if(!busy) stopWatching();
+  }, 4000);
+}
+function stopWatching(){ if(bookPoll){ clearInterval(bookPoll); bookPoll = null; } }
+
+// ---- the player ----
+let PLAY = {chapter: 0, segment: 0};
+const bookAudio = () => $("#bookAudio");
+function segmentsOf(i){ return ((BOOK.chapters[i] || {}).segments) || []; }
+
+function playChapter(ci, si, offset){
+  const segs = segmentsOf(ci);
+  if(!segs[si]){ setStatus("That part hasn't been narrated yet.", true); return; }
+  PLAY = {chapter: ci, segment: si};
+  const au = bookAudio();
+  $("#nowPlaying").style.display = "block";
+  $("#npChapter").textContent = BOOK.chapters[ci].name
+    + (segs.length > 1 ? ` · part ${si + 1} of ${segs.length}` : "");
+  au.src = `/book/${BOOK.id}/${segs[si].file}`;
+  au.playbackRate = parseFloat($("#bookSpeed").value) || 1;
+  au.play().then(()=>{ if(offset) au.currentTime = offset; })
+           .catch(()=> setStatus("Tap ▶ on the player to start listening.", true));
+  setMediaSession();
+  // stay a chapter ahead of the listener
+  fetch("/api/books/render", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: BOOK.id, chapter: ci, ahead: true})}).then(watchRenders);
+  savePosition(offset || 0);
+}
+
+function setMediaSession(){
+  if(!("mediaSession" in navigator) || !BOOK) return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: BOOK.chapters[PLAY.chapter].name, artist: BOOK.author || "", album: BOOK.title});
+}
+
+bookAudio().addEventListener("ended", ()=>{
+  if(!BOOK) return;
+  const segs = segmentsOf(PLAY.chapter);
+  if(PLAY.segment + 1 < segs.length) return playChapter(PLAY.chapter, PLAY.segment + 1, 0);
+  const next = PLAY.chapter + 1;
+  if(next < (BOOK.chapters || []).length && segmentsOf(next).length)
+    return playChapter(next, 0, 0);
+  setStatus("That's the end of what has been narrated so far.");
+});
+
+// Position lives on the server so the phone can pick up where the PC left off. Throttled —
+// timeupdate fires several times a second.
+let lastSave = 0;
+bookAudio().addEventListener("timeupdate", ()=>{
+  const now = Date.now();
+  if(now - lastSave > 5000){ lastSave = now; savePosition(bookAudio().currentTime); }
+});
+bookAudio().addEventListener("pause", ()=> savePosition(bookAudio().currentTime));
+function savePosition(offset){
+  if(!BOOK) return;
+  const position = {chapter: PLAY.chapter, segment: PLAY.segment, offset: Math.floor(offset || 0)};
+  BOOK.position = position;
+  fetch("/api/books/update", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: BOOK.id, position})}).catch(()=>{});
+}
+
+$("#bookSpeed").addEventListener("input", ()=>{
+  const v = parseFloat($("#bookSpeed").value) || 1;
+  $("#bookSpeedVal").textContent = v.toFixed(2).replace(/0$/, "") + "×";
+  bookAudio().playbackRate = v;
+  store.set("bookSpeed", String(v));
+});
+
+$("#bookVoice").addEventListener("change", ()=> changeBook({voice: $("#bookVoice").value}));
+$("#bookHeadings").addEventListener("change", ()=> changeBook({read_headings: $("#bookHeadings").checked}));
+// Changing narrator or heading handling makes the existing audio wrong, so the server asks
+// before throwing it away.
+async function changeBook(patch){
+  if(!BOOK) return;
+  let r = await fetch("/api/books/update", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: BOOK.id, ...patch})});
+  let d = await r.json();
+  if(d.needs_confirm){
+    if(!confirm(`${d.msg}. Go ahead?`)){
+      pickOption($("#bookVoice"), BOOK.voice);
+      $("#bookHeadings").checked = !!BOOK.read_headings;
+      return;
+    }
+    r = await fetch("/api/books/update", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({id: BOOK.id, ...patch, confirm: true})});
+    d = await r.json();
+  }
+  if(!d.ok){ setStatus("❌ " + (d.msg || "couldn't change that"), true); return; }
+  BOOK = d.book;
+  $("#nowPlaying").style.display = "none";
+  renderChapterList();
+  if(d.resume !== undefined && BOOK.chapters[d.resume]){
+    setStatus(`Re-narrating “${esc(BOOK.chapters[d.resume].name)}” in the new voice — the rest`
+              + " when you get to them.");
+    watchRenders();
+  } else setStatus("Saved.");
+}
+$("#bookVoicePlay").addEventListener("click", e => previewVoice($("#bookVoice"), e.currentTarget));
+$("#bookDel").addEventListener("click", async ()=>{
+  if(!BOOK || !confirm(`Delete “${BOOK.title}” and everything narrated from it?`)) return;
+  await fetch("/api/books/delete", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: BOOK.id})});
+  $("#bookBack").click();
+});
+
 // ---- boot ----
 // Kokoro = English, Piper = Dutch. Kept in one place so panel 3 and Chat offer the same set.
 let VOICES = {kokoro: [], piper: []};
@@ -1249,6 +1520,10 @@ fetch("/api/voices").then(r => r.json()).then(d => {
   // Chat offers both: an English voice means replies stay English, a Dutch one lets the
   // model answer in Dutch.
   fillVoices($("#chatVoice"), "both", "chatVoice", "af_heart");
+  // Books too — a Dutch book wants a Dutch narrator. The stored key is unused here because
+  // the narrator belongs to the book, not to the browser.
+  fillVoices($("#bookVoice"), "both", "", "af_heart");
+  if(BOOK) pickOption($("#bookVoice"), BOOK.voice);
   syncChatLang();
 });
 
@@ -1292,6 +1567,8 @@ $("#chatAutoSend").addEventListener("change", ()=>
   store.set("chatAutoSend", $("#chatAutoSend").checked ? "1" : "0"));
 $("#chatLang").value = store.get("chatLang", "en");   // openChat overrides with the chat's own
 syncChatLang();
+$("#bookSpeed").value = store.get("bookSpeed", "1");
+$("#bookSpeed").dispatchEvent(new Event("input"));
 if(!secure) $("#chatMic").title = "Talking needs https";
 setMode(store.get("mode", "studio"));   // chats load lazily on the first switch to Chat
 
