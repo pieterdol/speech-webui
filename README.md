@@ -23,11 +23,29 @@ only the file picker does. `localhost` counts as secure, which is why the PC URL
 ## Running it
 
 ```bash
+./setup.sh      # one-time: app venv + Kokoro + Piper + F5-TTS (see below)
 ./run.sh        # foreground
 ./restart.sh    # kill + relaunch in the background (after editing speech.py)
 ./serve.sh      # one-time: publish on the tailnet over HTTPS via tailscale serve
 tail -f speech.log
 ```
+
+**Setting up a fresh machine.** `./setup.sh` builds the app venv and all three speech engines,
+each in its own venv under `~/.local/share`, and fetches their model files. It only needs `uv`.
+It's safe to re-run: anything already installed is left alone, and a download whose size is
+wrong is rejected rather than left in place looking finished.
+
+```bash
+./setup.sh                 # everything
+./setup.sh piper kokoro    # just those
+./setup.sh --force f5      # reinstall one engine
+./setup.sh --check         # report what's installed, change nothing
+```
+
+Budget a while for F5 — it pulls several GB of torch (CPU builds on purpose; the default
+would fetch CUDA wheels this machine can't use). Kokoro adds ~350 MB of models and each Piper
+voice ~61 MB. Whisper and F5 download their own models on first use, not here. Ollama is not
+covered — that's `ollama.service`.
 
 Port 8443 is used because `443` on this tailnet is already taken by another service.
 
@@ -210,6 +228,7 @@ all 12 cores, so overlapping a clone with a transcription would just make both c
 ## Layout
 
 ```
+setup.sh      one-time install of the app venv and all three speech engines
 speech.py     Flask app (port 8600). Named speech.py, not app.py, so restart.sh can't
               collide with comfy-webui's (which kills anything matching "app.py").
 kokoro_worker.py  resident Kokoro process (English), run with Kokoro's venv interpreter
