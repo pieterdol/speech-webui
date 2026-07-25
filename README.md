@@ -45,7 +45,7 @@ the text fields in panel 3. Transcripts are cached per clip in `clips.json`.
 
 **3 · Text → speech.**
 
-- *Kokoro* — 54 built-in voices, a few seconds per sentence. The language code is derived from
+- *Kokoro* — 54 built-in voices, a second or two per sentence. The language code is derived from
   the voice prefix (`bm_george` → `en-gb`), otherwise British and non-English voices get
   phonemized with US rules and sound wrong.
 - *F5-TTS* — clones a voice. Needs the exact transcript of the reference clip, which is
@@ -84,9 +84,18 @@ keeps working without it.
   shown because they have to fit in the 16 GB alongside anything ComfyUI has loaded: `qwen3:8b`
   is ~5.2 GB, `qwen3:14b` ~9.3 GB.
 - **Voice** — the same 54 Kokoro voices as panel 3, remembered separately from the panel-3 pick.
-- **🔊 Speak replies out loud** — off by default. On, each finished reply is sent to Kokoro and
-  played; there's also a 🔊 button on every reply. A player is left on the message either way,
-  because a browser can still refuse to autoplay.
+- **🔊 Speak replies out loud** — off by default. On, the reply is spoken **sentence by
+  sentence as it is written**, not rendered in one go at the end: the server cuts the token
+  stream at sentence boundaries, hands each piece to Kokoro, and the page plays them back to
+  back. On a twelve-sentence answer the first audio arrived at 4.6 s — while the model was
+  still writing, and against ~45 s of silence for a single whole-reply render. Rendering runs
+  ~2.5× faster than playback, so it stays ahead once it starts.
+
+  Chunks are held to 45 characters (20 for the first, which sets the perceived wait). Below
+  roughly half a second of audio a render takes longer than the playback it has to cover, and
+  the speech develops gaps. **⏹ Stop speaking** clears the queue; asking a new question does
+  too. The 🔊 button on a finished reply re-renders it as one piece, and a player is left on
+  every spoken message because a browser can still refuse to autoplay.
 - **🎤** — tap to talk, tap ⏹ to stop. Goes through the same Whisper path as panel 2 (using the
   model and language chosen there) and lands in the composer. With *Send as soon as I stop
   talking* on, it sends itself, so voice in → voice out needs two taps. A spoken turn is
@@ -208,3 +217,6 @@ chats.json    chat transcripts, per-chat model and system prompt (gitignored)
   the two variables above; install it with the three commands in its header comment.
 - **Ollama's context is 8192 tokens** here (`num_ctx`). A very long conversation silently loses
   its oldest turns — start a new chat rather than growing one forever.
+- **Spoken replies leave wavs in `outputs/`**, now one per sentence-chunk rather than one per
+  reply, so a talkative session accumulates faster than it used to (~190 KB per chunk). They're
+  gitignored and safe to delete wholesale.

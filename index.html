@@ -291,6 +291,7 @@
     <button id="chatSend" class="btn primary">Send</button>
   </div>
   <label class="check"><input type="checkbox" id="autoSpeak"> 🔊 Speak replies out loud</label>
+  <button id="chatStop" class="btn wide" style="display:none">⏹ Stop speaking</button>
 </main>
 <script>
 const $ = s => document.querySelector(s);
@@ -885,6 +886,8 @@ async function chatSend(){
   if(!CHAT){ setStatus("Starting a chat…"); await newChat(); if(!CHAT) return; }
   if(chatBusy){ setStatus("Still writing the last reply — one at a time.", true); return; }
   primeAudio();                       // must happen inside the tap, or iOS blocks autoplay later
+  stopSpeech();                       // a new question cancels whatever is still being read out
+  resetSpeech();
   chatBusy = true;
   $("#chatSend").disabled = true;
   addBubble("you", text);
@@ -895,8 +898,11 @@ async function chatSend(){
   const token = ++chatToken;
   let job;
   try{
+    // Sending a voice asks the server to speak it sentence by sentence as it's written,
+    // rather than rendering the whole reply once it's finished.
     const r = await fetch("/api/chat", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({chat_id: CHAT.id, text, model: $("#chatModel").value || undefined})});
+      body: JSON.stringify({chat_id: CHAT.id, text, model: $("#chatModel").value || undefined,
+                            voice: $("#autoSpeak").checked ? $("#chatVoice").value : undefined})});
     const d = await r.json();
     if(!r.ok){ throw new Error(d.error || r.status); }
     job = d.job_id;
@@ -908,31 +914,55 @@ async function chatSend(){
     return;
   }
   chatPoll(job, token, {
+    // sentences finish rendering while the reply is still being written, so start playing
+    // them on every tick rather than waiting for the whole thing
+    onAudio: list => enqueueAudio(list),
     onPartial: t => { body.textContent = t; scrollDown(); },
     onDone: d => {
       body.textContent = d.text || "";
       addBotActions(bubble, d.text || "");
+      enqueueAudio(d.audio || []);
+      // The text finishes before the speech does — the last sentences are still rendering,
+      // so keep collecting them after the job itself reports done.
+      if(d.audio && !d.audio_done) pollAudioTail(job, token, bubble);
+      else attachPlayer(bubble, (d.audio || []).map(a => a.url));
+      if(d.audio_error) setStatus("Spoke what it could — " + d.audio_error, true);
       // keep the local copy in step with what the server just appended
       if(CHAT) (CHAT.messages = CHAT.messages || []).push(
         {role:"user", content:text}, {role:"assistant", content:d.text});
       refreshChatList();     // the first turn renames the chat; don't re-render the log for it
-      setStatus("✅ Replied.");
+      if(!d.audio_error) setStatus("✅ Replied.");
       chatDone();
-      if($("#autoSpeak").checked) speakReply(d.text || "", bubble.querySelector(".say"), bubble);
     },
     onError: msg => { body.textContent = ""; bubble.remove(); setStatus("❌ " + msg, true); chatDone(); },
   });
 }
 function chatDone(){ chatBusy = false; $("#chatSend").disabled = false; }
 
+// Follows a finished reply until its last sentence has been rendered.
+function pollAudioTail(job, token, bubble){
+  if(token !== chatToken) return;
+  fetch("/api/status/" + job).then(r => r.json()).then(d => {
+    if(token !== chatToken || !d || d.error === "unknown job") return;
+    enqueueAudio(d.audio || []);
+    if(d.audio_done){
+      attachPlayer(bubble, (d.audio || []).map(a => a.url));
+      if(d.audio_error) setStatus("Spoke what it could — " + d.audio_error, true);
+      return;
+    }
+    setTimeout(()=>pollAudioTail(job, token, bubble), 700);
+  }).catch(()=>{ if(token === chatToken) setTimeout(()=>pollAudioTail(job, token, bubble), 1500); });
+}
+
 function chatPoll(job, token, opts){
-  const {onPartial, onDone, onError, labels = CHAT_LABELS} = opts;
+  const {onPartial, onDone, onError, onAudio, labels = CHAT_LABELS} = opts;
   if(token !== chatToken) return;
   fetch("/api/status/" + job).then(r => r.json().then(d => ({ok:r.ok, d}))).then(({ok, d})=>{
     if(token !== chatToken) return;
     if(!ok || d.error === "unknown job") return onError("the server restarted — ask again");
     if(d.status === "error") return onError(d.error || "failed");
     if(d.text) onPartial(d.text);
+    if(onAudio && d.audio && d.audio.length) onAudio(d.audio);
     if(d.status === "done") return onDone(d);
     setStatus('<span class="spin"></span>' + (labels[d.status] || d.status));
     // poll faster once tokens are actually flowing, so it reads like typing
@@ -965,38 +995,71 @@ function primeAudio(){
   chatAudio.play().catch(()=>{});
 }
 
-// Kokoro reads punctuation and markdown literally, so flatten the reply first.
-function forSpeech(t){
-  return (t || "")
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/^\s{0,3}#{1,6}\s*/gm, "")
-    .replace(/^\s*[-*+]\s+/gm, "")
-    .replace(/^\s*\d+[.)]\s+/gm, "")
-    .replace(/(\*\*|__|~~|\*|_)/g, "")
-    .replace(/\n{2,}/g, "\n")
-    .trim();
+// Markdown stripping lives on the server now (speech_text) so the streamed and manual paths
+// can't disagree; `strip: true` asks for it.
+
+// ---- playback queue ----
+// With auto-speak on, the server renders the reply sentence by sentence and the clips arrive
+// while the model is still writing. They must play strictly in order, back to back, through
+// the one element iOS has unlocked.
+let sayQueue = [], sayTaken = 0, sayPlaying = false;
+function resetSpeech(){ sayQueue = []; sayTaken = 0; sayPlaying = false; }
+function enqueueAudio(list){
+  for(let k = sayTaken; k < list.length; k++) sayQueue.push(list[k].url);
+  sayTaken = list.length;
+  playNext();
+}
+function playNext(){
+  if(sayPlaying || !sayQueue.length || !chatAudio) return syncStop();
+  sayPlaying = true;
+  chatAudio.src = sayQueue.shift();
+  chatAudio.onended = ()=>{ sayPlaying = false; playNext(); };
+  chatAudio.play().catch(()=>{
+    sayPlaying = false;                       // autoplay refused: leave the rest queued
+    setStatus("Spoken audio is ready — tap ▶ on the message to hear it.", true);
+    syncStop();
+  });
+  syncStop();
+}
+function stopSpeech(){
+  sayQueue = [];
+  sayPlaying = false;
+  if(chatAudio){ chatAudio.onended = null; chatAudio.pause(); }
+  syncStop();
+}
+// Single place deciding whether Stop is on screen, so it can't be left behind by a path
+// that forgot to hide it.
+function syncStop(){
+  $("#chatStop").style.display = (sayPlaying || sayQueue.length) ? "block" : "none";
+}
+$("#chatStop").addEventListener("click", stopSpeech);
+
+// One <audio> per reply, so there's always a manual fallback if autoplay is refused.
+function attachPlayer(bubble, urls){
+  if(!bubble || !urls.length) return;
+  bubble.querySelectorAll("audio").forEach(a => a.remove());
+  const au = document.createElement("audio");
+  au.controls = true; au.preload = "none"; au.src = urls[0];
+  let i = 0;
+  au.addEventListener("ended", ()=>{ if(++i < urls.length){ au.src = urls[i]; au.play(); } });
+  bubble.appendChild(au);
 }
 
+// The 🔊 button on a finished message: one render of the whole thing, not the streamed path.
 async function speakReply(text, btn, bubble){
-  const clean = forSpeech(text);
-  if(!clean){ setStatus("Nothing in that reply to read out loud.", true); return; }
+  if(!(text || "").trim()){ setStatus("Nothing in that reply to read out loud.", true); return; }
   primeAudio();
   const label = btn ? btn.innerHTML : null;
   if(btn){ btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Speaking…'; }
   try{
     const r = await fetch("/api/speak", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({engine:"kokoro", text: clean, voice: $("#chatVoice").value, speed: 1})});
+      body: JSON.stringify({engine:"kokoro", text, strip:true,
+                            voice: $("#chatVoice").value, speed: 1})});
     const d = await r.json();
     if(!r.ok) throw new Error(d.error || r.status);
     const done = await waitForJob(d.job_id);
-    if(bubble){                        // always leave a player behind — autoplay can still be blocked
-      bubble.querySelectorAll("audio").forEach(a => a.remove());
-      const au = document.createElement("audio");
-      au.controls = true; au.preload = "none"; au.src = done.url;
-      bubble.appendChild(au);
-    }
+    attachPlayer(bubble, [done.url]);
+    stopSpeech();                              // supersede anything still queued
     chatAudio.src = done.url;
     chatAudio.play().catch(()=> setStatus("Generated — tap ▶ on the message to hear it.", true));
     setStatus(`🔊 ${fmt(done.seconds)} of audio · ${$("#chatVoice").value}`);

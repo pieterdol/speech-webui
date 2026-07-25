@@ -15,7 +15,7 @@ separate server we talk to over HTTP on :11434.
 Reach it from your phone over Tailscale at https://your-machine.your-tailnet.ts.net:8443
 (HTTPS is required — Safari blocks the microphone and the clipboard on plain http).
 """
-import json, os, re, select, shutil, subprocess, tempfile, threading, time, urllib.error, urllib.request, uuid
+import json, os, queue, re, select, shutil, subprocess, tempfile, threading, time, urllib.error, urllib.request, uuid
 from flask import Flask, Response, jsonify, request, send_from_directory
 
 HERE         = os.path.dirname(os.path.abspath(__file__))
@@ -89,6 +89,69 @@ def respell(text):
     for src, dst in RESPELL.items():
         text = re.sub(rf"\b{re.escape(src)}\b", dst, text, flags=re.IGNORECASE)
     return text
+
+# ---- turning a written reply into something worth listening to ----
+# Kokoro reads punctuation literally, so "**important**" becomes "asterisk asterisk important"
+# and a URL becomes a spelled-out mess. Lives here rather than in the browser so the streamed
+# and the manual "speak this reply" paths can't drift apart.
+_MD = [
+    (re.compile(r"```.*?```", re.S), " "),          # code blocks are unlistenable
+    (re.compile(r"`([^`]+)`"), r"\1"),
+    (re.compile(r"!?\[([^\]]*)\]\([^)]*\)"), r"\1"),  # links: keep the words, drop the URL
+    (re.compile(r"^\s{0,3}#{1,6}\s*", re.M), ""),
+    (re.compile(r"^\s*[-*+]\s+", re.M), ""),
+    (re.compile(r"^\s*\d+[.)]\s+", re.M), ""),
+    (re.compile(r"(\*\*|__|~~|\*|_)"), ""),
+    (re.compile(r"\n{2,}"), "\n"),
+]
+
+def speech_text(text):
+    for pattern, repl in _MD:
+        text = pattern.sub(repl, text or "")
+    return text.strip()
+
+# Sentence boundary: closing punctuation, optional quote/bracket, then whitespace. A decimal
+# ("3.5") has no space after the dot, so it never matches.
+_BOUNDARY = re.compile(r'(?<=[.!?…])["\'”’)\]]*(\s+)')
+# Periods that end an abbreviation rather than a sentence.
+_ABBREV = {"e.g", "i.e", "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc",
+           "fig", "approx", "no", "al", "inc", "ltd"}
+
+def _is_real_end(text, dot):
+    """dot = index just past the sentence-ending punctuation."""
+    if text[dot - 1] != ".":
+        return True                      # ! and ? don't have this problem
+    word = re.search(r"([A-Za-z.]+)\.$", text[:dot])
+    if not word:
+        return True
+    w = word.group(1).rstrip(".").lower()
+    return not (w in _ABBREV or len(w) == 1)   # "J. Smith" shouldn't split either
+
+def cut_sentences(buf, min_chars, flush=False):
+    """Split off whole sentences worth speaking, and return (chunks, remainder).
+
+    Chunks are held to a minimum length because each render costs ~0.3 s fixed: below roughly
+    half a second of audio, generating the next chunk takes longer than playing the current
+    one and the speech develops gaps. On flush, whatever is left goes out regardless."""
+    # An unclosed code fence means more of it is still streaming in — wait rather than read
+    # half a fence out loud.
+    if not flush and buf.count("```") % 2:
+        return [], buf
+    chunks, start = [], 0
+    for m in _BOUNDARY.finditer(buf):
+        end = m.start()                             # just past the punctuation
+        if not _is_real_end(buf, end):
+            continue
+        if end - start < min_chars:
+            continue                                # too short: let it grow into the next one
+        chunks.append(buf[start:end].strip())
+        start = m.end()
+    remainder = buf[start:]
+    if flush:                       # flush means nothing is held back, whitespace included
+        if remainder.strip():
+            chunks.append(remainder.strip())
+        remainder = ""
+    return [c for c in chunks if c], remainder
 
 # ---- clip index (clips.json) ----
 def load_index():
@@ -220,9 +283,36 @@ def ollama_chat_stream(model, messages):
             if chunk: yield chunk
             if d.get("done"): break
 
-def chat_worker(jid, chat_id, user_text, model):
+SPEAK_MIN_CHARS   = 45    # ≈3 s of speech; comfortably above the ~0.5 s break-even
+# The first chunk sets how long you sit in silence, so let it be a single short sentence.
+# There's no catching-up risk: nothing is playing yet for it to fall behind.
+SPEAK_FIRST_CHARS = 20
+
+def speak_stream_worker(job, q, voice, speed):
+    """Renders queued sentences in order while the model is still writing later ones. Runs on
+    its own thread so a Kokoro render never stalls reading the token stream."""
+    lang = VOICE_LANG.get(voice[:2], "en-us")
+    while True:
+        text = q.get()
+        if text is None:
+            break
+        try:
+            name = f"{int(time.time())}-{uuid.uuid4().hex[:6]}.wav"
+            out  = os.path.join(OUT_DIR, name)
+            with run_lock:          # shares the CPU engines' lock; Kokoro is quick, F5 is not
+                res = kokoro_call({"op": "say", "text": respell(text), "voice": voice,
+                                   "speed": speed, "lang": lang, "out": out})
+            job["audio"].append({"url": f"/out/{name}", "file": name,
+                                 "seconds": res.get("seconds")})
+        except Exception as e:
+            # one bad sentence shouldn't silence the rest of the reply
+            job["audio_error"] = str(e)[:200]
+    job["audio_done"] = True
+
+def chat_worker(jid, chat_id, user_text, model, voice=None, speed=1.0):
     job = jobs[jid]
     job["status"] = "queued"
+    q = speaker = None
     with chat_lock:
         try:
             chat = find_chat(chat_id)
@@ -231,19 +321,42 @@ def chat_worker(jid, chat_id, user_text, model):
             msgs = ([{"role": "system", "content": chat["system"]}] if chat.get("system") else []) \
                  + [{"role": m["role"], "content": m["content"]} for m in chat.get("messages") or []] \
                  + [{"role": "user", "content": user_text}]
+            if voice:
+                q = queue.Queue()
+                speaker = threading.Thread(target=speak_stream_worker,
+                                           args=(job, q, voice, speed), daemon=True)
+                speaker.start()
             job["status"] = "loading model"
-            acc = []
+            acc, pending, spoken_any = [], "", False
             for chunk in ollama_chat_stream(model, msgs):
                 acc.append(chunk)
                 job["text"]   = "".join(acc)      # /api/status streams this back as it grows
                 job["status"] = "writing"
+                if q:
+                    pending += chunk
+                    ready, pending = cut_sentences(
+                        pending, SPEAK_FIRST_CHARS if not spoken_any else SPEAK_MIN_CHARS)
+                    for sentence in ready:
+                        said = speech_text(THINK_TAGS.sub("", sentence))
+                        if said:
+                            q.put(said)
+                            spoken_any = True
             reply = THINK_TAGS.sub("", "".join(acc)).strip()
             if not reply:
                 raise RuntimeError("the model returned an empty reply")
+            if q:
+                for sentence in cut_sentences(pending, 0, flush=True)[0]:
+                    said = speech_text(THINK_TAGS.sub("", sentence))
+                    if said: q.put(said)
             append_turn(chat_id, user_text, reply, model)
             job.update(status="done", text=reply)
         except Exception as e:
             job.update(status="error", error=ollama_error(e))
+        finally:
+            if q:
+                q.put(None)           # let the speaker drain and mark audio_done
+            else:
+                job["audio_done"] = True
 
 def save_transcript(clip_id, text):
     with index_lock:
@@ -480,7 +593,10 @@ def speak_worker(jid, engine, text, voice, speed, ref_audio, ref_text, trim, nfe
 def new_job(kind):
     jid = uuid.uuid4().hex[:12]
     jobs[jid] = {"kind": kind, "status": "queued", "error": None, "text": None,
-                 "url": None, "file": None, "seconds": None, "clip_id": None}
+                 "url": None, "file": None, "seconds": None, "clip_id": None,
+                 # chat with speech: audio arrives sentence by sentence while the reply is
+                 # still being written, so the page plays it before the text is finished
+                 "audio": [], "audio_done": False, "audio_error": None}
     return jid
 
 def safe_path(base, filename):
@@ -561,6 +677,10 @@ def api_speak():
     d = request.get_json(force=True, silent=True) or {}
     text   = (d.get("text") or "").strip()
     engine = "f5" if d.get("engine") == "f5" else "kokoro"
+    # The chat panel sends the reply verbatim and asks for the markdown to be taken out here,
+    # so there's one implementation of that rather than one per caller.
+    if d.get("strip"):
+        text = speech_text(text)
     if not text:
         return jsonify(error="no text to speak"), 400
     try:
@@ -761,8 +881,16 @@ def api_chat():
     if not text:
         return jsonify(error="type something first"), 400
     model = (d.get("model") or chat.get("model") or DEFAULT_CHAT_MODEL).strip()
+    # Passing a voice turns on sentence-by-sentence speech: the first sentence is spoken while
+    # the model is still writing the rest.
+    voice = d.get("voice") if d.get("voice") in kokoro_voices() else None
+    try:
+        speed = min(2.0, max(0.5, float(d.get("speed") or 1.0)))
+    except (TypeError, ValueError):
+        speed = 1.0
     jid = new_job("chat")
-    threading.Thread(target=chat_worker, args=(jid, chat["id"], text, model), daemon=True).start()
+    threading.Thread(target=chat_worker, args=(jid, chat["id"], text, model, voice, speed),
+                     daemon=True).start()
     return jsonify(job_id=jid)
 
 @app.get("/api/status/<job_id>")
