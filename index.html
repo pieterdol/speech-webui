@@ -114,6 +114,9 @@
   .out audio { width:100%; margin-top:2px; }
   .dim { color:var(--muted); font-size:13.5px; }
   .warn { color:#ffd479; font-size:12.5px; margin-top:8px; }
+  /* a select with a play-the-sample button beside it */
+  .pickrow { display:flex; gap:8px; align-items:center; }
+  .pickrow select { flex:1; min-width:0; }
   /* ---- chat ---- */
   .chatbar { display:flex; gap:8px; align-items:center; }
   .chatbar select { flex:1; min-width:0; }
@@ -205,7 +208,10 @@
 
     <div id="kokoroFields">
       <label for="voice">Voice</label>
-      <select id="voice"></select>
+      <div class="pickrow">
+        <select id="voice"></select>
+        <button id="voicePlay" class="iconbtn" title="Hear this voice" aria-label="Hear this voice">▶</button>
+      </div>
     </div>
 
     <div id="f5Fields" style="display:none">
@@ -266,7 +272,10 @@
       </div>
       <div>
         <label for="chatVoice">Voice</label>
-        <select id="chatVoice"></select>
+        <div class="pickrow">
+          <select id="chatVoice"></select>
+          <button id="chatVoicePlay" class="iconbtn" title="Hear this voice" aria-label="Hear this voice">▶</button>
+        </div>
       </div>
     </div>
     <label for="chatSystem">System prompt</label>
@@ -1069,6 +1078,26 @@ async function speakReply(text, btn, bubble){
   if(btn){ btn.disabled = false; btn.innerHTML = label; }
 }
 
+// ---- voice previews ----
+// Set src and play inside the click: awaiting anything first would cost the user gesture and
+// iOS would refuse. The server renders on first request and caches, so it's ~1 s once a voice.
+let sampleAudio = null;
+function previewVoice(sel, btn){
+  const voice = sel.value;
+  if(!voice) return;
+  if(!sampleAudio) sampleAudio = new Audio();
+  sampleAudio.src = "/api/sample/" + encodeURIComponent(voice);
+  const label = btn.textContent;
+  btn.textContent = "…";
+  const done = ()=>{ btn.textContent = label; };
+  sampleAudio.onended = done;
+  sampleAudio.onerror = ()=>{ done(); setStatus("Couldn't play a sample for " + voice, true); };
+  sampleAudio.onplaying = ()=>{ btn.textContent = "⏸"; };
+  sampleAudio.play().catch(()=>{ done(); setStatus("Tap again to hear the sample.", true); });
+}
+$("#voicePlay").addEventListener("click", e => previewVoice($("#voice"), e.currentTarget));
+$("#chatVoicePlay").addEventListener("click", e => previewVoice($("#chatVoice"), e.currentTarget));
+
 function waitForJob(job){
   return new Promise((resolve, reject)=>{
     const tick = ()=> fetch("/api/status/" + job).then(r => r.json().then(d => ({ok:r.ok, d})))
@@ -1122,9 +1151,10 @@ async function dictate(blob, name){
 
 // ---- boot ----
 function fillVoices(sel, voices, storeKey){
-  const GROUPS = [["American", ["af","am"]], ["British", ["bf","bm"]], ["Spanish", ["ef","em"]],
-    ["French", ["ff"]], ["Hindi", ["hf","hm"]], ["Italian", ["if","im"]],
-    ["Portuguese", ["pf","pm"]], ["Japanese", ["jf","jm"]], ["Mandarin", ["zf","zm"]]];
+  // English only. Kokoro ships Spanish, French, Hindi, Italian, Portuguese, Japanese and
+  // Mandarin voices too — /api/voices still returns them, they're just not worth scrolling
+  // past here. Add their prefixes back to this list to bring them into the pickers.
+  const GROUPS = [["American", ["af","am"]], ["British", ["bf","bm"]]];
   const NICE = {af_heart:"af_heart — warm (default)", am_michael:"am_michael — US male",
                 bf_emma:"bf_emma — British female", bm_george:"bm_george — British male"};
   GROUPS.forEach(([name, prefixes])=>{

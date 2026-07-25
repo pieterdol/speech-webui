@@ -22,6 +22,7 @@ HERE         = os.path.dirname(os.path.abspath(__file__))
 CLIPS_DIR    = os.path.join(HERE, "clips")
 OUT_DIR      = os.path.join(HERE, "outputs")
 PRESETS_DIR  = os.path.join(HERE, "presets")
+SAMPLES_DIR  = os.path.join(HERE, "samples")
 INDEX_FILE   = os.path.join(HERE, "clips.json")
 PRESETS_FILE = os.path.join(HERE, "presets.json")
 CHATS_FILE   = os.path.join(HERE, "chats.json")
@@ -38,6 +39,7 @@ OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 os.makedirs(CLIPS_DIR, exist_ok=True)
 os.makedirs(OUT_DIR, exist_ok=True)
 os.makedirs(PRESETS_DIR, exist_ok=True)
+os.makedirs(SAMPLES_DIR, exist_ok=True)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024   # 200 MB — long recordings are fine
@@ -77,6 +79,10 @@ DEFAULT_SYSTEM = ("You are a helpful assistant whose answers are read out loud b
 VOICE_LANG = {"af":"en-us", "am":"en-us", "bf":"en-gb", "bm":"en-gb", "jf":"ja", "jm":"ja",
               "zf":"cmn", "zm":"cmn", "ef":"es", "em":"es", "ff":"fr-fr",
               "hf":"hi", "hm":"hi", "if":"it", "im":"it", "pf":"pt-br", "pm":"pt-br"}
+
+# What the voice-preview button says. One English line for every voice — the non-English
+# voices will read it through their own phonemizer, which still shows you the timbre.
+SAMPLE_TEXT = "Hello! How can I assist you today?"
 
 # Neither engine has a pronunciation-override syntax, so hard words are respelled
 # phonetically on the way in.
@@ -903,6 +909,28 @@ def api_status(job_id):
 @app.get("/api/voices")
 def api_voices():
     return jsonify(voices=kokoro_voices(), lang_of=VOICE_LANG)
+
+@app.get("/api/sample/<voice>")
+def api_sample(voice):
+    """A short spoken sample of one voice, for the ▶ button beside the pickers. Rendered on
+    first request and then served from disk, so browsing voices costs ~1 s once each."""
+    if voice not in kokoro_voices():
+        return jsonify(error="unknown voice"), 404
+    name = voice + ".wav"
+    path = os.path.join(SAMPLES_DIR, name)
+    if not os.path.exists(path):
+        # Don't sit behind a two-minute F5 clone: fail with something the page can explain.
+        if not run_lock.acquire(timeout=30):
+            return jsonify(error="busy generating something else — try again in a moment"), 503
+        try:
+            kokoro_call({"op": "say", "text": SAMPLE_TEXT, "voice": voice, "speed": 1.0,
+                         "lang": VOICE_LANG.get(voice[:2], "en-us"), "out": path})
+        except Exception as e:
+            if os.path.exists(path): os.remove(path)     # don't cache a half-written file
+            return jsonify(error=str(e)[:200]), 500
+        finally:
+            run_lock.release()
+    return send_from_directory(SAMPLES_DIR, name)
 
 @app.post("/api/out/delete")
 def api_out_delete():

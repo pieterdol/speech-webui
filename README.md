@@ -45,9 +45,15 @@ the text fields in panel 3. Transcripts are cached per clip in `clips.json`.
 
 **3 · Text → speech.**
 
-- *Kokoro* — 54 built-in voices, a second or two per sentence. The language code is derived from
-  the voice prefix (`bm_george` → `en-gb`), otherwise British and non-English voices get
-  phonemized with US rules and sound wrong.
+- *Kokoro* — a second or two per sentence. The **▶** beside the picker plays a sample of the
+  selected voice ("Hello! How can I assist you today?"), rendered on first press and cached in
+  `samples/` after that. The language code is derived from the voice prefix (`bm_george` →
+  `en-gb`), otherwise British voices get phonemized with US rules and sound wrong.
+
+  The pickers list the **American and British voices only**. Kokoro ships 54, including
+  Spanish, French, Hindi, Italian, Portuguese, Japanese and Mandarin; `/api/voices` still
+  returns all of them, they're just filtered out of the dropdowns. Add their prefixes back to
+  `GROUPS` in `fillVoices()` to bring them in.
 - *F5-TTS* — clones a voice. Needs the exact transcript of the reference clip, which is
   auto-filled from Whisper when that clip has already been transcribed. Only clone your own
   voice, or one you have permission to use.
@@ -83,7 +89,8 @@ keeps working without it.
 - **Model** — every model installed in Ollama, Qwen first (`qwen3:8b` is the default). Sizes are
   shown because they have to fit in the 16 GB alongside anything ComfyUI has loaded: `qwen3:8b`
   is ~5.2 GB, `qwen3:14b` ~9.3 GB.
-- **Voice** — the same 54 Kokoro voices as panel 3, remembered separately from the panel-3 pick.
+- **Voice** — the same picker as panel 3, ▶ preview included, remembered separately from the
+  panel-3 choice.
 - **🔊 Speak replies out loud** — off by default. On, the reply is spoken **sentence by
   sentence as it is written**, not rendered in one go at the end: the server cuts the token
   stream at sentence boundaries, hands each piece to Kokoro, and the page plays them back to
@@ -175,6 +182,7 @@ kokoro_worker.py  resident Kokoro process, run with Kokoro's venv interpreter
 index.html    the whole UI — one file, no build step
 clips/        normalized input clips (gitignored)
 presets/      saved voices — own copy of the reference audio (gitignored)
+samples/      cached one-line voice previews, one wav per voice (gitignored)
 outputs/      generated audio (gitignored)
 clips.json    clip index + cached transcripts (gitignored)
 presets.json  saved voices: name, reference transcript, source clip (gitignored)
