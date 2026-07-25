@@ -196,6 +196,16 @@ nothing is narrated until you ask for it — a full book is hours of work.
 - **Playing** — parts are ordinary opus files played by an `<audio>` element, chaining into
   the next part and then the next chapter. Position is saved server-side every 5 seconds, so
   the phone resumes where the PC left off. Speed is adjustable 0.75–2×.
+- **Chapters announce themselves.** Before the prose you hear the part's name, then the
+  chapter number: *"The Night Knocker" … "one" …* and only then the text. The part is spoken
+  only where a part actually begins; later chapters in it just get their number. The pauses
+  are real silence (1.2 s and 0.9 s) added with ffmpeg's `apad` on the announcement clip
+  itself — a full stop buys about a third of a second, which doesn't read as a new chapter,
+  and a separately generated silence file would risk disagreeing with the engine's sample
+  rate (Kokoro 24 kHz, Piper 22.05) and breaking the concatenation. Numbers are spoken as
+  words so "21" can't come out as a year. Off via ⚙, which re-renders the book.
+- **Clear narration** in ⚙ throws away the audio and keeps the book, its text and its cover —
+  useful after changing something that should be re-spoken.
 - **Covers** come from the EPUB, in the library grid, beside the title, and on the phone's
   lock screen while it plays. Three sizes are derived once with ffmpeg — 200 px for the grid,
   600 px for the reader, and **512×512 padded** for the lock screen, because iOS crops a tall

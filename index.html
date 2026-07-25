@@ -360,7 +360,9 @@
         <select id="bookVoice"></select>
         <button id="bookVoicePlay" class="iconbtn" title="Hear this voice" aria-label="Hear this voice">▶</button>
       </div>
-      <label class="check"><input type="checkbox" id="bookHeadings"> Read chapter headings aloud</label>
+      <label class="check"><input type="checkbox" id="bookHeadings">
+        Announce the part and chapter number</label>
+      <div class="hint">“The Night Knocker” … “one” … then the text, with a pause after each.</div>
       <label for="bookCoverFile">Replace the cover</label>
       <input type="file" id="bookCoverFile" accept="image/*">
       <div class="hint">Taken from the EPUB when it declares one. Shows in the list and on
@@ -368,6 +370,7 @@
       <div class="hint" id="bookSkipped"></div>
       <div class="acts" style="margin-top:14px">
         <button id="bookRescan" class="btn">🔄 Re-read the EPUB</button>
+        <button id="bookClear" class="btn del">🧹 Clear narration</button>
         <button id="bookDel" class="btn del">🗑 Delete book</button>
       </div>
       <div class="hint">Re-reading picks up improvements to chapter extraction. Narrated audio
@@ -1355,7 +1358,7 @@ async function openBook(id){
   cov.onerror = ()=> { cov.hidden = true; };
   cov.src = `/cover/${BOOK.id}/full.jpg?v=${BOOK.updated || 0}`;
   pickOption($("#bookVoice"), BOOK.voice);
-  $("#bookHeadings").checked = !!BOOK.read_headings;
+  $("#bookHeadings").checked = BOOK.announce !== false;
   $("#bookSkipped").textContent = (BOOK.skipped || []).length
     ? `Left out ${BOOK.skipped.length} sections that look like front or back matter.` : "";
   renderChapterList();
@@ -1604,7 +1607,7 @@ $("#bookSpeed").addEventListener("input", ()=>{
 });
 
 $("#bookVoice").addEventListener("change", ()=> changeBook({voice: $("#bookVoice").value}));
-$("#bookHeadings").addEventListener("change", ()=> changeBook({read_headings: $("#bookHeadings").checked}));
+$("#bookHeadings").addEventListener("change", ()=> changeBook({announce: $("#bookHeadings").checked}));
 // Changing narrator or heading handling makes the existing audio wrong, so the server asks
 // before throwing it away.
 async function changeBook(patch){
@@ -1615,7 +1618,7 @@ async function changeBook(patch){
   if(d.needs_confirm){
     if(!confirm(`${d.msg}. Go ahead?`)){
       pickOption($("#bookVoice"), BOOK.voice);
-      $("#bookHeadings").checked = !!BOOK.read_headings;
+      $("#bookHeadings").checked = BOOK.announce !== false;
       return;
     }
     r = await fetch("/api/books/update", {method:"POST", headers:{"Content-Type":"application/json"},
@@ -1668,6 +1671,19 @@ $("#bookRescan").addEventListener("click", async ()=>{
   renderChapterList();
   setStatus(d.kept_audio ? "✅ Re-read, and the narration was kept."
                          : "✅ Re-read. The chapters changed, so the audio was cleared.");
+});
+$("#bookClear").addEventListener("click", async ()=>{
+  if(!BOOK) return;
+  const n = (BOOK.chapters || []).filter(c => c.state === "ready").length;
+  if(!confirm(`Delete the narration for “${BOOK.title}”? ${n} chapter(s) would have to be`
+              + ` narrated again. The book, its text and its cover stay.`)) return;
+  const d = await (await fetch("/api/books/clear", {method:"POST",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify({id: BOOK.id})})).json();
+  if(!d.ok){ setStatus("❌ " + (d.msg || "couldn't clear it"), true); return; }
+  BOOK = d.book;
+  $("#nowPlaying").style.display = "none";
+  renderChapterList();
+  setStatus("Narration cleared.");
 });
 $("#bookDel").addEventListener("click", async ()=>{
   if(!BOOK || !confirm(`Delete “${BOOK.title}” and everything narrated from it?`)) return;

@@ -585,8 +585,10 @@ def render_chapter(book_id, index):
             update_book(book_id, lambda b: b["chapters"][index].update(
                 state="error", error=f"missing text: {e}"[:200]))
             return
-        if not book.get("read_headings", False):
-            text = epub.strip_heading(text, chapter.get("name") or "")
+        # The chapter's own heading line is a bare number ("9") or the title, which the spoken
+        # lead-in says better, so it always comes out of the text.
+        text = epub.strip_heading(text, chapter.get("name") or "")
+        intro = chapter_intro(book, index)
 
         update_book(book_id, lambda b: b["chapters"][index].update(
             state="rendering", error=None, done=0, segments=[]))
@@ -599,7 +601,7 @@ def render_chapter(book_id, index):
                 name = f"ch{index:03d}-s{si:02d}.opus"
                 out  = os.path.join(audio_dir, name)
                 if not os.path.exists(out):
-                    _render_segment(seg_text, voice, out)
+                    _render_segment(seg_text, voice, out, intro=intro if si == 0 else None)
                 made.append({"file": name, "seconds": audio_seconds(out)})
                 # publish each finished segment: you can start listening to segment 1 while
                 # segment 2 is still being made
@@ -622,6 +624,49 @@ def render_chapter(book_id, index):
                 state="error", error=str(e)[:200]))
 
 PART_SEP = " · "     # how epub.py joins a part name to its chapter label
+
+# Spoken lead-in before a chapter's text: "The Night Knocker" … "one" … the prose. The pause
+# after each is real silence, not punctuation — a full stop buys about a third of a second,
+# which isn't enough to read as "a new chapter is starting".
+PART_PAUSE    = 1.2
+CHAPTER_PAUSE = 0.9
+
+_ONES = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+         "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+         "eighteen", "nineteen"]
+_TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
+
+def number_word(n):
+    """Chapter numbers as words. Kokoro reads a bare "21" acceptably, but "twenty-one" is
+    unambiguous and doesn't risk being read as a year or a list item."""
+    if n < 0 or n > 999:
+        return str(n)
+    if n < 20:
+        return _ONES[n] or "zero"
+    if n < 100:
+        return _TENS[n // 10] + (f"-{_ONES[n % 10]}" if n % 10 else "")
+    rest = n % 100
+    return _ONES[n // 100] + " hundred" + (f" {number_word(rest)}" if rest else "")
+
+def chapter_intro(book, index):
+    """[(phrase, pause_after)] to speak before the chapter — the part's name when this chapter
+    opens a new part, then the chapter number. Empty when announcements are off, and for a
+    section that is neither numbered nor inside a part (an epigraph, say)."""
+    if not book.get("announce", True):
+        return []
+    chapters = book.get("chapters") or []
+    if not (0 <= index < len(chapters)):
+        return []
+    name  = chapters[index].get("name") or ""
+    part  = part_of(name)
+    label = name.split(PART_SEP, 1)[1] if PART_SEP in name else name
+    pieces = []
+    if part and not any(part_of(c.get("name")) == part for c in chapters[:index]):
+        pieces.append((part, PART_PAUSE))          # only when the part actually starts
+    m = re.search(r"\d+", label)
+    if m:
+        pieces.append((number_word(int(m.group(0))), CHAPTER_PAUSE))
+    return pieces
 
 def part_of(name):
     return (name or "").split(PART_SEP)[0] if PART_SEP in (name or "") else ""
@@ -751,12 +796,26 @@ def export_worker(jid, book_id, part=None):
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-def _render_segment(text, voice, out_path):
+def _render_segment(text, voice, out_path, intro=None):
     """One segment = many TTS calls concatenated. run_lock is taken per chunk, not for the
-    whole segment, so hours of narration don't starve everything else."""
+    whole segment, so hours of narration don't starve everything else.
+
+    `intro` is [(phrase, pause_after)] spoken first — the part name and chapter number."""
     tmpdir = tempfile.mkdtemp(prefix="book-")
     parts = []
     try:
+        for ii, (phrase, pause) in enumerate(intro or []):
+            raw = os.path.join(tmpdir, f"intro-{ii}.wav")
+            with run_lock:
+                tts_say(voice, respell(phrase), 1.0, raw)
+            # apad rather than a separately generated silence file: it re-encodes this wav in
+            # place, so the padding can't disagree with the engine's sample rate and break
+            # the concat (Kokoro is 24 kHz, Piper voices are 22.05).
+            padded = os.path.join(tmpdir, f"intro-{ii}-pad.wav")
+            r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-i", raw,
+                                "-af", f"apad=pad_dur={pause}", padded],
+                               capture_output=True, text=True, timeout=120)
+            parts.append(padded if r.returncode == 0 and os.path.exists(padded) else raw)
         for ci, chunk in enumerate(split_chunks(text)):
             wav = os.path.join(tmpdir, f"{ci:04d}.wav")
             with run_lock:
@@ -1286,7 +1345,7 @@ def api_book_add():
     voice = (piper_voice_ids()[0] if dutch and piper_voice_ids() else "af_heart")
     entry = {"id": bid, "cover": has_cover,
              "title": meta["title"], "author": meta["author"],
-             "language": meta["language"], "voice": voice, "read_headings": False,
+             "language": meta["language"], "voice": voice, "announce": True,
              "added": int(time.time()), "updated": int(time.time()),
              "position": {"chapter": 0, "segment": 0, "offset": 0},
              "skipped": skipped[:40],
@@ -1321,8 +1380,8 @@ def api_book_update():
     # Only the chapter you're actually at is re-made now, though; the rest come back when you
     # reach them, so switching narrator costs one chapter's wait, not the whole book's.
     resets = ((d.get("voice") and d["voice"] != book.get("voice"))
-              or (d.get("read_headings") is not None
-                  and bool(d["read_headings"]) != bool(book.get("read_headings"))))
+              or (d.get("announce") is not None
+                  and bool(d["announce"]) != bool(book.get("announce", True))))
     chapters = book.get("chapters") or []
     # Nothing rendered yet means nothing to throw away: just change it.
     if resets and not any(c.get("state") == "ready" for c in chapters):
@@ -1344,7 +1403,7 @@ def api_book_update():
     def apply(b):
         if d.get("title"):  b["title"] = d["title"][:200]
         if d.get("voice") and tts_engine_of(d["voice"]): b["voice"] = d["voice"]
-        if d.get("read_headings") is not None: b["read_headings"] = bool(d["read_headings"])
+        if d.get("announce") is not None: b["announce"] = bool(d["announce"])
         if isinstance(d.get("position"), dict): b["position"] = d["position"]
         if resets:
             b["gen"] = b.get("gen", 0) + 1        # invalidates anything mid-render
@@ -1389,6 +1448,25 @@ def api_book_render():
             threading.Thread(target=render_chapter, args=(book["id"], i), daemon=True).start()
             started.append(i)
     return jsonify(ok=True, started=started)
+
+@app.post("/api/books/clear")
+def api_book_clear():
+    """Throw away the narration, keep the book. Until now the only ways to clear a book's
+    audio were changing the narrator or deleting the whole thing."""
+    d = request.get_json(force=True, silent=True) or {}
+    book = find_book(d.get("id") or "")
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    def apply(b):
+        b["gen"] = b.get("gen", 0) + 1          # stops anything mid-render being kept
+        b.setdefault("render_all", {})["running"] = False
+        for c in b.get("chapters") or []:
+            c.update(state="pending", segments=[], error=None, seconds=None)
+        b["position"] = {"chapter": 0, "segment": 0, "offset": 0}
+    update_book(book["id"], apply)
+    shutil.rmtree(book_dir(book["id"], "audio"), ignore_errors=True)
+    shutil.rmtree(book_dir(book["id"], "export"), ignore_errors=True)
+    return jsonify(ok=True, book=find_book(book["id"]))
 
 @app.post("/api/books/rescan")
 def api_book_rescan():
