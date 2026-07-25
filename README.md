@@ -2,8 +2,12 @@
 
 A phone-friendly web front-end for the local speech tools on this PC. Record (or upload) a
 clip, get the text out of it, and turn text back into speech — either with Kokoro's built-in
-voices or by cloning a reference clip with F5-TTS. Everything runs locally on CPU; nothing is
+voices or by cloning a reference clip with F5-TTS. There's also a **Chat** mode: talk to a
+local Qwen model through Ollama and have its replies read back to you in a Kokoro voice.
+Everything runs locally — speech on the CPU, the language model on the Radeon; nothing is
 sent to a cloud service.
+
+The header has two modes: **Studio** (the three speech panels) and **Chat**.
 
 ## URLs
 
@@ -62,14 +66,63 @@ Note that a saved voice does **not** make generation faster. F5-TTS is a zero-sh
 re-derives the voice from the reference on every run, and the minutes go into generating the
 output waveform, not learning the voice. Presets save setup effort; the quality dial saves time.
 
+## 4 · Chat (Qwen via Ollama, spoken by Kokoro)
+
+**Ollama must be running** — the app talks to `http://127.0.0.1:11434` and does not start it:
+
+```bash
+HIP_VISIBLE_DEVICES=-1 ROCR_VISIBLE_DEVICES=-1 ollama serve   # or OLLAMA_URL if it's elsewhere
+```
+
+**Those two variables are not optional on this PC** — see *Ollama picks the wrong GPU backend*
+below. `ollama.service` in this repo is a systemd user unit that sets them for you.
+
+If it isn't up, the chat panel says so instead of failing silently. Everything else in the app
+keeps working without it.
+
+- **Model** — every model installed in Ollama, Qwen first (`qwen3:8b` is the default). Sizes are
+  shown because they have to fit in the 16 GB alongside anything ComfyUI has loaded: `qwen3:8b`
+  is ~5.2 GB, `qwen3:14b` ~9.3 GB.
+- **Voice** — the same 54 Kokoro voices as panel 3, remembered separately from the panel-3 pick.
+- **🔊 Speak replies out loud** — off by default. On, each finished reply is sent to Kokoro and
+  played; there's also a 🔊 button on every reply. A player is left on the message either way,
+  because a browser can still refuse to autoplay.
+- **🎤** — tap to talk, tap ⏹ to stop. Goes through the same Whisper path as panel 2 (using the
+  model and language chosen there) and lands in the composer. With *Send as soon as I stop
+  talking* on, it sends itself, so voice in → voice out needs two taps. A spoken turn is
+  dictation, not a clip: it posts to `/api/dictate`, which transcribes and then deletes the
+  audio, so nothing accumulates in `clips/` or the Studio list.
+- **System prompt** — per chat. The default asks for short, plain-prose answers, because markdown
+  bullets and code fences read terribly out loud.
+
+Chats live in `chats.json` on the server rather than in the browser, so a conversation started
+on the PC continues on the phone. The first thing you say names the chat.
+
+**Thinking is disabled.** `qwen3` is a hybrid reasoning model; left alone it emits a `<think>`
+block that Kokoro would happily read aloud. The app sends `think: false` — but only to models
+whose Ollama capabilities include `thinking`, because `qwen2.5-coder` rejects the flag. Any
+`<think>` block that slips through is stripped before the reply is stored.
+
+**Cold loads.** On the Vulkan backend loading `qwen3:8b` takes about 4 seconds; after that it
+stays resident for `keep_alive` (5 min) and follow-ups start instantly. The status line says
+which of the two is happening. Note that the per-request `keep_alive` in `speech.py` overrides
+the server's `OLLAMA_KEEP_ALIVE` — change it there, not in the unit file, to affect this app.
+It's kept short on purpose: a resident 8B model holds ~5.2 GB of the card's 16 GB.
+
 ## How it fits together
 
 ```
 phone ──https──> tailscale serve :8443 ──> 127.0.0.1:8600  speech.py (Flask)
                                               ├── faster-whisper  (in-process, model resident)
                                               ├── kokoro-tts CLI  (~/.local/bin/kokoro-tts)
-                                              └── f5-tts CLI      (~/.local/bin/f5-tts)
+                                              ├── f5-tts CLI      (~/.local/bin/f5-tts)
+                                              └── ollama HTTP     (127.0.0.1:11434 → Radeon)
 ```
+
+Two locks, not one. `run_lock` serializes the CPU model work (Whisper, Kokoro, F5-TTS) because
+F5-TTS saturates all 12 cores. Chat gets its own `chat_lock`: Ollama offloads the whole model to
+the GPU, so a reply and a Kokoro render use different hardware and are free to overlap — putting
+chat behind `run_lock` would make it wait out a two-minute clone for no reason.
 
 Both TTS engines have their own venvs (`~/.local/share/kokoro-tts`, `~/.local/share/f5-tts`), so
 the app shells out to their CLIs rather than duplicating ~2 GB of dependencies. Whisper is the
@@ -91,6 +144,7 @@ presets/      saved voices — own copy of the reference audio (gitignored)
 outputs/      generated audio (gitignored)
 clips.json    clip index + cached transcripts (gitignored)
 presets.json  saved voices: name, reference transcript, source clip (gitignored)
+chats.json    chat transcripts, per-chat model and system prompt (gitignored)
 ```
 
 ## Gotchas
@@ -101,4 +155,31 @@ presets.json  saved voices: name, reference transcript, source clip (gitignored)
 - **F5-TTS needs the reference transcript.** If it's blank the CLI would download and run its
   own Whisper, so the app rejects the request instead.
 - **Restarting drops running jobs** — the `jobs` dict is in memory. The page says so if you poll
-  a job the server no longer knows.
+  a job the server no longer knows. Chat *messages* survive (they're in `chats.json`); only a
+  reply still being written is lost.
+- **Ollama picks the wrong GPU backend.** Ollama 0.32.0 (installed 2026-07-14) ships only a
+  ROCm 7.2 runtime, and ROCm 7 dropped consumer RDNA2 — which is what the RX 6900 XT (gfx1030)
+  is. Left alone Ollama chooses ROCm and the upload to VRAM crawls: measured here, a 732 MiB
+  model didn't load in three minutes, and `qwen3:8b` hit Ollama's five-minute load timeout every
+  time, on a cold GPU with 15 GB free. Those aborted loads also left VRAM allocated (1.6 GB →
+  16 GB over three attempts), which made each retry worse until a reboot cleared it.
+
+  Hiding the GPU from ROCm makes Ollama fall back to the Vulkan backend it already ships, and
+  the same `qwen3:8b` loads in **~3 s and runs at 48-81 tok/s**:
+
+  ```bash
+  HIP_VISIBLE_DEVICES=-1 ROCR_VISIBLE_DEVICES=-1 ollama serve
+  ```
+
+  This affects everything on this box that uses Ollama, `~/Code/comfy-agent` included — it
+  worked before the update because the older build carried a ROCm 6 runtime.
+
+  On Vulkan, VRAM behaves: an idle `ollama serve` holds none, a resident `qwen3:8b` holds
+  ~6.3 GB, and when `keep_alive` expires the card goes back to its ~1.2 GB desktop baseline.
+  (Killing Ollama mid-session instead of letting the model expire leaves the buffers allocated
+  for a while — that's the driver reclaiming lazily, not a leak.)
+- **Ollama isn't a service.** Started by hand, so after a reboot Chat is down until it runs
+  again, while the rest of the app is fine. `ollama.service` in this repo fixes that *and* sets
+  the two variables above; install it with the three commands in its header comment.
+- **Ollama's context is 8192 tokens** here (`num_ctx`). A very long conversation silently loses
+  its oldest turns — start a new chat rather than growing one forever.

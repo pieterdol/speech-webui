@@ -12,8 +12,12 @@
 <title>Local Speech Studio</title>
 <style>
   :root { --bg:#15131f; --card:#1e1b2e; --line:#332e4a; --accent:#8a6cff; --text:#e9e6f5; --muted:#a49fc0;
-          --rec:#ff5d7a; --ok:#7ee6a0; }
+          --rec:#ff5d7a; --ok:#7ee6a0;
+          --hh:122px; }   /* header height incl. the mode row — the desktop sticky offset */
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  /* Must out-rank the author display rules below (#studioView goes display:flex on desktop),
+     or the mode switch can't hide a view and both end up stacked on screen. */
+  [hidden] { display:none !important; }
   body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); }
   /* env(safe-area-inset-*) keeps the header clear of the iOS status bar / notch when the
      app runs from the home screen (black-translucent puts us under it). 0 in a browser tab. */
@@ -21,19 +25,27 @@
            padding:16px calc(16px + env(safe-area-inset-right,0px))
                    16px calc(16px + env(safe-area-inset-left,0px));
            padding-top:calc(16px + env(safe-area-inset-top,0px));
-           position:sticky; top:0; background:var(--bg); z-index:5; display:flex; align-items:center; gap:10px; }
+           position:sticky; top:0; background:var(--bg); z-index:5; }
+  header .hrow { display:flex; align-items:center; gap:10px; }
   header .htext { flex:1; }
   header small { color:var(--muted); font-weight:400; font-size:12px; display:block; margin-top:2px; }
   #reload { flex:none; width:44px; height:44px; font-size:22px; line-height:1; border-radius:11px;
             background:var(--card); color:var(--accent); border:1px solid var(--line); }
+  /* Studio / Chat switch. Two modes rather than a fifth panel — the page is already tall
+     on a phone, and chatting is a different sitting than producing audio. */
+  .modes { display:flex; gap:6px; margin-top:10px; }
+  .modes button { flex:1; padding:9px; font-size:14px; font-weight:600; border-radius:10px;
+                  border:1px solid var(--line); background:var(--card); color:var(--muted); }
+  .modes button.on { background:var(--accent); color:#fff; border-color:transparent; }
   main { max-width:760px; margin:0 auto;
          padding:14px calc(14px + env(safe-area-inset-right,0px))
                  calc(28px + env(safe-area-inset-bottom,0px)) calc(14px + env(safe-area-inset-left,0px)); }
-  /* Desktop: capture + controls on the left, results on the right. Mobile keeps one column. */
+  /* Desktop: capture + controls on the left, results on the right. Mobile keeps one column.
+     Studio only — the chat view stays a single centred column at every width. */
   @media (min-width:900px){
-    main { max-width:none; display:flex; align-items:flex-start; gap:28px; }
-    .form-col { flex:0 0 480px; position:sticky; top:78px;
-                max-height:calc(100vh - 94px); overflow-y:auto; padding-right:4px; }
+    #studioView { max-width:none; display:flex; align-items:flex-start; gap:28px; }
+    .form-col { flex:0 0 480px; position:sticky; top:calc(var(--hh) + 4px);
+                max-height:calc(100vh - var(--hh) - 20px); overflow-y:auto; padding-right:4px; }
     .results-col { flex:1; min-width:0; }
     .results-col #status { margin-top:0; }
   }
@@ -79,9 +91,10 @@
   .clipacts .del { color:#ff9db0; border-color:#7a2f42; background:#2e2030; flex:0 0 44px; }
   .tr { font-size:12.5px; color:var(--muted); margin-top:7px; overflow:hidden;
         text-overflow:ellipsis; white-space:nowrap; }
-  #status { margin-top:16px; padding:12px 14px; border-radius:10px; background:var(--card);
+  #status, #chatStatus { margin-top:16px; padding:12px 14px; border-radius:10px; background:var(--card);
             border:1px solid var(--line); font-size:15px; display:none; }
-  #status.err { border-color:#b3455e; color:#ff9db0; }
+  #status.err, #chatStatus.err { border-color:#b3455e; color:#ff9db0; }
+  #chatStatus { margin-top:10px; padding:10px 12px; font-size:14px; }
   .out { background:var(--card); border:1px solid var(--line); border-radius:12px;
          padding:12px; margin-top:14px; }
   .outhead { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;
@@ -101,6 +114,33 @@
   .out audio { width:100%; margin-top:2px; }
   .dim { color:var(--muted); font-size:13.5px; }
   .warn { color:#ffd479; font-size:12.5px; margin-top:8px; }
+  /* ---- chat ---- */
+  .chatbar { display:flex; gap:8px; align-items:center; }
+  .chatbar select { flex:1; min-width:0; }
+  .iconbtn { flex:none; width:46px; height:46px; font-size:19px; line-height:1; border-radius:11px;
+             border:1px solid var(--line); background:#2a2640; color:var(--text); }
+  .iconbtn.on { background:#3a1f2c; border-color:#7a2f42; color:#ffd0da; }
+  .chatlog { margin-top:14px; display:flex; flex-direction:column; gap:12px; }
+  .msg { max-width:88%; padding:10px 13px; border-radius:15px; font-size:15px; line-height:1.5;
+         white-space:pre-wrap; word-break:break-word; -webkit-user-select:text; user-select:text; }
+  .msg.you { align-self:flex-end; background:#2f2a49; border:1px solid var(--line);
+             border-bottom-right-radius:5px; }
+  .msg.bot { align-self:flex-start; background:var(--card); border:1px solid var(--line);
+             border-bottom-left-radius:5px; }
+  .msg .who { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted);
+              margin-bottom:5px; }
+  .msg .body:empty::after { content:"…"; color:var(--muted); }
+  .msgacts { display:flex; gap:6px; margin-top:9px; }
+  .msgacts button { padding:7px 11px; font-size:13px; border-radius:8px; border:1px solid var(--line);
+                    background:#2a2640; color:var(--text); }
+  .msgacts button.done { color:var(--ok); border-color:#2f6b45; }
+  .msg audio { width:100%; margin-top:9px; height:34px; }
+  /* The composer sticks to the bottom of the viewport so the keyboard doesn't bury it. */
+  .composer { display:flex; gap:8px; align-items:flex-end; margin-top:16px; position:sticky;
+              bottom:calc(6px + env(safe-area-inset-bottom,0px)); background:var(--bg);
+              padding:8px 0 4px; }
+  .composer textarea { flex:1; min-height:48px; max-height:35vh; resize:none; }
+  .composer .btn.primary { flex:none; padding:14px 16px; }
   .spin { display:inline-block; width:15px; height:15px; border:2px solid var(--muted);
     border-top-color:var(--accent); border-radius:50%; animation:s .8s linear infinite; vertical-align:-2px; margin-right:7px; }
   @keyframes s { to { transform:rotate(360deg); } }
@@ -108,10 +148,16 @@
 </head>
 <body>
 <header>
-  <div class="htext">🎙️ Local Speech Studio <small>Whisper · Kokoro · F5-TTS — all on your PC</small></div>
-  <button id="reload" title="Reload app" aria-label="Reload">↻</button>
+  <div class="hrow">
+    <div class="htext">🎙️ Local Speech Studio <small>Whisper · Kokoro · F5-TTS · Qwen — all on your PC</small></div>
+    <button id="reload" title="Reload app" aria-label="Reload">↻</button>
+  </div>
+  <nav class="modes">
+    <button class="mode on" data-mode="studio">Studio</button>
+    <button class="mode" data-mode="chat">Chat</button>
+  </nav>
 </header>
-<main>
+<main id="studioView">
  <div class="form-col">
 
   <h2>1 · Record or add a clip</h2>
@@ -204,16 +250,62 @@
    <div id="results"></div>
  </div>
 </main>
+
+<main id="chatView" hidden>
+  <div class="chatbar">
+    <select id="chatPick"></select>
+    <button id="chatNew" class="iconbtn" title="New chat" aria-label="New chat">＋</button>
+    <button id="chatCog" class="iconbtn" title="Chat settings" aria-label="Chat settings">⚙</button>
+  </div>
+
+  <div id="chatSettings" class="card" style="display:none;margin-top:10px">
+    <div class="row">
+      <div>
+        <label for="chatModel">Model</label>
+        <select id="chatModel"></select>
+      </div>
+      <div>
+        <label for="chatVoice">Voice</label>
+        <select id="chatVoice"></select>
+      </div>
+    </div>
+    <label for="chatSystem">System prompt</label>
+    <textarea id="chatSystem" placeholder="How should it behave?"></textarea>
+    <div class="hint">Saved with this chat. The default asks for short, plain-prose answers,
+      because they get read out loud.</div>
+    <label class="check"><input type="checkbox" id="chatAutoSend" checked> Send as soon as I stop talking</label>
+    <div class="acts" style="margin-top:14px">
+      <button id="chatRename" class="btn">✏️ Rename</button>
+      <button id="chatClear" class="btn">🧹 Clear messages</button>
+      <button id="chatDel" class="btn del">🗑 Delete chat</button>
+    </div>
+    <div class="warn" id="ollamaHint" style="display:none"></div>
+  </div>
+
+  <div id="chatLog" class="chatlog"></div>
+  <div id="chatStatus"></div>
+
+  <div class="composer">
+    <textarea id="chatText" rows="1" placeholder="Ask something…"></textarea>
+    <button id="chatMic" class="iconbtn" title="Talk instead of typing" aria-label="Talk">🎤</button>
+    <button id="chatSend" class="btn primary">Send</button>
+  </div>
+  <label class="check"><input type="checkbox" id="autoSpeak"> 🔊 Speak replies out loud</label>
+</main>
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => (s||"").replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const statusEl = $("#status"), results = $("#results");
+const results = $("#results");
 const secure = window.isSecureContext;
 
+// One status line per mode. Only one view is on screen at a time, so route messages to
+// whichever one the user is actually looking at — including shared code like upload().
+let MODE = "studio";
 function setStatus(html, err=false){
-  statusEl.style.display = "block";
-  statusEl.className = err ? "err" : "";
-  statusEl.innerHTML = html;
+  const el = MODE === "chat" ? $("#chatStatus") : $("#status");
+  el.style.display = "block";
+  el.className = err ? "err" : "";
+  el.innerHTML = html;
 }
 const fmt = s => { s = Math.round(s||0); return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`; };
 
@@ -377,7 +469,9 @@ $("#clipFile").addEventListener("change", async e => {
 });
 
 // ---- recording ----
-let rec = null, chunks = [], timer = null, t0 = 0;
+// recFor decides where the finished clip goes: the studio's transcribe panel, or the chat
+// composer. The capture path itself is identical, so it stays shared.
+let rec = null, chunks = [], timer = null, t0 = 0, recFor = "studio";
 function pickMime(){
   // Chrome/Firefox do webm/opus; iOS Safari only does mp4/aac
   const want = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/aac"];
@@ -414,21 +508,35 @@ async function startRec(){
       return;
     }
     const ext  = type.includes("mp4") || type.includes("aac") ? "m4a" : "webm";
-    const clip = await upload(new Blob(chunks, {type}), "recording."+ext, "recorded");
+    const blob = new Blob(chunks, {type});
+    // A spoken chat turn is dictation, not a clip: transcribe it and throw the audio away,
+    // so it never shows up in the Studio clip list.
+    if(recFor === "chat"){ dictate(blob, "voice."+ext); return; }
+    const clip = await upload(blob, "recording."+ext, "recorded");
     if(clip && $("#autoTr").checked){ $("#trClip").value = clip.id; transcribe(); }
   };
   rec = mr;
   mr.start();
   t0 = Date.now();
-  $("#recBtn").classList.add("on");
-  timer = setInterval(()=>{ $("#recLabel").textContent = "Stop · " + fmt((Date.now()-t0)/1000); }, 250);
-  $("#recLabel").textContent = "Stop · 0:00";
-  setStatus("🎙️ Recording… speak, then tap Stop.");
+  if(recFor === "chat"){
+    const tick = ()=> setStatus("🎙️ Listening · " + fmt((Date.now()-t0)/1000) + " — tap ⏹ when you're done.");
+    $("#chatMic").classList.add("on");
+    $("#chatMic").textContent = "⏹";
+    timer = setInterval(tick, 250);
+    tick();
+  } else {
+    $("#recBtn").classList.add("on");
+    timer = setInterval(()=>{ $("#recLabel").textContent = "Stop · " + fmt((Date.now()-t0)/1000); }, 250);
+    $("#recLabel").textContent = "Stop · 0:00";
+    setStatus("🎙️ Recording… speak, then tap Stop.");
+  }
 }
 function stopRec(){
   clearInterval(timer);
   $("#recBtn").classList.remove("on");
   $("#recLabel").textContent = "Record";
+  $("#chatMic").classList.remove("on");
+  $("#chatMic").textContent = "🎤";
   const mr = rec;
   rec = null;                       // free the button before onstop's upload round-trip
   if(mr && mr.state !== "inactive"){
@@ -436,7 +544,10 @@ function stopRec(){
     mr.stop();                      // onstop uploads, then chains the transcription
   }
 }
-$("#recBtn").addEventListener("click", ()=> rec ? stopRec() : startRec());
+$("#recBtn").addEventListener("click", ()=>{
+  if(rec) return stopRec();
+  recFor = "studio"; startRec();
+});
 if(!secure) $("#micHint").textContent =
   "Recording needs https — over plain http only the file picker works.";
 
@@ -622,9 +733,332 @@ function showAudio(d, engine, text){
   results.prepend(card);
 }
 
+// ---- chat ----
+// Conversations live on the server (chats.json), so one started on the PC continues on the
+// phone. The reply streams in through the same job/poll plumbing as everything else.
+let CHATS = [], CHAT = null, chatToken = 0, chatBusy = false;
+
+function setMode(m){
+  MODE = m;
+  $("#studioView").hidden = m !== "studio";
+  $("#chatView").hidden   = m !== "chat";
+  document.querySelectorAll(".mode").forEach(b => b.classList.toggle("on", b.dataset.mode === m));
+  store.set("mode", m);
+  if(m === "chat" && !CHATS.length && !CHAT) loadChats();
+}
+document.querySelectorAll(".mode").forEach(b =>
+  b.addEventListener("click", ()=> setMode(b.dataset.mode)));
+
+// Repaint just the picker. Kept separate from loadChats() because reloading a chat re-renders
+// the whole log, which would yank the bubble a reply is still writing into.
+async function refreshChatList(){
+  const d = await (await fetch("/api/chats")).json();
+  CHATS = d.chats || [];
+  const sel = $("#chatPick"), keep = sel.value;
+  sel.innerHTML = "";
+  CHATS.forEach(c => {
+    const o = document.createElement("option");
+    o.value = c.id;
+    o.textContent = c.name + (c.count ? ` · ${c.count} msg` : "");
+    sel.appendChild(o);
+  });
+  if(CHATS.some(c => c.id === keep)) sel.value = keep;
+}
+
+async function loadChats(selectId){
+  await refreshChatList();
+  const sel = $("#chatPick");
+  const want = selectId || store.get("chat", "") || (CHATS[0] ? CHATS[0].id : "");
+  if(CHATS.some(c => c.id === want)){ sel.value = want; await openChat(want); }
+  else if(CHATS.length){ sel.value = CHATS[0].id; await openChat(CHATS[0].id); }
+  else await newChat();
+}
+$("#chatPick").addEventListener("change", ()=> openChat($("#chatPick").value));
+
+async function openChat(id){
+  const r = await fetch("/api/chats/" + id);
+  if(!r.ok){ CHAT = null; return loadChats(""); }
+  CHAT = (await r.json()).chat;
+  store.set("chat", CHAT.id);
+  chatToken++;                    // abandon any reply still polling for the chat we just left
+  chatDone();                     // …and don't leave Send disabled on its behalf
+  $("#chatSystem").value = CHAT.system || "";
+  if(CHAT.model) pickOption($("#chatModel"), CHAT.model);
+  renderLog();
+}
+
+async function newChat(){
+  const body = {model: $("#chatModel").value || undefined, system: $("#chatSystem").value || undefined};
+  const d = await (await fetch("/api/chats", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify(body)})).json();
+  await loadChats(d.chat.id);
+  $("#chatText").focus();
+}
+$("#chatNew").addEventListener("click", newChat);
+$("#chatCog").addEventListener("click", ()=>{
+  const box = $("#chatSettings");
+  box.style.display = box.style.display === "none" ? "block" : "none";
+});
+
+async function patchChat(patch){
+  if(!CHAT) return;
+  await fetch("/api/chats/update", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: CHAT.id, ...patch})});
+  Object.assign(CHAT, patch);
+}
+$("#chatModel").addEventListener("change", ()=>{
+  store.set("chatModel", $("#chatModel").value);
+  patchChat({model: $("#chatModel").value});
+});
+$("#chatVoice").addEventListener("change", ()=> store.set("chatVoice", $("#chatVoice").value));
+$("#chatSystem").addEventListener("change", ()=> patchChat({system: $("#chatSystem").value}));
+
+$("#chatRename").addEventListener("click", async ()=>{
+  if(!CHAT) return;
+  const name = prompt("Name this chat:", CHAT.name);
+  if(name === null) return;
+  await patchChat({name: name.trim() || CHAT.name});
+  await loadChats(CHAT.id);
+});
+$("#chatClear").addEventListener("click", async ()=>{
+  if(!CHAT || !confirm(`Clear all messages in “${CHAT.name}”?`)) return;
+  await fetch("/api/chats/clear", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: CHAT.id})});
+  await openChat(CHAT.id);
+  setStatus("Messages cleared.");
+});
+$("#chatDel").addEventListener("click", async ()=>{
+  if(!CHAT || !confirm(`Delete the chat “${CHAT.name}”? The messages go with it.`)) return;
+  await fetch("/api/chats/delete", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: CHAT.id})});
+  CHAT = null;
+  store.set("chat", "");
+  await loadChats("");
+});
+
+function pickOption(sel, value){
+  if([...sel.options].some(o => o.value === value)) sel.value = value;
+}
+function renderLog(){
+  const log = $("#chatLog");
+  log.innerHTML = "";
+  const msgs = (CHAT && CHAT.messages) || [];
+  if(!msgs.length){
+    log.innerHTML = '<p class="dim">Nothing said yet — type below, or tap 🎤 and talk.</p>';
+    return;
+  }
+  msgs.forEach(m => addBubble(m.role === "user" ? "you" : "bot", m.content));
+  scrollDown();
+}
+function scrollDown(){ window.scrollTo({top: document.body.scrollHeight, behavior:"smooth"}); }
+
+// Returns the bubble so a streaming reply can keep writing into it.
+function addBubble(who, text, pending=false){
+  const log = $("#chatLog");
+  if(log.querySelector("p.dim")) log.innerHTML = "";
+  const el = document.createElement("div");
+  el.className = "msg " + who;
+  const who_label = who === "you" ? "You" : ((CHAT && CHAT.model) || "Assistant");
+  el.innerHTML = `<div class="who">${esc(who_label)}</div><div class="body"></div>`;
+  el.querySelector(".body").textContent = text || "";
+  if(who === "bot" && !pending) addBotActions(el, text);
+  log.appendChild(el);
+  return el;
+}
+function addBotActions(el, text){
+  if(el.querySelector(".msgacts")) return;
+  const acts = document.createElement("div");
+  acts.className = "msgacts";
+  acts.innerHTML = `<button class="say">🔊 Speak</button><button class="copy">📋 Copy</button>`;
+  acts.querySelector(".say").addEventListener("click", e => speakReply(text, e.currentTarget, el));
+  acts.querySelector(".copy").addEventListener("click", e => copy(text, e.currentTarget));
+  el.appendChild(acts);
+}
+
+// ---- send ----
+const CHAT_LABELS = {queued:"Queued behind another reply…",
+  "loading model":"Waking the model up — a cold load can take a minute or two…",
+  writing:"💬 Writing…"};
+async function chatSend(){
+  const text = $("#chatText").value.trim();
+  if(!text){ setStatus("Type something first.", true); return; }
+  if(!CHAT){ setStatus("Starting a chat…"); await newChat(); if(!CHAT) return; }
+  if(chatBusy){ setStatus("Still writing the last reply — one at a time.", true); return; }
+  primeAudio();                       // must happen inside the tap, or iOS blocks autoplay later
+  chatBusy = true;
+  $("#chatSend").disabled = true;
+  addBubble("you", text);
+  $("#chatText").value = ""; growComposer();
+  const bubble = addBubble("bot", "", true);
+  const body   = bubble.querySelector(".body");
+  scrollDown();
+  const token = ++chatToken;
+  let job;
+  try{
+    const r = await fetch("/api/chat", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({chat_id: CHAT.id, text, model: $("#chatModel").value || undefined})});
+    const d = await r.json();
+    if(!r.ok){ throw new Error(d.error || r.status); }
+    job = d.job_id;
+  }catch(e){
+    setStatus("❌ " + e.message, true);
+    bubble.remove();
+    if(!$("#chatText").value.trim()){ $("#chatText").value = text; growComposer(); }  // let them retry
+    chatDone();
+    return;
+  }
+  chatPoll(job, token, {
+    onPartial: t => { body.textContent = t; scrollDown(); },
+    onDone: d => {
+      body.textContent = d.text || "";
+      addBotActions(bubble, d.text || "");
+      // keep the local copy in step with what the server just appended
+      if(CHAT) (CHAT.messages = CHAT.messages || []).push(
+        {role:"user", content:text}, {role:"assistant", content:d.text});
+      refreshChatList();     // the first turn renames the chat; don't re-render the log for it
+      setStatus("✅ Replied.");
+      chatDone();
+      if($("#autoSpeak").checked) speakReply(d.text || "", bubble.querySelector(".say"), bubble);
+    },
+    onError: msg => { body.textContent = ""; bubble.remove(); setStatus("❌ " + msg, true); chatDone(); },
+  });
+}
+function chatDone(){ chatBusy = false; $("#chatSend").disabled = false; }
+
+function chatPoll(job, token, opts){
+  const {onPartial, onDone, onError, labels = CHAT_LABELS} = opts;
+  if(token !== chatToken) return;
+  fetch("/api/status/" + job).then(r => r.json().then(d => ({ok:r.ok, d}))).then(({ok, d})=>{
+    if(token !== chatToken) return;
+    if(!ok || d.error === "unknown job") return onError("the server restarted — ask again");
+    if(d.status === "error") return onError(d.error || "failed");
+    if(d.text) onPartial(d.text);
+    if(d.status === "done") return onDone(d);
+    setStatus('<span class="spin"></span>' + (labels[d.status] || d.status));
+    // poll faster once tokens are actually flowing, so it reads like typing
+    setTimeout(()=>chatPoll(job, token, opts), d.status === "writing" ? 600 : 1500);
+  }).catch(()=>{ if(token === chatToken) setTimeout(()=>chatPoll(job, token, opts), 2000); });
+}
+
+$("#chatSend").addEventListener("click", chatSend);
+function growComposer(){
+  const t = $("#chatText");
+  t.style.height = "auto";
+  t.style.height = Math.min(t.scrollHeight, window.innerHeight * 0.35) + "px";
+}
+$("#chatText").addEventListener("input", growComposer);
+$("#chatText").addEventListener("keydown", e => {
+  // Enter sends on a real keyboard; Shift+Enter makes a new line. Phones get the Send button.
+  if(e.key === "Enter" && !e.shiftKey && !matchMedia("(pointer:coarse)").matches){
+    e.preventDefault(); chatSend();
+  }
+});
+
+// ---- speaking the reply ----
+// iOS only lets an <audio> element play programmatically if it was first started inside a
+// user gesture. Prime one silent element on the Send/🔊 tap and reuse it forever after.
+let chatAudio = null;
+const SILENCE = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
+function primeAudio(){
+  if(chatAudio) return;
+  chatAudio = new Audio(SILENCE);
+  chatAudio.play().catch(()=>{});
+}
+
+// Kokoro reads punctuation and markdown literally, so flatten the reply first.
+function forSpeech(t){
+  return (t || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^\s{0,3}#{1,6}\s*/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+[.)]\s+/gm, "")
+    .replace(/(\*\*|__|~~|\*|_)/g, "")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+}
+
+async function speakReply(text, btn, bubble){
+  const clean = forSpeech(text);
+  if(!clean){ setStatus("Nothing in that reply to read out loud.", true); return; }
+  primeAudio();
+  const label = btn ? btn.innerHTML : null;
+  if(btn){ btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Speaking…'; }
+  try{
+    const r = await fetch("/api/speak", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({engine:"kokoro", text: clean, voice: $("#chatVoice").value, speed: 1})});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error || r.status);
+    const done = await waitForJob(d.job_id);
+    if(bubble){                        // always leave a player behind — autoplay can still be blocked
+      bubble.querySelectorAll("audio").forEach(a => a.remove());
+      const au = document.createElement("audio");
+      au.controls = true; au.preload = "none"; au.src = done.url;
+      bubble.appendChild(au);
+    }
+    chatAudio.src = done.url;
+    chatAudio.play().catch(()=> setStatus("Generated — tap ▶ on the message to hear it.", true));
+    setStatus(`🔊 ${fmt(done.seconds)} of audio · ${$("#chatVoice").value}`);
+  }catch(e){
+    setStatus("❌ " + e.message, true);
+  }
+  if(btn){ btn.disabled = false; btn.innerHTML = label; }
+}
+
+function waitForJob(job){
+  return new Promise((resolve, reject)=>{
+    const tick = ()=> fetch("/api/status/" + job).then(r => r.json().then(d => ({ok:r.ok, d})))
+      .then(({ok, d})=>{
+        if(!ok || d.error) return reject(new Error(d.error || "the server restarted"));
+        if(d.status === "error") return reject(new Error(d.error || "failed"));
+        if(d.status === "done")  return resolve(d);
+        setStatus('<span class="spin"></span>' + (GEN_LABELS[d.status] || d.status));
+        setTimeout(tick, 1200);
+      }).catch(()=> setTimeout(tick, 2000));
+    tick();
+  });
+}
+
+// ---- talking instead of typing ----
+$("#chatMic").addEventListener("click", ()=>{
+  if(rec) return stopRec();
+  primeAudio();                       // the tap that starts a voice turn also unlocks playback
+  recFor = "chat"; startRec();
+});
+
+// Posts the recording to /api/dictate, which transcribes it and deletes the audio — nothing
+// lands in clips/ or the Studio list.
+async function dictate(blob, name){
+  const token = ++chatToken;
+  const fd = new FormData();
+  fd.append("file", blob, name);
+  fd.append("model", store.get("model", "small"));       // same Whisper settings as panel 2
+  fd.append("language", store.get("lang", "en"));
+  setStatus('<span class="spin"></span>Working out what you said…');
+  try{
+    const r = await fetch("/api/dictate", {method:"POST", body: fd});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error || r.status);
+    chatPoll(d.job_id, token, {
+      labels: TR_LABELS,                 // this job is Whisper, not the language model
+      onPartial: ()=>{},
+      onDone: j => {
+        const text = (j.text || "").trim();
+        if(!text){ setStatus("Didn't catch that — try again.", true); return; }
+        $("#chatText").value = $("#chatText").value.trim()
+          ? $("#chatText").value.trim() + " " + text : text;
+        growComposer();
+        if($("#chatAutoSend").checked) chatSend();
+        else { setStatus("✍️ " + text); $("#chatText").focus(); }
+      },
+      onError: msg => setStatus("❌ " + msg, true),
+    });
+  }catch(e){ setStatus("❌ " + e.message, true); }
+}
+
 // ---- boot ----
-fetch("/api/voices").then(r => r.json()).then(d => {
-  const sel = $("#voice"), voices = d.voices || [];
+function fillVoices(sel, voices, storeKey){
   const GROUPS = [["American", ["af","am"]], ["British", ["bf","bm"]], ["Spanish", ["ef","em"]],
     ["French", ["ff"]], ["Hindi", ["hf","hm"]], ["Italian", ["if","im"]],
     ["Portuguese", ["pf","pm"]], ["Japanese", ["jf","jm"]], ["Mandarin", ["zf","zm"]]];
@@ -643,8 +1077,33 @@ fetch("/api/voices").then(r => r.json()).then(d => {
     });
     sel.appendChild(g);
   });
-  const want = store.get("voice", "af_heart");
+  const want = store.get(storeKey, "af_heart");
   if(voices.includes(want)) sel.value = want;
+}
+fetch("/api/voices").then(r => r.json()).then(d => {
+  const voices = d.voices || [];
+  fillVoices($("#voice"), voices, "voice");          // panel 3
+  fillVoices($("#chatVoice"), voices, "chatVoice");  // spoken replies
+});
+
+const GB = n => (n/1e9).toFixed(1) + " GB";
+fetch("/api/models").then(r => r.json()).then(d => {
+  const sel = $("#chatModel");
+  sel.innerHTML = "";
+  if(!d.ok || !(d.models || []).length){
+    $("#ollamaHint").style.display = "block";
+    $("#ollamaHint").textContent = d.error || "No models installed in Ollama.";
+    $("#chatSettings").style.display = "block";
+    return;
+  }
+  (d.models || []).forEach(m => {
+    const o = document.createElement("option");
+    o.value = m.name;
+    o.textContent = m.name + (m.params ? ` · ${m.params}` : "") + (m.size ? ` · ${GB(m.size)}` : "");
+    sel.appendChild(o);
+  });
+  pickOption(sel, store.get("chatModel", d.default || ""));
+  if(CHAT && CHAT.model) pickOption(sel, CHAT.model);
 });
 $("#engine").value = store.get("engine", "kokoro");
 $("#trModel").value = store.get("model", "small");
@@ -654,6 +1113,17 @@ syncNfe();
 toggleEngine();
 loadClips();
 loadPresets();
+
+// chat preferences that are annoying to re-set on a phone
+$("#autoSpeak").checked    = store.get("autoSpeak", "0") === "1";
+$("#chatAutoSend").checked = store.get("chatAutoSend", "1") === "1";
+$("#autoSpeak").addEventListener("change", ()=>
+  store.set("autoSpeak", $("#autoSpeak").checked ? "1" : "0"));
+$("#chatAutoSend").addEventListener("change", ()=>
+  store.set("chatAutoSend", $("#chatAutoSend").checked ? "1" : "0"));
+if(!secure) $("#chatMic").title = "Talking needs https";
+setMode(store.get("mode", "studio"));   // chats load lazily on the first switch to Chat
+
 $("#reload").addEventListener("click", ()=>location.reload());
 </script>
 </body>

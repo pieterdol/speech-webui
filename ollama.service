@@ -1,0 +1,31 @@
+[Unit]
+# Optional: install this to get Ollama back after a reboot without starting it by hand.
+#   mkdir -p ~/.config/systemd/user && cp ollama.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now ollama
+#   loginctl enable-linger $USER      # so it also runs when you're not logged in
+Description=Ollama (Vulkan backend)
+After=network-online.target
+
+[Service]
+ExecStart=%h/ollama/bin/ollama serve
+Restart=on-failure
+RestartSec=3
+
+# Force the Vulkan backend by hiding the GPU from ROCm.
+#
+# Ollama 0.32.0 ships only a ROCm 7.2 runtime, and ROCm 7 dropped consumer RDNA2
+# (gfx1030 — the RX 6900 XT). Left to itself Ollama picks ROCm, and uploading tensors
+# to VRAM then crawls: a 732 MiB model failed to load in three minutes, and qwen3:8b
+# timed out at Ollama's own five-minute limit, every time.
+#
+# The same qwen3:8b on Vulkan (RADV NAVI21): 3.7 s to load, ~48 tok/s.
+#
+# Revisit if a future Ollama ships a ROCm 6 runtime again, or if RDNA2 support returns.
+Environment=HIP_VISIBLE_DEVICES=-1
+Environment=ROCR_VISIBLE_DEVICES=-1
+# 5m is Ollama's own default. Worth keeping low: on Vulkan a cold load is ~4 s, so holding
+# 5.2 GB of a 16 GB card for longer costs more than it saves — ComfyUI and games want it back.
+Environment=OLLAMA_KEEP_ALIVE=5m
+
+[Install]
+WantedBy=default.target

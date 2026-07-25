@@ -4,14 +4,16 @@ speech-webui — a phone-friendly web front-end for the local speech tools.
 
   speech → text   faster-whisper (in-process, model kept resident)
   text → speech   Kokoro (54 built-in voices, seconds) or F5-TTS (clones a clip, minutes)
+  chat            Ollama (Qwen et al. on the GPU), with replies spoken by Kokoro
 
 Both TTS engines live in their own venvs, so we shell out to the CLIs in ~/.local/bin
-instead of duplicating their dependencies.
+instead of duplicating their dependencies. Ollama is a separate server we talk to over
+HTTP on :11434.
 
 Reach it from your phone over Tailscale at https://your-machine.your-tailnet.ts.net:8443
 (HTTPS is required — Safari blocks the microphone and the clipboard on plain http).
 """
-import json, os, re, shutil, subprocess, tempfile, threading, time, uuid
+import json, os, re, shutil, subprocess, tempfile, threading, time, urllib.error, urllib.request, uuid
 from flask import Flask, Response, jsonify, request, send_from_directory
 
 HERE         = os.path.dirname(os.path.abspath(__file__))
@@ -20,10 +22,12 @@ OUT_DIR      = os.path.join(HERE, "outputs")
 PRESETS_DIR  = os.path.join(HERE, "presets")
 INDEX_FILE   = os.path.join(HERE, "clips.json")
 PRESETS_FILE = os.path.join(HERE, "presets.json")
+CHATS_FILE   = os.path.join(HERE, "chats.json")
 PORT         = int(os.environ.get("SPEECH_PORT", "8600"))
 
 KOKORO = os.path.expanduser("~/.local/bin/kokoro-tts")
 F5     = os.path.expanduser("~/.local/bin/f5-tts")
+OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 
 os.makedirs(CLIPS_DIR, exist_ok=True)
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -36,9 +40,31 @@ run_lock   = threading.Lock()   # one model at a time: F5-TTS saturates all 12 c
 index_lock = threading.Lock()
 jobs       = {}                 # job_id -> state dict (polled by /api/status)
 
+# Deliberately NOT run_lock: Ollama offloads the whole model to the Radeon, so a chat
+# and a Kokoro render use different hardware and should overlap. It's still a lock —
+# two chats at once would just thrash one GPU (OLLAMA_NUM_PARALLEL is 1 anyway).
+chat_lock = threading.Lock()
+
 STT_MODELS  = ("small", "large-v3-turbo")
 DEFAULT_STT = "small"
 LANGS       = ("en", "nl")
+
+# Chat defaults. A per-request keep_alive overrides the server's OLLAMA_KEEP_ALIVE, so this
+# value — not the systemd unit's — is what actually governs chats from this app. 5 m matches
+# Ollama's default: on the Vulkan backend a cold load is ~4 s, so squatting on 5.2 GB of a
+# 16 GB card for any longer costs more than it saves when ComfyUI wants the VRAM back.
+DEFAULT_CHAT_MODEL = "qwen3:8b"
+CHAT_KEEP_ALIVE    = "5m"
+CHAT_NUM_CTX       = 8192
+# Per-read timeout, not a total. Deliberately longer than Ollama's own OLLAMA_LOAD_TIMEOUT
+# (5 min): at exactly 300 s this client was the one hanging up, and the log then blamed the
+# "client connection closed" instead of reporting why the load was actually slow.
+CHAT_LOAD_TIMEOUT  = 600
+# Replies get read out loud, so the default persona is tuned for listening, not skimming.
+DEFAULT_SYSTEM = ("You are a helpful assistant whose answers are read out loud by a "
+                  "text-to-speech voice. Keep replies short and conversational — a few "
+                  "sentences unless asked for more. Write plain prose: no markdown, no "
+                  "bullet lists, no code blocks unless explicitly asked for code.")
 
 # Kokoro voice prefix -> language code. Without this a British voice is phonemized
 # with US rules and sounds wrong.
@@ -89,6 +115,130 @@ def write_presets(items):
 def find_preset(preset_id):
     return next((p for p in load_presets() if p.get("id") == preset_id), None)
 
+# ---- chats (chats.json) ----
+# Conversations live server-side, not in localStorage, so one started on the PC can be
+# picked up on the phone. Messages are stored inline — they're a few KB of text.
+def load_chats():
+    try:
+        with open(CHATS_FILE) as f: return json.load(f)
+    except Exception:
+        return []
+
+def write_chats(items):
+    with open(CHATS_FILE, "w") as f: json.dump(items, f, indent=2)
+
+def find_chat(chat_id):
+    return next((c for c in load_chats() if c.get("id") == chat_id), None)
+
+def chat_summary(chat):
+    """The dropdown only needs a label, so don't ship the whole transcript to build it."""
+    msgs = chat.get("messages") or []
+    last = next((m["content"] for m in reversed(msgs) if m.get("role") == "user"), "")
+    return {k: chat.get(k) for k in ("id", "name", "model", "system", "created", "updated")} | \
+           {"count": len(msgs), "last": last[:80]}
+
+def append_turn(chat_id, user_text, reply, model):
+    with index_lock:
+        items = load_chats()
+        for c in items:
+            if c.get("id") != chat_id: continue
+            c.setdefault("messages", [])
+            c["messages"].append({"role": "user", "content": user_text, "ts": int(time.time())})
+            c["messages"].append({"role": "assistant", "content": reply, "ts": int(time.time()),
+                                  "model": model})
+            c["model"]   = model
+            c["updated"] = int(time.time())
+            # "New chat" is a placeholder — name it after whatever it turned out to be about
+            if not (c.get("name") or "").strip() or c["name"] == "New chat":
+                c["name"] = (user_text.strip().splitlines() or [""])[0][:48] or "New chat"
+        write_chats(items)
+
+# ---- ollama ----
+THINK_TAGS = re.compile(r"<think>.*?</think>\s*", re.S)
+_caps = {}      # model -> supports the "thinking" capability
+
+def ollama_json(path, payload=None, timeout=30):
+    data = json.dumps(payload).encode() if payload is not None else None
+    req  = urllib.request.Request(OLLAMA + path, data=data,
+                                  headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+def ollama_error(e):
+    """Turn a connection failure into the one instruction that actually fixes it."""
+    if isinstance(e, urllib.error.HTTPError):
+        try:
+            return (json.loads(e.read().decode()).get("error") or str(e))[:300]
+        except Exception:
+            return f"Ollama returned HTTP {e.code}"
+    if isinstance(e, urllib.error.URLError):
+        return f"Ollama isn't reachable at {OLLAMA} — start it with: ollama serve"
+    return str(e)[:300]
+
+def ollama_models():
+    tags = ollama_json("/api/tags")
+    out  = []
+    for m in tags.get("models") or []:
+        d = m.get("details") or {}
+        out.append({"name": m.get("name"), "size": m.get("size"),
+                    "params": d.get("parameter_size"), "quant": d.get("quantization_level")})
+    # Qwen first (that's what this box has), then the rest, each alphabetically
+    out.sort(key=lambda m: (not (m["name"] or "").startswith("qwen"), m["name"] or ""))
+    return out
+
+def model_thinks(model):
+    """qwen3 reasons out loud unless told not to; qwen2.5-coder rejects the flag entirely.
+    Ask before sending it."""
+    if model not in _caps:
+        try:
+            info = ollama_json("/api/show", {"model": model})
+            _caps[model] = "thinking" in (info.get("capabilities") or [])
+        except Exception:
+            _caps[model] = False
+    return _caps[model]
+
+def ollama_chat_stream(model, messages):
+    body = {"model": model, "messages": messages, "stream": True,
+            "keep_alive": CHAT_KEEP_ALIVE, "options": {"num_ctx": CHAT_NUM_CTX}}
+    if model_thinks(model):
+        body["think"] = False      # don't spend GPU time on reasoning nobody will hear
+    req = urllib.request.Request(OLLAMA + "/api/chat", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=CHAT_LOAD_TIMEOUT) as r:
+        for line in r:                     # newline-delimited JSON, one object per chunk
+            line = line.strip()
+            if not line: continue
+            d = json.loads(line)
+            if d.get("error"): raise RuntimeError(d["error"])
+            chunk = (d.get("message") or {}).get("content") or ""
+            if chunk: yield chunk
+            if d.get("done"): break
+
+def chat_worker(jid, chat_id, user_text, model):
+    job = jobs[jid]
+    job["status"] = "queued"
+    with chat_lock:
+        try:
+            chat = find_chat(chat_id)
+            if not chat:
+                raise RuntimeError("that chat no longer exists")
+            msgs = ([{"role": "system", "content": chat["system"]}] if chat.get("system") else []) \
+                 + [{"role": m["role"], "content": m["content"]} for m in chat.get("messages") or []] \
+                 + [{"role": "user", "content": user_text}]
+            job["status"] = "loading model"
+            acc = []
+            for chunk in ollama_chat_stream(model, msgs):
+                acc.append(chunk)
+                job["text"]   = "".join(acc)      # /api/status streams this back as it grows
+                job["status"] = "writing"
+            reply = THINK_TAGS.sub("", "".join(acc)).strip()
+            if not reply:
+                raise RuntimeError("the model returned an empty reply")
+            append_turn(chat_id, user_text, reply, model)
+            job.update(status="done", text=reply)
+        except Exception as e:
+            job.update(status="error", error=ollama_error(e))
+
 def save_transcript(clip_id, text):
     with index_lock:
         items = load_index()
@@ -130,19 +280,38 @@ def stt_model(name):
         _stt["name"] = name
     return _stt["model"]
 
+def run_stt(job, path, model_name, lang):
+    """Shared by the clip path and chat dictation: load the model, transcribe, return text."""
+    job["status"] = "loading model" if _stt["name"] != model_name else "transcribing"
+    m = stt_model(model_name)
+    job["status"] = "transcribing"
+    segs, info = m.transcribe(path, language=lang, vad_filter=True)
+    return " ".join(s.text.strip() for s in segs).strip(), round(info.duration, 1)
+
+def dictate_worker(jid, path, model_name, lang):
+    """A spoken chat turn. The words are the point; the audio is scratch, so it never enters
+    the clip index and the temp file goes away as soon as it's been read."""
+    job = jobs[jid]
+    job["status"] = "queued"
+    with run_lock:
+        try:
+            text, seconds = run_stt(job, path, model_name, lang)
+            job.update(status="done", text=text, seconds=seconds)
+        except Exception as e:
+            job.update(status="error", error=str(e)[:300])
+        finally:
+            if os.path.exists(path):
+                try: os.remove(path)
+                except Exception: pass
+
 def transcribe_worker(jid, clip, model_name, lang):
     job = jobs[jid]
     job["status"] = "queued"
     with run_lock:
         try:
-            job["status"] = "loading model" if _stt["name"] != model_name else "transcribing"
-            m = stt_model(model_name)
-            job["status"] = "transcribing"
-            segs, info = m.transcribe(clip_path(clip), language=lang, vad_filter=True)
-            text = " ".join(s.text.strip() for s in segs).strip()
+            text, seconds = run_stt(job, clip_path(clip), model_name, lang)
             save_transcript(clip["id"], text)
-            job.update(status="done", text=text, seconds=round(info.duration, 1),
-                       clip_id=clip["id"])
+            job.update(status="done", text=text, seconds=seconds, clip_id=clip["id"])
         except Exception as e:
             job.update(status="error", error=str(e)[:300])
 
@@ -380,6 +549,119 @@ def api_preset_delete():
 @app.get("/preset/<path:filename>")
 def preset_file(filename):
     return send_from_directory(PRESETS_DIR, filename)
+
+@app.post("/api/dictate")
+def api_dictate():
+    """Speech → text without keeping the audio. Same Whisper path as /api/transcribe, but the
+    recording never reaches clips/ or clips.json — a spoken chat turn isn't a clip."""
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify(error="no audio"), 400
+    model = request.form.get("model") if request.form.get("model") in STT_MODELS else DEFAULT_STT
+    lang  = request.form.get("language") if request.form.get("language") in LANGS else "en"
+    tag    = uuid.uuid4().hex[:8]
+    suffix = os.path.splitext(f.filename)[1][:8] or ".bin"
+    # "-in" in the upload's name: without it a .wav upload would resolve to the same path as
+    # the normalized output, and ffmpeg refuses to write its own input.
+    raw    = os.path.join(tempfile.gettempdir(), f"dict-{tag}-in{suffix}")
+    wav    = os.path.join(tempfile.gettempdir(), f"dict-{tag}.wav")
+    f.save(raw)
+    try:
+        normalize_audio(raw, wav)
+    except Exception as e:
+        return jsonify(error=str(e)[:200]), 400
+    finally:
+        if os.path.exists(raw): os.remove(raw)
+    jid = new_job("dictate")
+    threading.Thread(target=dictate_worker, args=(jid, wav, model, lang), daemon=True).start()
+    return jsonify(job_id=jid)
+
+@app.get("/api/models")
+def api_models():
+    """Installed Ollama models. Reports the reason when Ollama is down, so the chat panel
+    can say 'run ollama serve' instead of just failing."""
+    try:
+        return jsonify(ok=True, models=ollama_models(), default=DEFAULT_CHAT_MODEL)
+    except Exception as e:
+        return jsonify(ok=False, models=[], error=ollama_error(e))
+
+@app.get("/api/chats")
+def api_chats():
+    return jsonify(chats=[chat_summary(c) for c in load_chats()], system=DEFAULT_SYSTEM)
+
+@app.get("/api/chats/<chat_id>")
+def api_chat_get(chat_id):
+    chat = find_chat(chat_id)
+    if not chat:
+        return jsonify(error="unknown chat"), 404
+    return jsonify(chat=chat)
+
+@app.post("/api/chats")
+def api_chat_new():
+    d = request.get_json(force=True, silent=True) or {}
+    entry = {"id": uuid.uuid4().hex[:12],
+             "name": (d.get("name") or "").strip() or "New chat",
+             "model": (d.get("model") or DEFAULT_CHAT_MODEL).strip(),
+             "system": d.get("system") if d.get("system") is not None else DEFAULT_SYSTEM,
+             "created": int(time.time()), "updated": int(time.time()), "messages": []}
+    with index_lock:
+        items = load_chats()
+        items.insert(0, entry)          # newest first, like clips and presets
+        write_chats(items)
+    return jsonify(ok=True, chat=entry)
+
+@app.post("/api/chats/update")
+def api_chat_update():
+    d = request.get_json(force=True, silent=True) or {}
+    if not find_chat(d.get("id") or ""):
+        return jsonify(ok=False, msg="unknown chat"), 404
+    with index_lock:
+        items = load_chats()
+        for c in items:
+            if c.get("id") != d["id"]: continue
+            for key in ("name", "model", "system"):
+                if d.get(key) is not None: c[key] = d[key]
+            c["updated"] = int(time.time())
+        write_chats(items)
+    return jsonify(ok=True, chat=find_chat(d["id"]))
+
+@app.post("/api/chats/delete")
+def api_chat_delete():
+    d = request.get_json(force=True, silent=True) or {}
+    if not find_chat(d.get("id") or ""):
+        return jsonify(ok=False, msg="unknown chat"), 404
+    with index_lock:
+        write_chats([c for c in load_chats() if c.get("id") != d["id"]])
+    return jsonify(ok=True)
+
+@app.post("/api/chats/clear")
+def api_chat_clear():
+    """Wipe the transcript but keep the chat, its model and its system prompt."""
+    d = request.get_json(force=True, silent=True) or {}
+    if not find_chat(d.get("id") or ""):
+        return jsonify(ok=False, msg="unknown chat"), 404
+    with index_lock:
+        items = load_chats()
+        for c in items:
+            if c.get("id") == d["id"]:
+                c["messages"] = []
+                c["updated"]  = int(time.time())
+        write_chats(items)
+    return jsonify(ok=True)
+
+@app.post("/api/chat")
+def api_chat():
+    d    = request.get_json(force=True, silent=True) or {}
+    text = (d.get("text") or "").strip()
+    chat = find_chat(d.get("chat_id") or "")
+    if not chat:
+        return jsonify(error="unknown chat"), 404
+    if not text:
+        return jsonify(error="type something first"), 400
+    model = (d.get("model") or chat.get("model") or DEFAULT_CHAT_MODEL).strip()
+    jid = new_job("chat")
+    threading.Thread(target=chat_worker, args=(jid, chat["id"], text, model), daemon=True).start()
+    return jsonify(job_id=jid)
 
 @app.get("/api/status/<job_id>")
 def api_status(job_id):
