@@ -6,14 +6,16 @@ speech-webui — a phone-friendly web front-end for the local speech tools.
   text → speech   Kokoro (54 built-in voices, seconds) or F5-TTS (clones a clip, minutes)
   chat            Ollama (Qwen et al. on the GPU), with replies spoken by Kokoro
 
-Both TTS engines live in their own venvs, so we shell out to the CLIs in ~/.local/bin
-instead of duplicating their dependencies. Ollama is a separate server we talk to over
-HTTP on :11434.
+Both TTS engines keep their own venvs so this app doesn't duplicate their dependencies.
+F5-TTS is invoked as a CLI per render (it's minutes of work anyway); Kokoro instead runs
+as a resident worker started with ITS interpreter — see kokoro_worker.py — because the
+per-invocation model load was costing more than the audio on short text. Ollama is a
+separate server we talk to over HTTP on :11434.
 
 Reach it from your phone over Tailscale at https://your-machine.your-tailnet.ts.net:8443
 (HTTPS is required — Safari blocks the microphone and the clipboard on plain http).
 """
-import json, os, re, shutil, subprocess, tempfile, threading, time, urllib.error, urllib.request, uuid
+import json, os, re, select, shutil, subprocess, tempfile, threading, time, urllib.error, urllib.request, uuid
 from flask import Flask, Response, jsonify, request, send_from_directory
 
 HERE         = os.path.dirname(os.path.abspath(__file__))
@@ -25,8 +27,12 @@ PRESETS_FILE = os.path.join(HERE, "presets.json")
 CHATS_FILE   = os.path.join(HERE, "chats.json")
 PORT         = int(os.environ.get("SPEECH_PORT", "8600"))
 
-KOKORO = os.path.expanduser("~/.local/bin/kokoro-tts")
 F5     = os.path.expanduser("~/.local/bin/f5-tts")
+# Kokoro runs as a resident worker instead of a per-render CLI call — see kokoro_worker.py.
+# It's driven by its OWN interpreter, so its ONNX dependencies stay in their venv.
+KOKORO_DIR    = os.path.expanduser("~/.local/share/kokoro-tts")
+KOKORO_PY     = os.path.join(KOKORO_DIR, "venv/bin/python")
+KOKORO_WORKER = os.path.join(HERE, "kokoro_worker.py")
 OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 
 os.makedirs(CLIPS_DIR, exist_ok=True)
@@ -316,14 +322,112 @@ def transcribe_worker(jid, clip, model_name, lang):
             job.update(status="error", error=str(e)[:300])
 
 # ---- text to speech ----
+# Kokoro is kept resident in a worker process. Loading the ONNX model cost ~1.9 s on every
+# single render when we shelled out to the CLI — more than the audio itself for a short
+# sentence. Now that's paid once, on the first request after a restart.
+_kokoro      = {"proc": None, "used": 0.0}
+# Held across a whole request/response, not just startup. The idle reaper takes the same lock,
+# which is what stops it from killing the worker in the gap between starting one and writing
+# to it. Renders are already serialized by run_lock, so this adds no real contention.
+_kokoro_lock = threading.RLock()
+KOKORO_START_TIMEOUT = 180           # first load reads a 325 MB model off disk
+KOKORO_CALL_TIMEOUT  = 900
+# Idle worker holds 550 MB-1 GB (onnxruntime keeps its arena), and restarting costs ~1.2 s,
+# so it's cheap to let it go. 0 disables the reaper and keeps it resident forever.
+KOKORO_IDLE_SECONDS  = int(os.environ.get("KOKORO_IDLE_MINUTES", "10")) * 60
+
+def _kokoro_line(proc, timeout):
+    """Read one newline-terminated response, without blocking forever on a wedged worker.
+    The protocol is strictly one request → one response, so there's never a second line
+    buffered behind the one we want."""
+    buf, end, fd = b"", time.monotonic() + timeout, proc.stdout.fileno()
+    while b"\n" not in buf:
+        remain = end - time.monotonic()
+        if remain <= 0:
+            raise TimeoutError("the Kokoro worker stopped responding")
+        if not select.select([fd], [], [], min(remain, 1.0))[0]:
+            if proc.poll() is not None:
+                raise RuntimeError("the Kokoro worker exited")
+            continue
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            raise RuntimeError("the Kokoro worker closed its pipe")
+        buf += chunk
+    return json.loads(buf.split(b"\n", 1)[0].decode())
+
+def kokoro_start():
+    """Start the worker if it isn't running. A dead worker is simply replaced — the next
+    render pays the load again rather than failing for good."""
+    with _kokoro_lock:
+        proc = _kokoro["proc"]
+        if proc is not None and proc.poll() is None:
+            return proc
+        if not os.path.exists(KOKORO_PY):
+            raise RuntimeError(f"Kokoro's interpreter is missing at {KOKORO_PY}")
+        proc = subprocess.Popen([KOKORO_PY, KOKORO_WORKER, KOKORO_DIR],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+        hello = _kokoro_line(proc, KOKORO_START_TIMEOUT)   # blocks until the model is loaded
+        if not hello.get("ok"):
+            proc.kill()
+            raise RuntimeError(hello.get("error") or "the Kokoro worker failed to start")
+        _kokoro["proc"] = proc
+        return proc
+
+def kokoro_call(payload, timeout=KOKORO_CALL_TIMEOUT):
+    with _kokoro_lock:
+        proc = kokoro_start()
+        try:
+            proc.stdin.write((json.dumps(payload) + "\n").encode())
+            proc.stdin.flush()
+            res = _kokoro_line(proc, timeout)
+        except Exception:
+            # a broken pipe or a timeout means this worker is no good; drop it so the next
+            # call starts a fresh one
+            kokoro_stop(proc)
+            raise
+        finally:
+            _kokoro["used"] = time.monotonic()
+    if not res.get("ok"):
+        raise RuntimeError(res.get("error") or "kokoro failed")
+    return res
+
+def kokoro_stop(proc=None):
+    """Shut the worker down and let its ~700 MB go. Closing stdin ends the worker's read
+    loop; the kill is only for one that has stopped listening."""
+    with _kokoro_lock:
+        proc = proc or _kokoro["proc"]
+        if proc is None:
+            return
+        if _kokoro["proc"] is proc:
+            _kokoro["proc"] = None
+        try:
+            if proc.stdin and not proc.stdin.closed: proc.stdin.close()
+            proc.wait(timeout=5)
+        except Exception:
+            try: proc.kill()
+            except Exception: pass
+
+def kokoro_reaper():
+    """Release the model after a stretch of no renders. Takes the same lock as kokoro_call,
+    so it can never land in the middle of one."""
+    while True:
+        time.sleep(30)
+        try:
+            with _kokoro_lock:
+                proc = _kokoro["proc"]
+                if (proc is not None and proc.poll() is None
+                        and time.monotonic() - _kokoro["used"] > KOKORO_IDLE_SECONDS):
+                    kokoro_stop(proc)
+        except Exception:
+            pass          # a reaper that dies would leak the worker for the process lifetime
+
 _voices = None
 
 def kokoro_voices():
     global _voices
     if _voices is None:
         try:
-            r = subprocess.run([KOKORO, "--list-voices"], capture_output=True, text=True, timeout=180)
-            _voices = [v.strip() for v in r.stdout.split() if v.strip()]
+            _voices = kokoro_call({"op": "voices"}, timeout=KOKORO_START_TIMEOUT)["voices"]
         except Exception:
             _voices = []
     return _voices
@@ -338,11 +442,9 @@ def speak_worker(jid, engine, text, voice, speed, ref_audio, ref_text, trim, nfe
         try:
             if engine == "kokoro":
                 job["status"] = "generating"
-                lang = VOICE_LANG.get(voice[:2], "en-us")
-                r = subprocess.run([KOKORO, "-o", out, "-v", voice, "-s", str(speed), "-l", lang],
-                                   input=respell(text).encode(), capture_output=True, timeout=900)
-                if r.returncode != 0:
-                    raise RuntimeError((r.stderr.decode(errors="replace") or "kokoro failed")[-300:])
+                kokoro_call({"op": "say", "text": respell(text), "voice": voice,
+                             "speed": speed, "lang": VOICE_LANG.get(voice[:2], "en-us"),
+                             "out": out})
             else:
                 ref = ref_audio
                 if trim:                       # F5 truncates long references anyway
@@ -708,4 +810,6 @@ def index():
     return r
 
 if __name__ == "__main__":
+    if KOKORO_IDLE_SECONDS > 0:
+        threading.Thread(target=kokoro_reaper, daemon=True).start()
     app.run(host="127.0.0.1", port=PORT, threaded=True)

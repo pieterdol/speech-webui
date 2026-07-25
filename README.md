@@ -114,10 +114,33 @@ It's kept short on purpose: a resident 8B model holds ~5.2 GB of the card's 16 G
 ```
 phone ──https──> tailscale serve :8443 ──> 127.0.0.1:8600  speech.py (Flask)
                                               ├── faster-whisper  (in-process, model resident)
-                                              ├── kokoro-tts CLI  (~/.local/bin/kokoro-tts)
+                                              ├── kokoro_worker   (subprocess, model resident)
                                               ├── f5-tts CLI      (~/.local/bin/f5-tts)
                                               └── ollama HTTP     (127.0.0.1:11434 → Radeon)
 ```
+
+**Kokoro is resident, and deliberately not in this app's venv.** The `kokoro-tts` CLI reloads
+its 325 MB ONNX model on every invocation, which measured at ~1.9 s of fixed cost per render —
+more than the audio itself for a short sentence. `kokoro_worker.py` keeps the model loaded and
+takes one JSON request per line over a pipe. It's launched with **Kokoro's own interpreter**
+(`~/.local/share/kokoro-tts/venv/bin/python`), so its 524 MB of ONNX dependencies stay where
+they already are rather than being duplicated here.
+
+| same text | CLI per render | resident worker |
+| --- | --- | --- |
+| "Hello there." (0.9 s audio) | 2.0 s | **0.6 s** |
+| one sentence (4.2 s audio) | 3.0 s | **1.8 s** |
+| eight sentences (24.5 s audio) | 11.1 s | **10.3 s** |
+
+Fixed cost per render drops from ~1.9 s to ~0.3 s; the marginal cost (~0.38 s per second of
+audio) is unchanged, so long text barely improves and short text improves a lot.
+
+The worker costs 530 MB–1 GB of RAM while it's loaded, growing with the longest text rendered
+(onnxruntime widens its arena and keeps it), so it **unloads itself after 10 minutes with no
+renders** and starts again on the next one. That restart costs about 1.4 s (2.2 s against 0.8 s
+warm), which is well worth ~700 MB back on an idle machine. `KOKORO_IDLE_MINUTES` changes the
+window; `0` disables the reaper and keeps it resident. Killing the worker by hand is also safe
+at any time — the next render just restarts it.
 
 Two locks, not one. `run_lock` serializes the CPU model work (Whisper, Kokoro, F5-TTS) because
 F5-TTS saturates all 12 cores. Chat gets its own `chat_lock`: Ollama offloads the whole model to
@@ -125,9 +148,10 @@ the GPU, so a reply and a Kokoro render use different hardware and are free to o
 chat behind `run_lock` would make it wait out a two-minute clone for no reason.
 
 Both TTS engines have their own venvs (`~/.local/share/kokoro-tts`, `~/.local/share/f5-tts`), so
-the app shells out to their CLIs rather than duplicating ~2 GB of dependencies. Whisper is the
-exception — it's the most-used path, so `faster-whisper` lives in this app's venv and the model
-stays resident between requests.
+the app borrows their interpreters rather than duplicating their dependencies — F5-TTS via its
+CLI per render, Kokoro via the resident worker above. Whisper is the exception: it's the
+most-used path, so `faster-whisper` lives in this app's venv and the model stays resident
+between requests. All three model paths are now warm between calls.
 
 Long jobs are threads writing into a `jobs` dict that the page polls at `/api/status/<id>`, the
 same pattern as `~/Code/comfy-webui`. A single lock serializes all model work: F5-TTS saturates
@@ -138,6 +162,7 @@ all 12 cores, so overlapping a clone with a transcription would just make both c
 ```
 speech.py     Flask app (port 8600). Named speech.py, not app.py, so restart.sh can't
               collide with comfy-webui's (which kills anything matching "app.py").
+kokoro_worker.py  resident Kokoro process, run with Kokoro's venv interpreter
 index.html    the whole UI — one file, no build step
 clips/        normalized input clips (gitignored)
 presets/      saved voices — own copy of the reference audio (gitignored)
