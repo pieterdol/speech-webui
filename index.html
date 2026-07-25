@@ -202,7 +202,8 @@
   <div class="card">
     <label for="engine">Engine</label>
     <select id="engine">
-      <option value="kokoro">Kokoro — 54 built-in voices, seconds</option>
+      <option value="kokoro">Kokoro — English voices, seconds</option>
+      <option value="piper">Piper — Nederlandse stemmen, seconds</option>
       <option value="f5">F5-TTS — clone a clip, minutes</option>
     </select>
 
@@ -271,13 +272,19 @@
         <select id="chatModel"></select>
       </div>
       <div>
-        <label for="chatVoice">Voice</label>
-        <div class="pickrow">
-          <select id="chatVoice"></select>
-          <button id="chatVoicePlay" class="iconbtn" title="Hear this voice" aria-label="Hear this voice">▶</button>
-        </div>
+        <label for="chatLang">I speak</label>
+        <select id="chatLang">
+          <option value="en">English</option>
+          <option value="nl">Nederlands</option>
+        </select>
       </div>
     </div>
+    <label for="chatVoice">Voice</label>
+    <div class="pickrow">
+      <select id="chatVoice"></select>
+      <button id="chatVoicePlay" class="iconbtn" title="Hear this voice" aria-label="Hear this voice">▶</button>
+    </div>
+    <div class="hint" id="chatLangHint"></div>
     <label for="chatSystem">System prompt</label>
     <textarea id="chatSystem" placeholder="How should it behave?"></textarea>
     <div class="hint">Saved with this chat. The default asks for short, plain-prose answers,
@@ -662,10 +669,12 @@ async function copy(text, btn){
 
 // ---- generate speech ----
 function toggleEngine(){
-  const f5 = $("#engine").value === "f5";
+  const eng = $("#engine").value, f5 = eng === "f5";
   $("#f5Fields").style.display = f5 ? "block" : "none";
   $("#kokoroFields").style.display = f5 ? "none" : "block";
-  store.set("engine", $("#engine").value);
+  store.set("engine", eng);
+  // Kokoro and Piper share one picker; it just shows the voices of whichever is selected.
+  if(!f5) showVoicesFor(eng);
   if(f5) syncRefText();
 }
 $("#engine").addEventListener("change", toggleEngine);
@@ -725,7 +734,7 @@ function showAudio(d, engine, text){
   const p = PRESETS.find(x => x.id === $("#preset").value);
   const label = engine === "f5"
     ? "F5-TTS · " + (p ? p.name : "cloned") + " · " + $("#nfe").value + " steps"
-    : "Kokoro · " + $("#voice").value;
+    : (engine === "piper" ? "Piper · " : "Kokoro · ") + $("#voice").value;
   const card = document.createElement("div");
   card.className = "out";
   card.innerHTML = `<div class="outhead">${esc(label)} · ${fmt(d.seconds)}</div>
@@ -794,11 +803,15 @@ async function openChat(id){
   chatDone();                     // …and don't leave Send disabled on its behalf
   $("#chatSystem").value = CHAT.system || "";
   if(CHAT.model) pickOption($("#chatModel"), CHAT.model);
+  $("#chatLang").value = CHAT.language || "en";
+  syncChatLang();
   renderLog();
 }
 
 async function newChat(){
-  const body = {model: $("#chatModel").value || undefined, system: $("#chatSystem").value || undefined};
+  const body = {model: $("#chatModel").value || undefined,
+                system: $("#chatSystem").value || undefined,
+                language: $("#chatLang").value || store.get("chatLang", "en")};
   const d = await (await fetch("/api/chats", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify(body)})).json();
   await loadChats(d.chat.id);
@@ -820,7 +833,29 @@ $("#chatModel").addEventListener("change", ()=>{
   store.set("chatModel", $("#chatModel").value);
   patchChat({model: $("#chatModel").value});
 });
-$("#chatVoice").addEventListener("change", ()=> store.set("chatVoice", $("#chatVoice").value));
+$("#chatVoice").addEventListener("change", ()=>{
+  store.set("chatVoice", $("#chatVoice").value);
+  syncChatLang();                 // the voice decides which language the reply comes back in
+});
+// The language is what YOU speak: it picks the Whisper model's language for the mic, and
+// tells the model to expect it — replies stay in English either way.
+const isDutchVoice = v => (VOICES.piper || []).some(p => p.id === v);
+// What comes back depends on the voice, not just the language: Kokoro can't speak Dutch, so
+// with an English voice the model is told to answer in English however you asked. Pick a
+// Piper voice and it's left alone, and answers in Dutch.
+function syncChatLang(){
+  const nl = $("#chatLang").value === "nl", dutchVoice = isDutchVoice($("#chatVoice").value);
+  $("#chatLangHint").textContent =
+    !nl              ? "Asking and answering in English."
+    : dutchVoice     ? "🎤 listens for Dutch, and replies come back in Dutch — spoken by a Dutch voice."
+                     : "🎤 listens for Dutch, but replies come back in English, because this voice can't speak Dutch.";
+  $("#chatText").placeholder = nl ? "Stel een vraag…" : "Ask something…";
+}
+$("#chatLang").addEventListener("change", ()=>{
+  syncChatLang();
+  store.set("chatLang", $("#chatLang").value);      // the default for the next new chat
+  patchChat({language: $("#chatLang").value});
+});
 $("#chatSystem").addEventListener("change", ()=> patchChat({system: $("#chatSystem").value}));
 
 $("#chatRename").addEventListener("click", async ()=>{
@@ -907,11 +942,12 @@ async function chatSend(){
   const token = ++chatToken;
   let job;
   try{
-    // Sending a voice asks the server to speak it sentence by sentence as it's written,
-    // rather than rendering the whole reply once it's finished.
+    // The voice goes up either way — it decides what language the reply comes back in — and
+    // `speak` is what asks for it to be rendered sentence by sentence as it's written.
     const r = await fetch("/api/chat", {method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({chat_id: CHAT.id, text, model: $("#chatModel").value || undefined,
-                            voice: $("#autoSpeak").checked ? $("#chatVoice").value : undefined})});
+                            voice: $("#chatVoice").value || undefined,
+                            speak: $("#autoSpeak").checked})});
     const d = await r.json();
     if(!r.ok){ throw new Error(d.error || r.status); }
     job = d.job_id;
@@ -1125,8 +1161,8 @@ async function dictate(blob, name){
   const token = ++chatToken;
   const fd = new FormData();
   fd.append("file", blob, name);
-  fd.append("model", store.get("model", "small"));       // same Whisper settings as panel 2
-  fd.append("language", store.get("lang", "en"));
+  fd.append("model", store.get("model", "small"));       // same Whisper model as panel 2…
+  fd.append("language", $("#chatLang").value || "en");   // …but Chat picks its own language
   setStatus('<span class="spin"></span>Working out what you said…');
   try{
     const r = await fetch("/api/dictate", {method:"POST", body: fd});
@@ -1150,33 +1186,65 @@ async function dictate(blob, name){
 }
 
 // ---- boot ----
-function fillVoices(sel, voices, storeKey){
-  // English only. Kokoro ships Spanish, French, Hindi, Italian, Portuguese, Japanese and
-  // Mandarin voices too — /api/voices still returns them, they're just not worth scrolling
-  // past here. Add their prefixes back to this list to bring them into the pickers.
-  const GROUPS = [["American", ["af","am"]], ["British", ["bf","bm"]]];
-  const NICE = {af_heart:"af_heart — warm (default)", am_michael:"am_michael — US male",
-                bf_emma:"bf_emma — British female", bm_george:"bm_george — British male"};
-  GROUPS.forEach(([name, prefixes])=>{
-    const list = voices.filter(v => prefixes.includes(v.slice(0,2)));
-    if(!list.length) return;
-    const g = document.createElement("optgroup"); g.label = name;
-    // surface the known-good voices at the top of their group
-    list.sort((a,b)=> (NICE[b]?1:0)-(NICE[a]?1:0) || a.localeCompare(b));
+// Kokoro = English, Piper = Dutch. Kept in one place so panel 3 and Chat offer the same set.
+let VOICES = {kokoro: [], piper: []};
+// Kokoro also ships Spanish, French, Hindi, Italian, Portuguese, Japanese and Mandarin —
+// /api/voices still returns them, they're just not worth scrolling past. Add prefixes here
+// to bring them back.
+const KOKORO_GROUPS = [["American", ["af","am"]], ["British", ["bf","bm"]]];
+const NICE = {af_heart:"af_heart — warm (default)", am_michael:"am_michael — US male",
+              bf_emma:"bf_emma — British female", bm_george:"bm_george — British male"};
+
+function kokoroOptgroups(){
+  return KOKORO_GROUPS.map(([name, prefixes])=>{
+    const list = VOICES.kokoro.filter(v => prefixes.includes(v.slice(0,2)));
+    if(!list.length) return null;
+    const g = document.createElement("optgroup");
+    g.label = "English · " + name;
+    list.sort((a,b)=> (NICE[b]?1:0)-(NICE[a]?1:0) || a.localeCompare(b));  // known-good first
     list.forEach(v => {
       const o = document.createElement("option");
       o.value = v; o.textContent = NICE[v] || v;
       g.appendChild(o);
     });
-    sel.appendChild(g);
-  });
-  const want = store.get(storeKey, "af_heart");
-  if(voices.includes(want)) sel.value = want;
+    return g;
+  }).filter(Boolean);
 }
+function piperOptgroups(){
+  const byLang = {};
+  VOICES.piper.forEach(v => (byLang[v.lang] = byLang[v.lang] || []).push(v));
+  return Object.keys(byLang).sort().map(lang => {
+    const g = document.createElement("optgroup");
+    g.label = "Nederlands · " + (lang === "nl_BE" ? "België" : "Nederland");
+    byLang[lang].sort((a,b)=> a.name.localeCompare(b.name)).forEach(v => {
+      const o = document.createElement("option");
+      o.value = v.id;
+      o.textContent = v.name + (v.quality && v.quality !== "medium" ? ` (${v.quality})` : "");
+      g.appendChild(o);
+    });
+    return g;
+  });
+}
+// which: "kokoro" | "piper" | "both"
+function fillVoices(sel, which, storeKey, fallback){
+  const groups = (which === "piper" ? [] : kokoroOptgroups())
+    .concat(which === "kokoro" ? [] : piperOptgroups());
+  const prev = sel.value;
+  sel.innerHTML = "";
+  groups.forEach(g => sel.appendChild(g));
+  const all = [...sel.options].map(o => o.value);
+  const want = [prev, store.get(storeKey, ""), fallback].find(v => v && all.includes(v));
+  if(want) sel.value = want;
+}
+function showVoicesFor(engine){ fillVoices($("#voice"), engine, "voice", "af_heart"); }
+
 fetch("/api/voices").then(r => r.json()).then(d => {
-  const voices = d.voices || [];
-  fillVoices($("#voice"), voices, "voice");          // panel 3
-  fillVoices($("#chatVoice"), voices, "chatVoice");  // spoken replies
+  VOICES = {kokoro: d.voices || [], piper: d.piper || []};
+  showVoicesFor($("#engine").value === "f5" ? "kokoro" : $("#engine").value);
+  // Chat offers both: an English voice means replies stay English, a Dutch one lets the
+  // model answer in Dutch.
+  fillVoices($("#chatVoice"), "both", "chatVoice", "af_heart");
+  syncChatLang();
 });
 
 const GB = n => (n/1e9).toFixed(1) + " GB";
@@ -1214,6 +1282,8 @@ $("#autoSpeak").addEventListener("change", ()=>
   store.set("autoSpeak", $("#autoSpeak").checked ? "1" : "0"));
 $("#chatAutoSend").addEventListener("change", ()=>
   store.set("chatAutoSend", $("#chatAutoSend").checked ? "1" : "0"));
+$("#chatLang").value = store.get("chatLang", "en");   // openChat overrides with the chat's own
+syncChatLang();
 if(!secure) $("#chatMic").title = "Talking needs https";
 setMode(store.get("mode", "studio"));   // chats load lazily on the first switch to Chat
 

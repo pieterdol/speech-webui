@@ -29,11 +29,18 @@ CHATS_FILE   = os.path.join(HERE, "chats.json")
 PORT         = int(os.environ.get("SPEECH_PORT", "8600"))
 
 F5     = os.path.expanduser("~/.local/bin/f5-tts")
-# Kokoro runs as a resident worker instead of a per-render CLI call — see kokoro_worker.py.
-# It's driven by its OWN interpreter, so its ONNX dependencies stay in their venv.
-KOKORO_DIR    = os.path.expanduser("~/.local/share/kokoro-tts")
-KOKORO_PY     = os.path.join(KOKORO_DIR, "venv/bin/python")
-KOKORO_WORKER = os.path.join(HERE, "kokoro_worker.py")
+# Kokoro and Piper both run as resident workers instead of per-render CLI calls, each driven
+# by its OWN interpreter so their dependencies stay in their own venvs. Kokoro is the English
+# engine (54 voices, no Dutch); Piper is the Dutch one.
+KOKORO_DIR   = os.path.expanduser("~/.local/share/kokoro-tts")
+PIPER_DIR    = os.path.expanduser("~/.local/share/piper-tts")
+PIPER_VOICES = os.path.join(PIPER_DIR, "voices")
+ENGINES = {
+    "kokoro": {"py": os.path.join(KOKORO_DIR, "venv/bin/python"),
+               "worker": os.path.join(HERE, "kokoro_worker.py"), "arg": KOKORO_DIR},
+    "piper":  {"py": os.path.join(PIPER_DIR, "venv/bin/python"),
+               "worker": os.path.join(HERE, "piper_worker.py"),  "arg": PIPER_VOICES},
+}
 OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 
 os.makedirs(CLIPS_DIR, exist_ok=True)
@@ -73,6 +80,32 @@ DEFAULT_SYSTEM = ("You are a helpful assistant whose answers are read out loud b
                   "text-to-speech voice. Keep replies short and conversational — a few "
                   "sentences unless asked for more. Write plain prose: no markdown, no "
                   "bullet lists, no code blocks unless explicitly asked for code.")
+# Appended when the chat is set to Dutch. Kept out of the editable system prompt so switching
+# language doesn't rewrite whatever persona is in there.
+LANG_NOTE = {
+    "nl": ("The user speaks and writes Dutch. Understand Dutch input fully, but always write "
+           "your reply in English, whatever language the question was asked in. Never answer "
+           "in Dutch."),
+}
+# The system prompt alone doesn't hold: qwen3:8b mirrors the language of the latest user turn
+# and answers in Dutch anyway, especially on Dutch subject matter. Two things that do hold,
+# both attached to what gets SENT and never to what's stored in chats.json:
+#   - a reminder on the turn itself, where the model is actually looking
+#   - one fabricated exchange showing the pattern, which steers language far harder than any
+#     instruction does. It also matters that turn one comes out right: once a Dutch reply is
+#     in the history, every later turn copies it.
+LANG_REMINDER = {"nl": "\n\n[Reply in English.]"}
+# Two examples, not one: the failure mode is specifically a Dutch question about Dutch
+# subject matter, where the model slips back into Dutch. The second example is exactly that.
+LANG_PRIMER = {
+    "nl": [{"role": "user", "content": "Hoe gaat het met je?"},
+           {"role": "assistant",
+            "content": "I'm doing well, thanks for asking! What can I help you with?"},
+           {"role": "user", "content": "Hoeveel inwoners heeft Rotterdam ongeveer?"},
+           {"role": "assistant",
+            "content": "Rotterdam has roughly 650,000 inhabitants, making it the "
+                       "second-largest city in the Netherlands."}],
+}
 
 # Kokoro voice prefix -> language code. Without this a British voice is phonemized
 # with US rules and sounds wrong.
@@ -80,9 +113,9 @@ VOICE_LANG = {"af":"en-us", "am":"en-us", "bf":"en-gb", "bm":"en-gb", "jf":"ja",
               "zf":"cmn", "zm":"cmn", "ef":"es", "em":"es", "ff":"fr-fr",
               "hf":"hi", "hm":"hi", "if":"it", "im":"it", "pf":"pt-br", "pm":"pt-br"}
 
-# What the voice-preview button says. One English line for every voice — the non-English
-# voices will read it through their own phonemizer, which still shows you the timbre.
-SAMPLE_TEXT = "Hello! How can I assist you today?"
+# What the voice-preview button says, in the language the engine is for.
+SAMPLE_TEXT = {"kokoro": "Hello! How can I assist you today?",
+               "piper":  "Hallo! Hoe kan ik je vandaag helpen?"}
 
 # Neither engine has a pronunciation-override syntax, so hard words are respelled
 # phonetically on the way in.
@@ -209,7 +242,8 @@ def chat_summary(chat):
     """The dropdown only needs a label, so don't ship the whole transcript to build it."""
     msgs = chat.get("messages") or []
     last = next((m["content"] for m in reversed(msgs) if m.get("role") == "user"), "")
-    return {k: chat.get(k) for k in ("id", "name", "model", "system", "created", "updated")} | \
+    return {k: chat.get(k) for k in ("id", "name", "model", "system", "language",
+                                     "created", "updated")} | \
            {"count": len(msgs), "last": last[:80]}
 
 def append_turn(chat_id, user_text, reply, model):
@@ -297,7 +331,6 @@ SPEAK_FIRST_CHARS = 20
 def speak_stream_worker(job, q, voice, speed):
     """Renders queued sentences in order while the model is still writing later ones. Runs on
     its own thread so a Kokoro render never stalls reading the token stream."""
-    lang = VOICE_LANG.get(voice[:2], "en-us")
     while True:
         text = q.get()
         if text is None:
@@ -306,8 +339,7 @@ def speak_stream_worker(job, q, voice, speed):
             name = f"{int(time.time())}-{uuid.uuid4().hex[:6]}.wav"
             out  = os.path.join(OUT_DIR, name)
             with run_lock:          # shares the CPU engines' lock; Kokoro is quick, F5 is not
-                res = kokoro_call({"op": "say", "text": respell(text), "voice": voice,
-                                   "speed": speed, "lang": lang, "out": out})
+                res = tts_say(voice, respell(text), speed, out)
             job["audio"].append({"url": f"/out/{name}", "file": name,
                                  "seconds": res.get("seconds")})
         except Exception as e:
@@ -315,7 +347,12 @@ def speak_stream_worker(job, q, voice, speed):
             job["audio_error"] = str(e)[:200]
     job["audio_done"] = True
 
-def chat_worker(jid, chat_id, user_text, model, voice=None, speed=1.0):
+def chat_system(chat, english_only):
+    """The chat's own persona, plus the answer-in-English instruction when it applies."""
+    parts = [p for p in (chat.get("system"), LANG_NOTE["nl"] if english_only else None) if p]
+    return "\n\n".join(parts)
+
+def chat_worker(jid, chat_id, user_text, model, voice=None, speed=1.0, english_only=False):
     job = jobs[jid]
     job["status"] = "queued"
     q = speaker = None
@@ -324,9 +361,12 @@ def chat_worker(jid, chat_id, user_text, model, voice=None, speed=1.0):
             chat = find_chat(chat_id)
             if not chat:
                 raise RuntimeError("that chat no longer exists")
-            msgs = ([{"role": "system", "content": chat["system"]}] if chat.get("system") else []) \
+            system = chat_system(chat, english_only)
+            msgs = ([{"role": "system", "content": system}] if system else []) \
+                 + (LANG_PRIMER["nl"] if english_only else []) \
                  + [{"role": m["role"], "content": m["content"]} for m in chat.get("messages") or []] \
-                 + [{"role": "user", "content": user_text}]
+                 + [{"role": "user",
+                     "content": user_text + (LANG_REMINDER["nl"] if english_only else "")}]
             if voice:
                 q = queue.Queue()
                 speaker = threading.Thread(target=speak_stream_worker,
@@ -441,21 +481,21 @@ def transcribe_worker(jid, clip, model_name, lang):
             job.update(status="error", error=str(e)[:300])
 
 # ---- text to speech ----
-# Kokoro is kept resident in a worker process. Loading the ONNX model cost ~1.9 s on every
-# single render when we shelled out to the CLI — more than the audio itself for a short
-# sentence. Now that's paid once, on the first request after a restart.
-_kokoro      = {"proc": None, "used": 0.0}
+# Both engines are kept resident in a worker process. Loading Kokoro's ONNX model cost ~1.9 s
+# on every single render when we shelled out to the CLI — more than the audio itself for a
+# short sentence. Now that's paid once per engine, on its first request after a restart.
+_workers      = {name: {"proc": None, "used": 0.0} for name in ENGINES}
 # Held across a whole request/response, not just startup. The idle reaper takes the same lock,
-# which is what stops it from killing the worker in the gap between starting one and writing
+# which is what stops it from killing a worker in the gap between starting one and writing
 # to it. Renders are already serialized by run_lock, so this adds no real contention.
-_kokoro_lock = threading.RLock()
-KOKORO_START_TIMEOUT = 180           # first load reads a 325 MB model off disk
-KOKORO_CALL_TIMEOUT  = 900
-# Idle worker holds 550 MB-1 GB (onnxruntime keeps its arena), and restarting costs ~1.2 s,
-# so it's cheap to let it go. 0 disables the reaper and keeps it resident forever.
-KOKORO_IDLE_SECONDS  = int(os.environ.get("KOKORO_IDLE_MINUTES", "10")) * 60
+_worker_lock  = threading.RLock()
+TTS_START_TIMEOUT = 180           # first load reads a few hundred MB of model off disk
+TTS_CALL_TIMEOUT  = 900
+# An idle Kokoro worker holds 550 MB-1 GB (onnxruntime keeps its arena) and restarting costs
+# ~1.2 s, so it's cheap to let go. 0 disables the reaper and keeps them resident forever.
+TTS_IDLE_SECONDS  = int(os.environ.get("KOKORO_IDLE_MINUTES", "10")) * 60
 
-def _kokoro_line(proc, timeout):
+def _worker_line(engine, proc, timeout):
     """Read one newline-terminated response, without blocking forever on a wedged worker.
     The protocol is strictly one request → one response, so there's never a second line
     buffered behind the one we want."""
@@ -463,62 +503,63 @@ def _kokoro_line(proc, timeout):
     while b"\n" not in buf:
         remain = end - time.monotonic()
         if remain <= 0:
-            raise TimeoutError("the Kokoro worker stopped responding")
+            raise TimeoutError(f"the {engine} worker stopped responding")
         if not select.select([fd], [], [], min(remain, 1.0))[0]:
             if proc.poll() is not None:
-                raise RuntimeError("the Kokoro worker exited")
+                raise RuntimeError(f"the {engine} worker exited")
             continue
         chunk = os.read(fd, 65536)
         if not chunk:
-            raise RuntimeError("the Kokoro worker closed its pipe")
+            raise RuntimeError(f"the {engine} worker closed its pipe")
         buf += chunk
     return json.loads(buf.split(b"\n", 1)[0].decode())
 
-def kokoro_start():
-    """Start the worker if it isn't running. A dead worker is simply replaced — the next
-    render pays the load again rather than failing for good."""
-    with _kokoro_lock:
-        proc = _kokoro["proc"]
+def worker_start(engine):
+    """Start an engine's worker if it isn't running. A dead worker is simply replaced — the
+    next render pays the load again rather than failing for good."""
+    spec = ENGINES[engine]
+    with _worker_lock:
+        proc = _workers[engine]["proc"]
         if proc is not None and proc.poll() is None:
             return proc
-        if not os.path.exists(KOKORO_PY):
-            raise RuntimeError(f"Kokoro's interpreter is missing at {KOKORO_PY}")
-        proc = subprocess.Popen([KOKORO_PY, KOKORO_WORKER, KOKORO_DIR],
+        if not os.path.exists(spec["py"]):
+            raise RuntimeError(f"{engine}'s interpreter is missing at {spec['py']}")
+        proc = subprocess.Popen([spec["py"], spec["worker"], spec["arg"]],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
-        hello = _kokoro_line(proc, KOKORO_START_TIMEOUT)   # blocks until the model is loaded
+        hello = _worker_line(engine, proc, TTS_START_TIMEOUT)   # blocks until the model loads
         if not hello.get("ok"):
             proc.kill()
-            raise RuntimeError(hello.get("error") or "the Kokoro worker failed to start")
-        _kokoro["proc"] = proc
+            raise RuntimeError(hello.get("error") or f"the {engine} worker failed to start")
+        _workers[engine]["proc"] = proc
         return proc
 
-def kokoro_call(payload, timeout=KOKORO_CALL_TIMEOUT):
-    with _kokoro_lock:
-        proc = kokoro_start()
+def worker_call(engine, payload, timeout=TTS_CALL_TIMEOUT):
+    with _worker_lock:
+        proc = worker_start(engine)
         try:
             proc.stdin.write((json.dumps(payload) + "\n").encode())
             proc.stdin.flush()
-            res = _kokoro_line(proc, timeout)
+            res = _worker_line(engine, proc, timeout)
         except Exception:
             # a broken pipe or a timeout means this worker is no good; drop it so the next
             # call starts a fresh one
-            kokoro_stop(proc)
+            worker_stop(engine, proc)
             raise
         finally:
-            _kokoro["used"] = time.monotonic()
+            _workers[engine]["used"] = time.monotonic()
     if not res.get("ok"):
-        raise RuntimeError(res.get("error") or "kokoro failed")
+        raise RuntimeError(res.get("error") or f"{engine} failed")
     return res
 
-def kokoro_stop(proc=None):
-    """Shut the worker down and let its ~700 MB go. Closing stdin ends the worker's read
-    loop; the kill is only for one that has stopped listening."""
-    with _kokoro_lock:
-        proc = proc or _kokoro["proc"]
+def worker_stop(engine, proc=None):
+    """Shut a worker down and let its memory go. Closing stdin ends the worker's read loop;
+    the kill is only for one that has stopped listening."""
+    with _worker_lock:
+        proc = proc or _workers[engine]["proc"]
         if proc is None:
             return
-        if _kokoro["proc"] is proc:
-            _kokoro["proc"] = None
+        if _workers[engine]["proc"] is proc:
+            _workers[engine]["proc"] = None
         try:
             if proc.stdin and not proc.stdin.closed: proc.stdin.close()
             proc.wait(timeout=5)
@@ -526,30 +567,63 @@ def kokoro_stop(proc=None):
             try: proc.kill()
             except Exception: pass
 
-def kokoro_reaper():
-    """Release the model after a stretch of no renders. Takes the same lock as kokoro_call,
+def worker_reaper():
+    """Release the models after a stretch of no renders. Takes the same lock as worker_call,
     so it can never land in the middle of one."""
     while True:
         time.sleep(30)
         try:
-            with _kokoro_lock:
-                proc = _kokoro["proc"]
-                if (proc is not None and proc.poll() is None
-                        and time.monotonic() - _kokoro["used"] > KOKORO_IDLE_SECONDS):
-                    kokoro_stop(proc)
+            with _worker_lock:
+                for engine, state in _workers.items():
+                    proc = state["proc"]
+                    if (proc is not None and proc.poll() is None
+                            and time.monotonic() - state["used"] > TTS_IDLE_SECONDS):
+                        worker_stop(engine, proc)
         except Exception:
-            pass          # a reaper that dies would leak the worker for the process lifetime
+            pass          # a reaper that dies would leak the workers for the process lifetime
 
-_voices = None
+_voices = {}
 
 def kokoro_voices():
-    global _voices
-    if _voices is None:
+    if "kokoro" not in _voices:
         try:
-            _voices = kokoro_call({"op": "voices"}, timeout=KOKORO_START_TIMEOUT)["voices"]
+            _voices["kokoro"] = worker_call("kokoro", {"op": "voices"},
+                                            timeout=TTS_START_TIMEOUT)["voices"]
         except Exception:
-            _voices = []
-    return _voices
+            _voices["kokoro"] = []
+    return _voices["kokoro"]
+
+def piper_voices():
+    """[{id, lang, name, quality}] for whatever Dutch models are in the voices dir."""
+    if "piper" not in _voices:
+        try:
+            _voices["piper"] = worker_call("piper", {"op": "voices"},
+                                           timeout=TTS_START_TIMEOUT)["voices"]
+        except Exception:
+            _voices["piper"] = []
+    return _voices["piper"]
+
+def piper_voice_ids():
+    return [v["id"] for v in piper_voices()]
+
+def tts_engine_of(voice):
+    """Which engine owns a voice name. Kokoro's are like 'af_heart', Piper's 'nl_NL-ronnie-
+    medium', so the name alone is enough and callers don't have to track it."""
+    if voice in piper_voice_ids():
+        return "piper"
+    if voice in kokoro_voices():
+        return "kokoro"
+    return None
+
+def tts_say(voice, text, speed, out):
+    """Render with whichever engine owns the voice."""
+    engine = tts_engine_of(voice)
+    if engine is None:
+        raise RuntimeError(f"unknown voice: {voice}")
+    payload = {"op": "say", "text": text, "voice": voice, "speed": speed, "out": out}
+    if engine == "kokoro":
+        payload["lang"] = VOICE_LANG.get(voice[:2], "en-us")
+    return worker_call(engine, payload)
 
 def speak_worker(jid, engine, text, voice, speed, ref_audio, ref_text, trim, nfe):
     job = jobs[jid]
@@ -559,11 +633,9 @@ def speak_worker(jid, engine, text, voice, speed, ref_audio, ref_text, trim, nfe
     tmp_ref = tmp_gen = None
     with run_lock:
         try:
-            if engine == "kokoro":
+            if engine != "f5":
                 job["status"] = "generating"
-                kokoro_call({"op": "say", "text": respell(text), "voice": voice,
-                             "speed": speed, "lang": VOICE_LANG.get(voice[:2], "en-us"),
-                             "out": out})
+                tts_say(voice, respell(text), speed, out)
             else:
                 ref = ref_audio
                 if trim:                       # F5 truncates long references anyway
@@ -696,9 +768,11 @@ def api_speak():
     ref_audio = ref_text = None
     voice, trim = "af_heart", False
     nfe = 16 if str(d.get("nfe")) == "16" else 32
-    if engine == "kokoro":
+    if engine != "f5":
+        # Kokoro and Piper are both picked by voice name, so the caller doesn't have to say
+        # which engine a voice belongs to — tts_say works that out.
         v = d.get("voice") or "af_heart"
-        voice = v if v in kokoro_voices() else "af_heart"
+        voice = v if tts_engine_of(v) else "af_heart"
     else:
         preset = find_preset(d.get("preset_id") or "")
         if preset:
@@ -831,6 +905,8 @@ def api_chat_new():
              "name": (d.get("name") or "").strip() or "New chat",
              "model": (d.get("model") or DEFAULT_CHAT_MODEL).strip(),
              "system": d.get("system") if d.get("system") is not None else DEFAULT_SYSTEM,
+             # what you speak, not what it answers in — see LANG_NOTE
+             "language": d.get("language") if d.get("language") in LANGS else "en",
              "created": int(time.time()), "updated": int(time.time()), "messages": []}
     with index_lock:
         items = load_chats()
@@ -849,6 +925,7 @@ def api_chat_update():
             if c.get("id") != d["id"]: continue
             for key in ("name", "model", "system"):
                 if d.get(key) is not None: c[key] = d[key]
+            if d.get("language") in LANGS: c["language"] = d["language"]
             c["updated"] = int(time.time())
         write_chats(items)
     return jsonify(ok=True, chat=find_chat(d["id"]))
@@ -887,15 +964,22 @@ def api_chat():
     if not text:
         return jsonify(error="type something first"), 400
     model = (d.get("model") or chat.get("model") or DEFAULT_CHAT_MODEL).strip()
-    # Passing a voice turns on sentence-by-sentence speech: the first sentence is spoken while
-    # the model is still writing the rest.
-    voice = d.get("voice") if d.get("voice") in kokoro_voices() else None
+    # The voice is sent whether or not it will be spoken, because it decides what language the
+    # reply should be in; `speak` is what turns on sentence-by-sentence rendering.
+    voice  = d.get("voice") if tts_engine_of(d.get("voice") or "") else None
+    engine = tts_engine_of(voice) if voice else None
     try:
         speed = min(2.0, max(0.5, float(d.get("speed") or 1.0)))
     except (TypeError, ValueError):
         speed = 1.0
+    language = d.get("language") if d.get("language") in LANGS else (chat.get("language") or "en")
+    # Only force English when the voice can't speak Dutch. With a Piper voice selected the
+    # model is left alone and answers in Dutch, which is the whole point of having it.
+    english_only = (language == "nl" and engine != "piper")
     jid = new_job("chat")
-    threading.Thread(target=chat_worker, args=(jid, chat["id"], text, model, voice, speed),
+    threading.Thread(target=chat_worker,
+                     args=(jid, chat["id"], text, model, voice if d.get("speak") else None,
+                           speed, english_only),
                      daemon=True).start()
     return jsonify(job_id=jid)
 
@@ -908,13 +992,14 @@ def api_status(job_id):
 
 @app.get("/api/voices")
 def api_voices():
-    return jsonify(voices=kokoro_voices(), lang_of=VOICE_LANG)
+    return jsonify(voices=kokoro_voices(), piper=piper_voices(), lang_of=VOICE_LANG)
 
 @app.get("/api/sample/<voice>")
 def api_sample(voice):
     """A short spoken sample of one voice, for the ▶ button beside the pickers. Rendered on
     first request and then served from disk, so browsing voices costs ~1 s once each."""
-    if voice not in kokoro_voices():
+    engine = tts_engine_of(voice)
+    if engine is None:
         return jsonify(error="unknown voice"), 404
     name = voice + ".wav"
     path = os.path.join(SAMPLES_DIR, name)
@@ -923,8 +1008,7 @@ def api_sample(voice):
         if not run_lock.acquire(timeout=30):
             return jsonify(error="busy generating something else — try again in a moment"), 503
         try:
-            kokoro_call({"op": "say", "text": SAMPLE_TEXT, "voice": voice, "speed": 1.0,
-                         "lang": VOICE_LANG.get(voice[:2], "en-us"), "out": path})
+            tts_say(voice, SAMPLE_TEXT[engine], 1.0, path)
         except Exception as e:
             if os.path.exists(path): os.remove(path)     # don't cache a half-written file
             return jsonify(error=str(e)[:200]), 500
@@ -966,6 +1050,6 @@ def index():
     return r
 
 if __name__ == "__main__":
-    if KOKORO_IDLE_SECONDS > 0:
-        threading.Thread(target=kokoro_reaper, daemon=True).start()
+    if TTS_IDLE_SECONDS > 0:
+        threading.Thread(target=worker_reaper, daemon=True).start()
     app.run(host="127.0.0.1", port=PORT, threaded=True)

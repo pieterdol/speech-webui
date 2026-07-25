@@ -54,9 +54,17 @@ the text fields in panel 3. Transcripts are cached per clip in `clips.json`.
   Spanish, French, Hindi, Italian, Portuguese, Japanese and Mandarin; `/api/voices` still
   returns all of them, they're just filtered out of the dropdowns. Add their prefixes back to
   `GROUPS` in `fillVoices()` to bring them in.
+- *Piper* — the Dutch engine, because Kokoro has no Dutch voice. Five voices: `alex`, `pim` and
+  `ronnie` (nl_NL), `nathalie` and `rdh` (nl_BE), all *medium* quality, ~61 MB each in
+  `~/.local/share/piper-tts/voices`. Faster than Kokoro — a chat reply of 16 s of audio
+  rendered in 2 s. Same ▶ preview button, in Dutch.
 - *F5-TTS* — clones a voice. Needs the exact transcript of the reference clip, which is
   auto-filled from Whisper when that clip has already been transcribed. Only clone your own
   voice, or one you have permission to use.
+
+Kokoro and Piper share one voice picker; the engine dropdown just decides which set it shows.
+Neither needs naming when you ask for speech — a voice belongs to exactly one engine, so
+`/api/speak` works it out from the voice name.
 
 **Saved voices.** Once a reference clip sounds right, "Save this voice for reuse" stores it as a
 named preset and the app defaults to it from then on — no re-picking the clip or retyping the
@@ -108,8 +116,33 @@ keeps working without it.
   talking* on, it sends itself, so voice in → voice out needs two taps. A spoken turn is
   dictation, not a clip: it posts to `/api/dictate`, which transcribes and then deletes the
   audio, so nothing accumulates in `clips/` or the Studio list.
+- **I speak** — English or Nederlands, per chat. It sets the language 🎤 transcribes with, and
+  tells the model to expect that language.
+- **What language the reply comes back in is decided by the voice, not by this setting.** The
+  chat voice picker offers both engines, and:
+
+  | I speak | voice | reply |
+  | --- | --- | --- |
+  | English | any Kokoro voice | English |
+  | Nederlands | a Kokoro voice | **English** — it can't speak Dutch, so the model is made to answer in English |
+  | Nederlands | a Piper voice | **Dutch** — the model is left alone and answers in Dutch |
+
+  So asking in Dutch and being answered in English is still available; it's what you get by
+  keeping an English voice selected.
 - **System prompt** — per chat. The default asks for short, plain-prose answers, because markdown
   bullets and code fences read terribly out loud.
+
+**Getting an English answer to a Dutch question takes more than asking** — this applies only
+when an English voice is selected. A system-prompt
+instruction alone did not hold: `qwen3:8b` mirrors the language of the latest user turn and
+answered in Dutch anyway, most stubbornly on Dutch subject matter. What works, measured 16/16
+against 3/5 for the instruction alone, is three things together — the note in the system
+prompt, a `[Reply in English.]` marker on the turn itself, and a two-exchange primer showing a
+Dutch question answered in English (the second example deliberately being a factual question
+about the Netherlands, which is where it slipped). The marker and the primer are attached to
+what gets **sent**, never to what's stored, so `chats.json` and the on-screen transcript stay
+clean. Getting turn one right matters most: one Dutch reply in the history and every later
+turn copies it.
 
 Chats live in `chats.json` on the server rather than in the browser, so a conversation started
 on the PC continues on the phone. The first thing you say names the chat.
@@ -130,7 +163,8 @@ It's kept short on purpose: a resident 8B model holds ~5.2 GB of the card's 16 G
 ```
 phone ──https──> tailscale serve :8443 ──> 127.0.0.1:8600  speech.py (Flask)
                                               ├── faster-whisper  (in-process, model resident)
-                                              ├── kokoro_worker   (subprocess, model resident)
+                                              ├── kokoro_worker   (subprocess, English, resident)
+                                              ├── piper_worker    (subprocess, Dutch, resident)
                                               ├── f5-tts CLI      (~/.local/bin/f5-tts)
                                               └── ollama HTTP     (127.0.0.1:11434 → Radeon)
 ```
@@ -178,7 +212,8 @@ all 12 cores, so overlapping a clone with a transcription would just make both c
 ```
 speech.py     Flask app (port 8600). Named speech.py, not app.py, so restart.sh can't
               collide with comfy-webui's (which kills anything matching "app.py").
-kokoro_worker.py  resident Kokoro process, run with Kokoro's venv interpreter
+kokoro_worker.py  resident Kokoro process (English), run with Kokoro's venv interpreter
+piper_worker.py   resident Piper process (Dutch), run with Piper's venv interpreter
 index.html    the whole UI — one file, no build step
 clips/        normalized input clips (gitignored)
 presets/      saved voices — own copy of the reference audio (gitignored)
@@ -228,3 +263,14 @@ chats.json    chat transcripts, per-chat model and system prompt (gitignored)
 - **Spoken replies leave wavs in `outputs/`**, now one per sentence-chunk rather than one per
   reply, so a talkative session accumulates faster than it used to (~190 KB per chunk). They're
   gitignored and safe to delete wholesale.
+- **Kokoro has no Dutch voice** — its 54 cover nine languages and Dutch isn't one. That's why
+  Piper is here. Kokoro *can* be forced at Dutch (`kokoro-tts -l nl` phonemizes through
+  espeak-ng, which knows Dutch) but it's an American accent reading Dutch spelling: on "Het is
+  uitstekend gezellig in Scheveningen…" Whisper heard back "in Skeveningen, waar de
+  Schoonerhuis in Oudzicht gaven op de Rooige Zee", while Piper's nathalie came back nearly
+  intact. Not exposed in the UI; use a Piper voice.
+- **Five of Piper's ten Dutch voices are installed.** The rest are lower-quality `x_low`/`low`
+  variants of the same speakers, plus `nl_NL-mls-medium`, which is a 52-speaker model needing a
+  speaker id the UI doesn't have. Add more by dropping the `.onnx` and `.onnx.json` from
+  huggingface.co/rhasspy/piper-voices into `~/.local/share/piper-tts/voices` — they're picked
+  up on the next restart, no code change.
