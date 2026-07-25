@@ -114,7 +114,10 @@ keeps working without it.
 
 - **Model** — every model installed in Ollama, Qwen first (`qwen3:8b` is the default). Sizes are
   shown because they have to fit in the 16 GB alongside anything ComfyUI has loaded: `qwen3:8b`
-  is ~5.2 GB, `qwen3:14b` ~9.3 GB.
+  is ~5.2 GB, `qwen3:14b` ~9.3 GB. A **👁** marks a vision model (Ollama's `vision` capability,
+  looked up once per model and cached). They answer text perfectly well — tested, all three
+  reply — but they trade some text ability for images this UI has no way to send them, and
+  `moondream` is 1B and shows it. For plain chat, prefer a non-👁 model.
 - **Voice** — the same picker as panel 3, ▶ preview included, remembered separately from the
   panel-3 choice.
 - **🔊 Speak replies out loud** — off by default. On, the reply is spoken **sentence by

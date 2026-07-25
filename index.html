@@ -1265,7 +1265,10 @@ fetch("/api/models").then(r => r.json()).then(d => {
   (d.models || []).forEach(m => {
     const o = document.createElement("option");
     o.value = m.name;
-    o.textContent = m.name + (m.params ? ` · ${m.params}` : "") + (m.size ? ` · ${GB(m.size)}` : "");
+    // 👁 = vision model. They answer text perfectly well, but they trade some of that
+    // ability for images this UI has no way to send them.
+    o.textContent = (m.vision ? "👁 " : "") + m.name
+      + (m.params ? ` · ${m.params}` : "") + (m.size ? ` · ${GB(m.size)}` : "");
     sel.appendChild(o);
   });
   pickOption(sel, store.get("chatModel", d.default || ""));

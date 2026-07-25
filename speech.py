@@ -264,7 +264,7 @@ def append_turn(chat_id, user_text, reply, model):
 
 # ---- ollama ----
 THINK_TAGS = re.compile(r"<think>.*?</think>\s*", re.S)
-_caps = {}      # model -> supports the "thinking" capability
+_caps = {}      # model -> its Ollama capability list, e.g. ["completion", "vision"]
 
 def ollama_json(path, payload=None, timeout=30):
     data = json.dumps(payload).encode() if payload is not None else None
@@ -289,22 +289,29 @@ def ollama_models():
     out  = []
     for m in tags.get("models") or []:
         d = m.get("details") or {}
-        out.append({"name": m.get("name"), "size": m.get("size"),
-                    "params": d.get("parameter_size"), "quant": d.get("quantization_level")})
+        name = m.get("name")
+        # Vision models answer text fine — they're just tuned for images they can't be given
+        # here, and trade some text ability for it. Worth flagging in the picker.
+        out.append({"name": name, "size": m.get("size"),
+                    "params": d.get("parameter_size"), "quant": d.get("quantization_level"),
+                    "vision": "vision" in model_caps(name)})
     # Qwen first (that's what this box has), then the rest, each alphabetically
     out.sort(key=lambda m: (not (m["name"] or "").startswith("qwen"), m["name"] or ""))
     return out
 
+def model_caps(model):
+    """Ollama's capability list for a model, fetched once and kept."""
+    if model not in _caps:
+        try:
+            _caps[model] = ollama_json("/api/show", {"model": model}).get("capabilities") or []
+        except Exception:
+            _caps[model] = []
+    return _caps[model]
+
 def model_thinks(model):
     """qwen3 reasons out loud unless told not to; qwen2.5-coder rejects the flag entirely.
     Ask before sending it."""
-    if model not in _caps:
-        try:
-            info = ollama_json("/api/show", {"model": model})
-            _caps[model] = "thinking" in (info.get("capabilities") or [])
-        except Exception:
-            _caps[model] = False
-    return _caps[model]
+    return "thinking" in model_caps(model)
 
 def ollama_chat_stream(model, messages):
     body = {"model": model, "messages": messages, "stream": True,
