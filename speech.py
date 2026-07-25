@@ -129,6 +129,18 @@ RESPELL = {"Pieter": "Peter"}
 REF_TRIM_SECONDS = 10   # F5 gains nothing from a longer reference
 NFE_STEPS        = (16, 32)   # sampling steps: 16 is ~2x faster, 32 is the default quality
 
+def write_json(path, data):
+    """Write via a temp file and rename, so a reader never sees a half-written index.
+
+    Not theoretical: a whole-book render rewrites books.json after every chapter while the
+    page polls it, and a plain truncate-and-write made the book disappear mid-save."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
 def respell(text):
     for src, dst in RESPELL.items():
         text = re.sub(rf"\b{re.escape(src)}\b", dst, text, flags=re.IGNORECASE)
@@ -207,7 +219,7 @@ def load_index():
         return []
 
 def write_index(items):
-    with open(INDEX_FILE, "w") as f: json.dump(items, f, indent=2)
+    write_json(INDEX_FILE, items)
 
 def find_clip(clip_id):
     return next((c for c in load_index() if c.get("id") == clip_id), None)
@@ -225,7 +237,7 @@ def load_presets():
         return []
 
 def write_presets(items):
-    with open(PRESETS_FILE, "w") as f: json.dump(items, f, indent=2)
+    write_json(PRESETS_FILE, items)
 
 def find_preset(preset_id):
     return next((p for p in load_presets() if p.get("id") == preset_id), None)
@@ -240,7 +252,7 @@ def load_chats():
         return []
 
 def write_chats(items):
-    with open(CHATS_FILE, "w") as f: json.dump(items, f, indent=2)
+    write_json(CHATS_FILE, items)
 
 def find_chat(chat_id):
     return next((c for c in load_chats() if c.get("id") == chat_id), None)
@@ -438,7 +450,7 @@ def load_books():
         return []
 
 def write_books(items):
-    with open(BOOKS_FILE, "w") as f: json.dump(items, f, indent=2)
+    write_json(BOOKS_FILE, items)
 
 def find_book(book_id):
     return next((b for b in load_books() if b.get("id") == book_id), None)
