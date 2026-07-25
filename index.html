@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#15131f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Speech">
+<link rel="apple-touch-icon" href="/icon.png">
+<link rel="icon" href="/icon.png">
+<title>Local Speech Studio</title>
+<style>
+  :root { --bg:#15131f; --card:#1e1b2e; --line:#332e4a; --accent:#8a6cff; --text:#e9e6f5; --muted:#a49fc0;
+          --rec:#ff5d7a; --ok:#7ee6a0; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  /* env(safe-area-inset-*) keeps the header clear of the iOS status bar / notch when the
+     app runs from the home screen (black-translucent puts us under it). 0 in a browser tab. */
+  header { font-size:19px; font-weight:700; border-bottom:1px solid var(--line);
+           padding:16px calc(16px + env(safe-area-inset-right,0px))
+                   16px calc(16px + env(safe-area-inset-left,0px));
+           padding-top:calc(16px + env(safe-area-inset-top,0px));
+           position:sticky; top:0; background:var(--bg); z-index:5; display:flex; align-items:center; gap:10px; }
+  header .htext { flex:1; }
+  header small { color:var(--muted); font-weight:400; font-size:12px; display:block; margin-top:2px; }
+  #reload { flex:none; width:44px; height:44px; font-size:22px; line-height:1; border-radius:11px;
+            background:var(--card); color:var(--accent); border:1px solid var(--line); }
+  main { max-width:760px; margin:0 auto;
+         padding:14px calc(14px + env(safe-area-inset-right,0px))
+                 calc(28px + env(safe-area-inset-bottom,0px)) calc(14px + env(safe-area-inset-left,0px)); }
+  /* Desktop: capture + controls on the left, results on the right. Mobile keeps one column. */
+  @media (min-width:900px){
+    main { max-width:none; display:flex; align-items:flex-start; gap:28px; }
+    .form-col { flex:0 0 480px; position:sticky; top:78px;
+                max-height:calc(100vh - 94px); overflow-y:auto; padding-right:4px; }
+    .results-col { flex:1; min-width:0; }
+    .results-col #status { margin-top:0; }
+  }
+  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted);
+       margin:22px 0 8px; font-weight:600; }
+  h2:first-child { margin-top:4px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:12px 0 5px; }
+  textarea, input[type=text], input[type=file], select {
+    width:100%; padding:12px; font-size:16px; background:var(--card); color:var(--text);
+    border:1px solid var(--line); border-radius:10px; }
+  .card textarea, .card select, .card input[type=text] { background:var(--bg); }
+  textarea { min-height:80px; resize:vertical; }
+  input[type=file] { font-size:13px; color:var(--muted); padding:10px; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  .row { display:flex; gap:10px; } .row > div { flex:1; }
+  .check { display:flex; align-items:center; gap:9px; margin-top:12px; font-size:15px; }
+  .check input { width:20px; height:20px; accent-color:var(--accent); flex:none; }
+  button { font-family:inherit; }
+  .btn { padding:12px 14px; font-size:15px; border-radius:10px; border:1px solid var(--line);
+         background:#2a2640; color:var(--text); }
+  .btn.primary { background:var(--accent); color:#fff; border:none; font-weight:700; }
+  .btn:disabled { opacity:.5; }
+  .wide { width:100%; margin-top:14px; padding:15px; font-size:17px; }
+  #recBtn { width:100%; padding:18px; font-size:18px; font-weight:700; border-radius:12px;
+            border:1px solid var(--line); background:#2a2640; color:var(--text);
+            display:flex; align-items:center; justify-content:center; gap:10px; }
+  #recBtn.on { background:#3a1f2c; border-color:#7a2f42; color:#ffd0da; }
+  #recBtn .dot { width:13px; height:13px; border-radius:50%; background:var(--rec); flex:none; }
+  #recBtn.on .dot { animation:pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity:.25; } }
+  .hint { font-size:12.5px; color:var(--muted); margin-top:8px; line-height:1.45; }
+  .or { text-align:center; color:var(--muted); font-size:12px; margin:12px 0 6px; }
+  .clip { border-top:1px solid var(--line); padding:10px 0; }
+  .clip:first-child { border-top:none; }
+  .cliphead { display:flex; align-items:baseline; gap:8px; }
+  .cliphead .nm { flex:1; font-size:14px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .cliphead .dur { flex:none; font-size:12px; color:var(--muted); }
+  .clip audio { width:100%; margin-top:8px; height:34px; }
+  .clipacts { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .clipacts button { flex:1 1 30%; padding:9px; font-size:13px; border-radius:9px;
+                     border:1px solid var(--line); background:#2a2640; color:var(--text); }
+  .clipacts .del { color:#ff9db0; border-color:#7a2f42; background:#2e2030; flex:0 0 44px; }
+  .tr { font-size:12.5px; color:var(--muted); margin-top:7px; overflow:hidden;
+        text-overflow:ellipsis; white-space:nowrap; }
+  #status { margin-top:16px; padding:12px 14px; border-radius:10px; background:var(--card);
+            border:1px solid var(--line); font-size:15px; display:none; }
+  #status.err { border-color:#b3455e; color:#ff9db0; }
+  .out { background:var(--card); border:1px solid var(--line); border-radius:12px;
+         padding:12px; margin-top:14px; }
+  .outhead { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;
+             margin-bottom:8px; display:flex; align-items:center; gap:8px; }
+  .outhead .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .outhead .dismiss { flex:none; width:32px; height:32px; margin:-6px -4px -6px 0; font-size:16px;
+                      line-height:1; border-radius:8px; border:1px solid var(--line);
+                      background:#2a2640; color:var(--muted); }
+  .txt { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:12px;
+         white-space:pre-wrap; word-break:break-word; font-size:15px; line-height:1.5;
+         -webkit-user-select:text; user-select:text; }
+  .acts { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+  .acts button, .acts a { flex:1 1 30%; text-align:center; padding:11px; font-size:14px; border-radius:9px;
+    border:1px solid var(--line); background:#2a2640; color:var(--text); text-decoration:none; }
+  .acts .copy.done { color:var(--ok); border-color:#2f6b45; }
+  .acts .del { color:#ff9db0; border-color:#7a2f42; background:#2e2030; }
+  .out audio { width:100%; margin-top:2px; }
+  .dim { color:var(--muted); font-size:13.5px; }
+  .warn { color:#ffd479; font-size:12.5px; margin-top:8px; }
+  .spin { display:inline-block; width:15px; height:15px; border:2px solid var(--muted);
+    border-top-color:var(--accent); border-radius:50%; animation:s .8s linear infinite; vertical-align:-2px; margin-right:7px; }
+  @keyframes s { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <div class="htext">🎙️ Local Speech Studio <small>Whisper · Kokoro · F5-TTS — all on your PC</small></div>
+  <button id="reload" title="Reload app" aria-label="Reload">↻</button>
+</header>
+<main>
+ <div class="form-col">
+
+  <h2>1 · Record or add a clip</h2>
+  <div class="card">
+    <button id="recBtn"><span class="dot"></span><span id="recLabel">Record</span></button>
+    <label class="check"><input type="checkbox" id="autoTr" checked> Transcribe as soon as I stop</label>
+    <div class="or">— or add audio recorded elsewhere —</div>
+    <input type="file" id="clipFile" accept="audio/*">
+    <div class="hint" id="micHint"></div>
+  </div>
+
+  <h2>Clips</h2>
+  <div class="card" id="clipList"><p class="dim">No clips yet — record one, or add a file.</p></div>
+
+  <h2>2 · Speech → text</h2>
+  <div class="card">
+    <label for="trClip">Clip</label>
+    <select id="trClip"></select>
+    <div class="row" style="margin-top:10px">
+      <div>
+        <label for="trModel">Model</label>
+        <select id="trModel">
+          <option value="small">Small — fast</option>
+          <option value="large-v3-turbo">Turbo — accurate, slower</option>
+        </select>
+      </div>
+      <div>
+        <label for="trLang">Language</label>
+        <select id="trLang">
+          <option value="en">English</option>
+          <option value="nl">Nederlands</option>
+        </select>
+      </div>
+    </div>
+    <button id="trGo" class="btn primary wide">Transcribe</button>
+  </div>
+
+  <h2>3 · Text → speech</h2>
+  <div class="card">
+    <label for="engine">Engine</label>
+    <select id="engine">
+      <option value="kokoro">Kokoro — 54 built-in voices, seconds</option>
+      <option value="f5">F5-TTS — clone a clip, minutes</option>
+    </select>
+
+    <div id="kokoroFields">
+      <label for="voice">Voice</label>
+      <select id="voice"></select>
+    </div>
+
+    <div id="f5Fields" style="display:none">
+      <label for="preset">Voice</label>
+      <select id="preset"></select>
+      <div class="hint">Use your own voice, or one you have permission to clone.</div>
+
+      <div id="presetInfo" style="display:none">
+        <div class="hint" id="presetAbout"></div>
+        <button id="presetDel" class="btn" style="margin-top:8px">🗑 Delete this voice</button>
+      </div>
+
+      <div id="newVoiceFields">
+        <label for="refClip">Reference clip</label>
+        <select id="refClip"></select>
+        <label for="refText">What is said in that clip</label>
+        <textarea id="refText" placeholder="Exact words spoken in the reference clip"></textarea>
+        <button id="refFill" class="btn" style="margin-top:8px">Transcribe the clip to fill this</button>
+        <label class="check"><input type="checkbox" id="trim" checked> Use only the first 10 seconds</label>
+        <button id="presetSave" class="btn" style="margin-top:12px">💾 Save this voice for reuse</button>
+      </div>
+
+      <label for="nfe">Quality</label>
+      <select id="nfe">
+        <option value="32">Standard — 32 steps (~2 min per sentence)</option>
+        <option value="16">Faster — 16 steps (~1 min per sentence)</option>
+      </select>
+      <div class="warn" id="f5Warn">Cloning runs on CPU — roughly 2 minutes per sentence.</div>
+    </div>
+
+    <label for="speed">Speed <span id="speedVal" class="dim">1.0×</span></label>
+    <input type="range" id="speed" min="0.5" max="2" step="0.05" value="1">
+
+    <label for="outText">Text to speak</label>
+    <textarea id="outText" placeholder="What should it say?"></textarea>
+    <button id="genGo" class="btn primary wide">Generate audio</button>
+  </div>
+ </div>
+
+ <div class="results-col">
+   <div id="status"></div>
+   <div id="results"></div>
+ </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => (s||"").replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const statusEl = $("#status"), results = $("#results");
+const secure = window.isSecureContext;
+
+function setStatus(html, err=false){
+  statusEl.style.display = "block";
+  statusEl.className = err ? "err" : "";
+  statusEl.innerHTML = html;
+}
+const fmt = s => { s = Math.round(s||0); return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`; };
+
+// remember the picks that are annoying to redo on a phone
+const store = {
+  get(k, d){ try { return localStorage.getItem("sp."+k) ?? d; } catch(e){ return d; } },
+  set(k, v){ try { localStorage.setItem("sp."+k, v); } catch(e){} },
+};
+
+// ---- clips ----
+let CLIPS = [];
+async function loadClips(selectId){
+  const d = await (await fetch("/api/clips")).json();
+  CLIPS = d.clips || [];
+  renderClips();
+  fillClipSelects(selectId);
+}
+function renderClips(){
+  const box = $("#clipList");
+  if(!CLIPS.length){ box.innerHTML = '<p class="dim">No clips yet — record one, or add a file.</p>'; return; }
+  box.innerHTML = "";
+  CLIPS.forEach(c => {
+    const el = document.createElement("div");
+    el.className = "clip";
+    el.innerHTML = `<div class="cliphead"><div class="nm">${esc(c.name)}</div>
+        <div class="dur">${fmt(c.seconds)}</div></div>
+      <audio controls preload="none" src="${c.url}"></audio>
+      <div class="clipacts">
+        <button class="tra">Transcribe</button>
+        <button class="use">Use as voice</button>
+        <button class="del" title="Delete">🗑</button>
+      </div>
+      ${c.transcript ? `<div class="tr">📝 ${esc(c.transcript)}</div>` : ""}`;
+    el.querySelector(".tra").addEventListener("click", ()=>{ $("#trClip").value = c.id; transcribe(); });
+    el.querySelector(".use").addEventListener("click", ()=>useAsVoice(c.id));
+    el.querySelector(".del").addEventListener("click", ()=>delClip(c));
+    box.appendChild(el);
+  });
+}
+function fillClipSelects(selectId){
+  [["#trClip", selectId], ["#refClip", selectId]].forEach(([sel, want])=>{
+    const el = $(sel), prev = want || el.value;
+    el.innerHTML = "";
+    CLIPS.forEach(c => {
+      const o = document.createElement("option");
+      o.value = c.id; o.textContent = `${c.name} · ${fmt(c.seconds)}`;
+      el.appendChild(o);
+    });
+    if(CLIPS.some(c => c.id === prev)) el.value = prev;
+  });
+  syncRefText();
+}
+function useAsVoice(id){
+  $("#engine").value = "f5"; toggleEngine();
+  $("#preset").value = ""; togglePreset();     // building a new voice, not using a saved one
+  $("#refClip").value = id; syncRefText();
+  $("#outText").focus();
+  setStatus("Reference clip set — type what it should say, then Generate.");
+}
+async function delClip(c){
+  if(!confirm(`Delete “${c.name}”? This removes the file on the PC.`)) return;
+  await fetch("/api/clips/delete", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: c.id})});
+  // the clip is gone, so its transcript card shouldn't outlive it
+  results.querySelectorAll('.out[data-clip="'+c.id+'"]').forEach(el => el.remove());
+  loadClips();
+}
+// ---- saved voices (presets) ----
+// A preset keeps its own copy of the audio server-side, so it survives deleting the clip.
+let PRESETS = [];
+async function loadPresets(selectId){
+  const d = await (await fetch("/api/presets")).json();
+  PRESETS = d.presets || [];
+  const sel = $("#preset");
+  // With saved voices around, default to the newest one — reusing a saved voice is the
+  // point. An explicit "new voice from a clip" choice is stored as "" and respected.
+  const stored = store.get("preset", null);
+  let want = selectId || (stored === null ? (PRESETS[0] ? PRESETS[0].id : "") : stored);
+  if(want && !PRESETS.some(p => p.id === want)) want = PRESETS.length ? PRESETS[0].id : "";
+  sel.innerHTML = "";
+  PRESETS.forEach(p => {
+    const o = document.createElement("option");
+    o.value = p.id; o.textContent = `${p.name} · ${fmt(p.seconds)}`;
+    sel.appendChild(o);
+  });
+  const o = document.createElement("option");
+  o.value = ""; o.textContent = PRESETS.length ? "＋ New voice from a clip…" : "＋ New voice from a clip";
+  sel.appendChild(o);
+  sel.value = want;
+  togglePreset();
+}
+function togglePreset(){
+  const p = PRESETS.find(x => x.id === $("#preset").value);
+  store.set("preset", p ? p.id : "");
+  $("#presetInfo").style.display = p ? "block" : "none";
+  $("#newVoiceFields").style.display = p ? "none" : "block";
+  if(p) $("#presetAbout").textContent =
+    `Cloned from “${p.from}” · ${fmt(p.seconds)} · says: “${p.ref_text}”`;
+}
+$("#preset").addEventListener("change", togglePreset);
+
+async function savePreset(){
+  const clip_id = $("#refClip").value, ref_text = $("#refText").value.trim();
+  if(!clip_id){ setStatus("Pick a reference clip first.", true); return; }
+  if(!ref_text){ setStatus("Fill in what is said in the clip first.", true); return; }
+  const clip = CLIPS.find(c => c.id === clip_id);
+  const name = prompt("Name this voice:", clip ? clip.name : "My voice");
+  if(name === null) return;
+  const btn = $("#presetSave"); btn.disabled = true; btn.textContent = "Saving…";
+  try{
+    const d = await (await fetch("/api/presets", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({clip_id, ref_text, name, trim: $("#trim").checked})})).json();
+    if(!d.ok){ setStatus("❌ "+(d.msg||"couldn't save"), true); }
+    else { await loadPresets(d.preset.id); setStatus(`✅ Saved “${d.preset.name}” — pick it any time.`); }
+  }catch(e){ setStatus("❌ "+e, true); }
+  btn.disabled = false; btn.textContent = "💾 Save this voice for reuse";
+}
+$("#presetSave").addEventListener("click", savePreset);
+
+async function delPreset(){
+  const p = PRESETS.find(x => x.id === $("#preset").value);
+  if(!p) return;
+  if(!confirm(`Delete the saved voice “${p.name}”?`)) return;
+  await fetch("/api/presets/delete", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: p.id})});
+  await loadPresets("");
+  setStatus(`Deleted “${p.name}”.`);
+}
+$("#presetDel").addEventListener("click", delPreset);
+
+// the reference transcript F5-TTS needs is exactly what Whisper already produced
+function syncRefText(){
+  const c = CLIPS.find(x => x.id === $("#refClip").value);
+  const box = $("#refText");
+  if(c && c.transcript && !box.value.trim()) box.value = c.transcript;
+  $("#refFill").style.display = (c && c.transcript) ? "none" : "block";
+}
+$("#refClip").addEventListener("change", ()=>{ $("#refText").value = ""; syncRefText(); });
+
+// ---- upload (recording blob or picked file) ----
+async function upload(blob, name, source){
+  const fd = new FormData();
+  fd.append("file", blob, name);
+  fd.append("source", source);
+  if(source === "recorded") fd.append("name", "");
+  setStatus('<span class="spin"></span>Adding clip…');
+  try{
+    const d = await (await fetch("/api/clips", {method:"POST", body:fd})).json();
+    if(!d.ok){ setStatus("❌ "+(d.msg||"upload failed"), true); return null; }
+    await loadClips(d.clip.id);
+    setStatus(`✅ Added “${d.clip.name}” · ${fmt(d.clip.seconds)}`);
+    return d.clip;
+  }catch(e){ setStatus("❌ "+e, true); return null; }
+}
+$("#clipFile").addEventListener("change", async e => {
+  const f = e.target.files[0];
+  if(!f) return;
+  const clip = await upload(f, f.name, "uploaded");
+  e.target.value = "";
+  if(clip && $("#autoTr").checked){ $("#trClip").value = clip.id; transcribe(); }
+});
+
+// ---- recording ----
+let rec = null, chunks = [], timer = null, t0 = 0;
+function pickMime(){
+  // Chrome/Firefox do webm/opus; iOS Safari only does mp4/aac
+  const want = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/aac"];
+  return want.find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || "";
+}
+async function startRec(){
+  if(!navigator.mediaDevices || !window.MediaRecorder){
+    setStatus(secure ? "❌ This browser can't record — use the file picker below."
+      : "❌ The microphone is blocked on plain http. Open the app over https://your-machine.your-tailnet.ts.net:8443, or add a file below.", true);
+    return;
+  }
+  let stream;
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({audio:true});
+  }catch(e){
+    setStatus("❌ Microphone permission denied ("+e.name+"). Allow it in your browser settings, or add a file below.", true);
+    return;
+  }
+  const mime = pickMime();
+  chunks = [];
+  // Everything below closes over `mr`, never the module-level `rec` — stopRec() clears
+  // `rec` synchronously, while onstop fires a tick later.
+  const mr = new MediaRecorder(stream, mime ? {mimeType:mime} : undefined);
+  const type = mr.mimeType || mime || "audio/webm";
+  mr.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
+  mr.onerror = e => {
+    stream.getTracks().forEach(t => t.stop());
+    setStatus("❌ Recording failed ("+((e.error && e.error.name) || "unknown")+"). Try the file picker below.", true);
+  };
+  mr.onstop = async () => {
+    stream.getTracks().forEach(t => t.stop());
+    if(!chunks.length){
+      setStatus("❌ That recording came back empty — hold the button a moment longer, or use the file picker.", true);
+      return;
+    }
+    const ext  = type.includes("mp4") || type.includes("aac") ? "m4a" : "webm";
+    const clip = await upload(new Blob(chunks, {type}), "recording."+ext, "recorded");
+    if(clip && $("#autoTr").checked){ $("#trClip").value = clip.id; transcribe(); }
+  };
+  rec = mr;
+  mr.start();
+  t0 = Date.now();
+  $("#recBtn").classList.add("on");
+  timer = setInterval(()=>{ $("#recLabel").textContent = "Stop · " + fmt((Date.now()-t0)/1000); }, 250);
+  $("#recLabel").textContent = "Stop · 0:00";
+  setStatus("🎙️ Recording… speak, then tap Stop.");
+}
+function stopRec(){
+  clearInterval(timer);
+  $("#recBtn").classList.remove("on");
+  $("#recLabel").textContent = "Record";
+  const mr = rec;
+  rec = null;                       // free the button before onstop's upload round-trip
+  if(mr && mr.state !== "inactive"){
+    setStatus('<span class="spin"></span>Saving the recording…');
+    mr.stop();                      // onstop uploads, then chains the transcription
+  }
+}
+$("#recBtn").addEventListener("click", ()=> rec ? stopRec() : startRec());
+if(!secure) $("#micHint").textContent =
+  "Recording needs https — over plain http only the file picker works.";
+
+// ---- jobs ----
+let jobToken = 0;
+function poll(job, token, onDone, labels){
+  if(token !== jobToken) return;
+  fetch("/api/status/"+job).then(r => r.json().then(d => ({ok:r.ok, d}))).then(({ok, d})=>{
+    if(token !== jobToken) return;
+    if(!ok || d.error === "unknown job"){
+      setStatus("Session was reset (server restarted). Try again.", true); return finish();
+    }
+    if(d.status === "error"){ setStatus("❌ "+(d.error||"failed"), true); return finish(); }
+    if(d.status === "done"){ onDone(d); return finish(); }
+    setStatus('<span class="spin"></span>'+(labels[d.status] || d.status));
+    setTimeout(()=>poll(job, token, onDone, labels), 1500);
+  }).catch(()=>{ if(token === jobToken) setTimeout(()=>poll(job, token, onDone, labels), 2000); });
+}
+function finish(){ $("#trGo").disabled = false; $("#genGo").disabled = false; $("#refFill").disabled = false; }
+
+// ---- transcribe ----
+const TR_LABELS = {queued:"Queued…", "loading model":"Loading the Whisper model…", transcribing:"✍️ Transcribing…"};
+async function transcribe(fillRef=false){
+  const clip_id = $("#trClip").value;
+  if(!clip_id){ setStatus("Add a clip first.", true); return; }
+  const model = $("#trModel").value, language = $("#trLang").value;
+  store.set("model", model); store.set("lang", language);
+  const token = ++jobToken;
+  $("#trGo").disabled = true; $("#refFill").disabled = true;
+  setStatus('<span class="spin"></span>Sending…');
+  let job;
+  try{
+    const r = await fetch("/api/transcribe", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({clip_id, model, language})});
+    const d = await r.json();
+    if(!r.ok){ setStatus("❌ "+(d.error||r.status), true); return finish(); }
+    job = d.job_id;
+  }catch(e){ setStatus("❌ "+e, true); return finish(); }
+  poll(job, token, d => {
+    setStatus(`✅ Transcribed ${fmt(d.seconds)} of audio`);
+    const c = CLIPS.find(x => x.id === d.clip_id);
+    if(c) c.transcript = d.text;
+    showTranscript(d.text || "(silence)", d.clip_id);
+    renderClips();
+    if(fillRef && d.text){ $("#refText").value = d.text; $("#refFill").style.display = "none"; }
+  }, TR_LABELS);
+}
+$("#trGo").addEventListener("click", ()=>transcribe());
+$("#refFill").addEventListener("click", ()=>{
+  $("#trClip").value = $("#refClip").value;
+  transcribe(true);
+});
+
+function showTranscript(text, clipId){
+  // a fresh transcript supersedes the previous one for the same clip, so re-running
+  // it doesn't leave stale copies stacked up
+  if(clipId) results.querySelectorAll('.out[data-clip="'+clipId+'"]').forEach(el => el.remove());
+  const clip = CLIPS.find(c => c.id === clipId);
+  const card = document.createElement("div");
+  card.className = "out";
+  if(clipId) card.dataset.clip = clipId;
+  card.innerHTML = `<div class="outhead"><span class="nm">Transcript${clip ? " · "+esc(clip.name) : ""}</span>
+      <button class="dismiss" title="Dismiss" aria-label="Dismiss">✕</button></div>
+    <div class="txt">${esc(text)}</div>
+    <div class="acts">
+      <button class="copy">📋 Copy</button>
+      <button class="asRef">⤵ As reference text</button>
+      <button class="asOut">⤵ As output text</button>
+    </div>`;
+  card.querySelector(".dismiss").addEventListener("click", ()=>card.remove());
+  card.querySelector(".copy").addEventListener("click", e => copy(text, e.currentTarget));
+  card.querySelector(".asRef").addEventListener("click", ()=>{
+    $("#engine").value = "f5"; toggleEngine();
+    $("#preset").value = ""; togglePreset();   // the reference text only applies to a new voice
+    $("#refText").value = text; $("#refFill").style.display = "none";
+    setStatus("Set as the reference transcript.");
+  });
+  card.querySelector(".asOut").addEventListener("click", ()=>{
+    $("#outText").value = text;
+    setStatus("Copied into the text to speak.");
+  });
+  results.prepend(card);
+}
+async function copy(text, btn){
+  let ok = false;
+  try{
+    if(navigator.clipboard && secure){ await navigator.clipboard.writeText(text); ok = true; }
+  }catch(e){}
+  if(!ok){   // http / older Safari: hidden textarea + execCommand
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+    document.body.appendChild(ta);
+    ta.focus(); ta.select(); ta.setSelectionRange(0, text.length);
+    try { ok = document.execCommand("copy"); } catch(e){}
+    ta.remove();
+  }
+  btn.textContent = ok ? "✅ Copied" : "Select the text above to copy";
+  btn.classList.toggle("done", ok);
+  setTimeout(()=>{ btn.textContent = "📋 Copy"; btn.classList.remove("done"); }, 2500);
+}
+
+// ---- generate speech ----
+function toggleEngine(){
+  const f5 = $("#engine").value === "f5";
+  $("#f5Fields").style.display = f5 ? "block" : "none";
+  $("#kokoroFields").style.display = f5 ? "none" : "block";
+  store.set("engine", $("#engine").value);
+  if(f5) syncRefText();
+}
+$("#engine").addEventListener("change", toggleEngine);
+function syncNfe(){
+  const fast = $("#nfe").value === "16";
+  $("#f5Warn").textContent = fast
+    ? "Cloning runs on CPU — roughly 1 minute per sentence at 16 steps."
+    : "Cloning runs on CPU — roughly 2 minutes per sentence.";
+}
+$("#nfe").addEventListener("change", syncNfe);
+$("#speed").addEventListener("input", ()=>{
+  $("#speedVal").textContent = (+$("#speed").value).toFixed(2).replace(/0$/,"") + "×";
+});
+
+const GEN_LABELS = {queued:"Queued behind other work…", generating:"🔊 Generating…",
+  "trimming reference":"Trimming the reference clip…",
+  "cloning — about 2 min per sentence on CPU":"🧬 Cloning the voice — about 2 min per sentence…",
+  "cloning — about 1 min per sentence on CPU":"🧬 Cloning the voice — about 1 min per sentence…"};
+async function generate(){
+  const text = $("#outText").value.trim();
+  if(!text){ setStatus("Type what it should say.", true); return; }
+  const engine = $("#engine").value;
+  const body = {engine, text, speed: parseFloat($("#speed").value) || 1};
+  if(engine === "kokoro"){ body.voice = $("#voice").value; store.set("voice", body.voice); }
+  else {
+    body.nfe = $("#nfe").value;
+    store.set("nfe", body.nfe);
+    const preset = $("#preset").value;
+    if(preset){ body.preset_id = preset; }     // saved voice: audio + transcript live server-side
+    else {
+      body.clip_id = $("#refClip").value;
+      body.ref_text = $("#refText").value.trim();
+      body.trim = $("#trim").checked;
+      if(!body.clip_id){ setStatus("Pick a reference clip (record or add one first).", true); return; }
+      if(!body.ref_text){ setStatus("Fill in what is said in the reference clip.", true); return; }
+    }
+  }
+  const token = ++jobToken;
+  $("#genGo").disabled = true;
+  setStatus('<span class="spin"></span>Sending…');
+  let job;
+  try{
+    const r = await fetch("/api/speak", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(body)});
+    const d = await r.json();
+    if(!r.ok){ setStatus("❌ "+(d.error||r.status), true); return finish(); }
+    job = d.job_id;
+  }catch(e){ setStatus("❌ "+e, true); return finish(); }
+  poll(job, token, d => {
+    setStatus(`✅ Generated ${fmt(d.seconds)} of audio`);
+    showAudio(d, engine, text);
+  }, GEN_LABELS);
+}
+$("#genGo").addEventListener("click", generate);
+
+function showAudio(d, engine, text){
+  const p = PRESETS.find(x => x.id === $("#preset").value);
+  const label = engine === "f5"
+    ? "F5-TTS · " + (p ? p.name : "cloned") + " · " + $("#nfe").value + " steps"
+    : "Kokoro · " + $("#voice").value;
+  const card = document.createElement("div");
+  card.className = "out";
+  card.innerHTML = `<div class="outhead">${esc(label)} · ${fmt(d.seconds)}</div>
+    <audio controls autoplay src="${d.url}"></audio>
+    <div class="txt" style="margin-top:10px;font-size:13.5px;color:var(--muted)">${esc(text)}</div>
+    <div class="acts">
+      <a href="${d.url}" download>⬇ Download</a>
+      <button class="del">🗑 Delete</button>
+    </div>`;
+  card.querySelector(".del").addEventListener("click", async ()=>{
+    await fetch("/api/out/delete", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({file: d.file})});
+    card.remove();
+  });
+  results.prepend(card);
+}
+
+// ---- boot ----
+fetch("/api/voices").then(r => r.json()).then(d => {
+  const sel = $("#voice"), voices = d.voices || [];
+  const GROUPS = [["American", ["af","am"]], ["British", ["bf","bm"]], ["Spanish", ["ef","em"]],
+    ["French", ["ff"]], ["Hindi", ["hf","hm"]], ["Italian", ["if","im"]],
+    ["Portuguese", ["pf","pm"]], ["Japanese", ["jf","jm"]], ["Mandarin", ["zf","zm"]]];
+  const NICE = {af_heart:"af_heart — warm (default)", am_michael:"am_michael — US male",
+                bf_emma:"bf_emma — British female", bm_george:"bm_george — British male"};
+  GROUPS.forEach(([name, prefixes])=>{
+    const list = voices.filter(v => prefixes.includes(v.slice(0,2)));
+    if(!list.length) return;
+    const g = document.createElement("optgroup"); g.label = name;
+    // surface the known-good voices at the top of their group
+    list.sort((a,b)=> (NICE[b]?1:0)-(NICE[a]?1:0) || a.localeCompare(b));
+    list.forEach(v => {
+      const o = document.createElement("option");
+      o.value = v; o.textContent = NICE[v] || v;
+      g.appendChild(o);
+    });
+    sel.appendChild(g);
+  });
+  const want = store.get("voice", "af_heart");
+  if(voices.includes(want)) sel.value = want;
+});
+$("#engine").value = store.get("engine", "kokoro");
+$("#trModel").value = store.get("model", "small");
+$("#trLang").value = store.get("lang", "en");
+$("#nfe").value = store.get("nfe", "32");
+syncNfe();
+toggleEngine();
+loadClips();
+loadPresets();
+$("#reload").addEventListener("click", ()=>location.reload());
+</script>
+</body>
+</html>

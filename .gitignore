@@ -1,0 +1,9 @@
+.venv/
+clips/
+outputs/
+clips.json
+speech.log
+__pycache__/
+*.pyc
+presets/
+presets.json
