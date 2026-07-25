@@ -178,8 +178,10 @@ def cut_sentences(buf, min_chars, flush=False):
         return [], buf
     chunks, start = [], 0
     for m in _BOUNDARY.finditer(buf):
-        end = m.start()                             # just past the punctuation
-        if not _is_real_end(buf, end):
+        dot = m.start()          # just past the . ! or ?
+        end = m.start(1)         # …and past any closing quote or bracket, which belongs to
+                                 # this sentence, not to the gap between sentences
+        if not _is_real_end(buf, dot):
             continue
         if end - start < min_chars:
             continue                                # too short: let it grow into the next one
