@@ -15,7 +15,7 @@ separate server we talk to over HTTP on :11434.
 Reach it from your phone over Tailscale at https://your-machine.your-tailnet.ts.net:8443
 (HTTPS is required — Safari blocks the microphone and the clipboard on plain http).
 """
-import json, os, queue, re, select, shutil, subprocess, tempfile, threading, time, urllib.error, urllib.request, uuid
+import json, os, queue, re, select, shutil, subprocess, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from flask import Flask, Response, jsonify, request, send_from_directory
 
 import epub
@@ -573,6 +573,10 @@ def render_chapter(book_id, index):
         if chapter.get("state") == "ready":
             return
         voice = book.get("voice") or "af_heart"
+        # Bumped whenever the narrator changes. A chapter that was already being rendered when
+        # you switched would otherwise finish in the old voice and be marked ready, leaving one
+        # chapter of the book in the wrong voice with nothing to show for it.
+        gen = book.get("gen", 0)
         txt_path = book_dir(book_id, "text", f"ch{index:03d}.txt")
         try:
             with open(txt_path) as f:
@@ -601,12 +605,151 @@ def render_chapter(book_id, index):
                 # segment 2 is still being made
                 update_book(book_id, lambda b, m=list(made), n=len(segments):
                             b["chapters"][index].update(segments=m, done=len(m), total=n))
+            if (find_book(book_id) or {}).get("gen", 0) != gen:
+                # the narrator changed while this was rendering — throw it away rather than
+                # leaving one chapter spoken by the previous voice
+                for m in made:
+                    p = os.path.join(audio_dir, m["file"])
+                    if os.path.exists(p): os.remove(p)
+                update_book(book_id, lambda b: b["chapters"][index].update(
+                    state="pending", segments=[], error=None))
+                return
             update_book(book_id, lambda b: b["chapters"][index].update(
                 state="ready", error=None,
                 seconds=round(sum(s["seconds"] for s in made), 1)))
         except Exception as e:
             update_book(book_id, lambda b: b["chapters"][index].update(
                 state="error", error=str(e)[:200]))
+
+PART_SEP = " · "     # how epub.py joins a part name to its chapter label
+
+def part_of(name):
+    return (name or "").split(PART_SEP)[0] if PART_SEP in (name or "") else ""
+
+def chapters_in(book, part=None):
+    """Chapters belonging to one part of the book, or all of them when part is None."""
+    chapters = book.get("chapters") or []
+    if not part:
+        return chapters
+    return [c for c in chapters if part_of(c.get("name")) == part]
+
+def book_parts(book):
+    """The book's top-level divisions, in order, with how much of each is narrated. Stand-alone
+    sections that aren't inside a part (an epigraph, say) are reported under ''."""
+    out, seen = [], {}
+    for c in book.get("chapters") or []:
+        p = part_of(c.get("name"))
+        if p not in seen:
+            seen[p] = {"part": p, "chapters": 0, "ready": 0, "words": 0, "first": c["i"]}
+            out.append(seen[p])
+        seen[p]["chapters"] += 1
+        seen[p]["ready"] += int(c.get("state") == "ready")
+        seen[p]["words"] += c.get("words", 0)
+    return out
+
+def render_all_worker(book_id, part=None):
+    """Narrate every chapter, in order, until done or told to stop.
+
+    Deliberately calls render_chapter per chapter rather than holding render_lock for the
+    whole book: an 8-hour job that blocked every other render would be intolerable, and this
+    way tapping a single chapter gets its turn between two chapters of the bulk run."""
+    while True:
+        book = find_book(book_id)
+        if not book or not (book.get("render_all") or {}).get("running"):
+            break
+        # only "pending" — a chapter that errored is skipped rather than retried forever
+        nxt = next((c["i"] for c in chapters_in(book, part) if c.get("state") == "pending"), None)
+        if nxt is None:
+            break
+        render_chapter(book_id, nxt)
+        book = find_book(book_id) or {}
+        done = sum(1 for c in book.get("chapters") or [] if c.get("state") == "ready")
+        update_book(book_id, lambda b, n=done: b.setdefault("render_all", {}).update(
+            done=n, total=len(b.get("chapters") or [])))
+    update_book(book_id, lambda b: b.setdefault("render_all", {}).update(running=False))
+
+def export_worker(jid, book_id, part=None):
+    """Build one .m4b: every narrated chapter, chapter markers, cover art, metadata.
+
+    An audiobook file plays offline in software designed for it — chapters, sleep timer,
+    position — which is more than this app's <audio> element will ever do."""
+    job = jobs[jid]
+    job["status"] = "collecting"
+    tmpdir = tempfile.mkdtemp(prefix="m4b-")
+    try:
+        book = find_book(book_id)
+        if not book:
+            raise RuntimeError("unknown book")
+        audio_dir = book_dir(book_id, "audio")
+        wanted = chapters_in(book, part)
+        if not wanted:
+            raise RuntimeError(f"no chapters in “{part}”")
+        parts, marks, clock, skipped = [], [], 0.0, 0
+        for c in wanted:
+            segs = c.get("segments") or []
+            if c.get("state") != "ready" or not segs:
+                skipped += 1
+                continue
+            start = clock
+            for s in segs:
+                p = os.path.join(audio_dir, s["file"])
+                if not os.path.exists(p):
+                    continue
+                parts.append(p)
+                clock += s.get("seconds") or audio_seconds(p)
+            if clock > start:
+                # inside a part the "Part · Chapter 3" prefix is just noise on every marker
+                label = c.get("name") or f"Chapter {c['i']+1}"
+                marks.append((start, clock,
+                              label.split(PART_SEP, 1)[1] if part and PART_SEP in label else label))
+        if not parts:
+            raise RuntimeError("nothing narrated yet — render some chapters first")
+
+        listing = os.path.join(tmpdir, "list.txt")
+        with open(listing, "w") as f:
+            for p in parts:
+                f.write("file '%s'\n" % p.replace("'", r"'\''"))
+        # ffmetadata carries the chapter marks; TIMEBASE 1/1000 means milliseconds
+        title = f"{book['title']} — {part}" if part else book["title"]
+        meta = [";FFMETADATA1", f"title={title}", f"album={book['title']}",
+                f"artist={book.get('author') or ''}", "genre=Audiobook"]
+        for start, end, name in marks:
+            meta += ["[CHAPTER]", "TIMEBASE=1/1000", f"START={int(start*1000)}",
+                     f"END={int(end*1000)}", f"title={name}"]
+        metafile = os.path.join(tmpdir, "meta.txt")
+        with open(metafile, "w") as f:
+            f.write("\n".join(meta) + "\n")
+
+        os.makedirs(book_dir(book_id, "export"), exist_ok=True)
+        safe = re.sub(r"[^\w\- ]+", "", title).strip()[:80] or "audiobook"
+        name = f"{safe}.m4b"
+        out  = book_dir(book_id, "export", name)
+        cover = cover_path(book_id, "full") if ensure_cover(book_id) else None
+
+        job.update(status="encoding", seconds=round(clock, 1))
+        cmd = ["ffmpeg", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", listing,
+               "-i", metafile]
+        if cover:
+            cmd += ["-i", cover]
+        cmd += ["-map", "0:a", "-map_metadata", "1"]
+        if cover:
+            # attached_pic is what makes players show it as the book's artwork
+            cmd += ["-map", "2:v", "-c:v", "copy", "-disposition:v:0", "attached_pic"]
+        # 48 kbps AAC mono: the source is already 32 kbps opus, so this adds little loss
+        # while staying in the format Apple Books and every audiobook player reads.
+        cmd += ["-c:a", "aac", "-b:a", "48k", "-ac", "1", "-movflags", "+faststart", out]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+        if r.returncode != 0 or not os.path.exists(out):
+            raise RuntimeError("ffmpeg failed: " + (r.stderr or "")[-300:])
+        # The name keeps its spaces — it's what Apple Books will show — so the URL has to be
+        # encoded rather than handed over raw.
+        job.update(status="done", url=f"/export/{book_id}/{urllib.parse.quote(name)}", file=name,
+                   text=f"{len(marks)} chapters" + (f", {skipped} not narrated" if skipped else ""),
+                   seconds=round(clock, 1))
+    except Exception as e:
+        job.update(status="error", error=str(e)[:300])
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 def _render_segment(text, voice, out_path):
     """One segment = many TTS calls concatenated. run_lock is taken per chunk, not for the
@@ -621,6 +764,9 @@ def _render_segment(text, voice, out_path):
             parts.append(wav)
         if not parts:
             raise RuntimeError("nothing to say in this segment")
+        # The audio directory can vanish underneath a render — changing the narrator deletes
+        # it — and ffmpeg's failure then reads as a mysterious "No such file or directory".
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
         listing = os.path.join(tmpdir, "list.txt")
         with open(listing, "w") as f:
             for p in parts:
@@ -1162,7 +1308,7 @@ def api_book(book_id):
     b = find_book(book_id)
     if not b:
         return jsonify(error="unknown book"), 404
-    return jsonify(book=b)
+    return jsonify(book=b, parts=book_parts(b))
 
 @app.post("/api/books/update")
 def api_book_update():
@@ -1201,6 +1347,8 @@ def api_book_update():
         if d.get("read_headings") is not None: b["read_headings"] = bool(d["read_headings"])
         if isinstance(d.get("position"), dict): b["position"] = d["position"]
         if resets:
+            b["gen"] = b.get("gen", 0) + 1        # invalidates anything mid-render
+            b.setdefault("render_all", {})["running"] = False
             for c in b["chapters"]:
                 c.update(state="pending", segments=[], error=None)
     update_book(book["id"], apply)
@@ -1241,6 +1389,98 @@ def api_book_render():
             threading.Thread(target=render_chapter, args=(book["id"], i), daemon=True).start()
             started.append(i)
     return jsonify(ok=True, started=started)
+
+@app.post("/api/books/rescan")
+def api_book_rescan():
+    """Re-read the stored EPUB — for when extraction has improved since the book was added.
+
+    Keeps the narrated audio, but only when the chapters still line up exactly: same count,
+    same word counts, in the same order. If anything moved, the existing audio might belong
+    to different text, so it refuses rather than quietly mismatching sound and chapter.
+    """
+    d = request.get_json(force=True, silent=True) or {}
+    book = find_book(d.get("id") or "")
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    src = book_dir(book["id"], "book.epub")
+    if not os.path.exists(src):
+        return jsonify(ok=False, msg="the original EPUB isn't stored for this book"), 400
+    try:
+        meta, chapters, skipped = epub.extract(src)
+    except Exception as e:
+        return jsonify(ok=False, msg=f"couldn't re-read it: {str(e)[:150]}"), 400
+    old = book.get("chapters") or []
+    same = (len(chapters) == len(old)
+            and all(c["words"] == o.get("words") for c, o in zip(chapters, old)))
+    if not same and not d.get("confirm"):
+        return jsonify(ok=False, needs_confirm=True,
+                       msg=(f"the chapters changed ({len(old)} → {len(chapters)}), so the "
+                            "narrated audio no longer matches and would be discarded")), 409
+    for i, c in enumerate(chapters):
+        with open(book_dir(book["id"], "text", f"ch{i:03d}.txt"), "w") as fh:
+            fh.write(c["text"])
+    def apply(b):
+        b["title"], b["author"] = meta["title"], meta["author"]
+        b["skipped"] = skipped[:40]
+        keep = {o["i"]: o for o in (b.get("chapters") or [])} if same else {}
+        b["chapters"] = [{"i": i, "name": c["name"], "words": c["words"],
+                          "state": keep.get(i, {}).get("state", "pending"),
+                          "segments": keep.get(i, {}).get("segments", []),
+                          "seconds": keep.get(i, {}).get("seconds"),
+                          "error": keep.get(i, {}).get("error")}
+                         for i, c in enumerate(chapters)]
+        if not same:
+            b["position"] = {"chapter": 0, "segment": 0, "offset": 0}
+    update_book(book["id"], apply)
+    if not same:
+        shutil.rmtree(book_dir(book["id"], "audio"), ignore_errors=True)
+    return jsonify(ok=True, kept_audio=same, book=find_book(book["id"]))
+
+@app.post("/api/books/render_all")
+def api_book_render_all():
+    """Narrate the whole book — hours of work, so it reports progress and can be stopped."""
+    d = request.get_json(force=True, silent=True) or {}
+    book = find_book(d.get("id") or "")
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    if (book.get("render_all") or {}).get("running"):
+        return jsonify(ok=True, already=True)
+    part = d.get("part") or None
+    scope = chapters_in(book, part)
+    done = sum(1 for c in scope if c.get("state") == "ready")
+    update_book(book["id"], lambda b: b.update(render_all={
+        "running": True, "done": done, "total": len(scope), "part": part}))
+    threading.Thread(target=render_all_worker, args=(book["id"], part), daemon=True).start()
+    return jsonify(ok=True)
+
+@app.post("/api/books/render_stop")
+def api_book_render_stop():
+    d = request.get_json(force=True, silent=True) or {}
+    if not find_book(d.get("id") or ""):
+        return jsonify(ok=False, msg="unknown book"), 404
+    # the worker checks this between chapters; the one in flight finishes rather than
+    # leaving a half-made chapter behind
+    update_book(d["id"], lambda b: b.setdefault("render_all", {}).update(running=False))
+    return jsonify(ok=True)
+
+@app.post("/api/books/export")
+def api_book_export():
+    d = request.get_json(force=True, silent=True) or {}
+    book = find_book(d.get("id") or "")
+    if not book:
+        return jsonify(error="unknown book"), 404
+    jid = new_job("export")
+    threading.Thread(target=export_worker, args=(jid, book["id"], d.get("part") or None),
+                     daemon=True).start()
+    return jsonify(job_id=jid)
+
+@app.get("/export/<book_id>/<path:filename>")
+def book_export(book_id, filename):
+    path = safe_path(book_dir(book_id, "export"), filename)
+    if not path:
+        return jsonify(error="not found"), 404
+    return send_from_directory(book_dir(book_id, "export"), filename,
+                               as_attachment=True, conditional=True)
 
 @app.post("/api/books/cover")
 def api_book_cover():
@@ -1450,7 +1690,24 @@ def index():
     r.headers["Cache-Control"] = "no-store"
     return r
 
+def clear_stale_state():
+    """The workers live in this process, so a restart kills them. Anything still marked as
+    running is a leftover, and would otherwise show a progress bar that never moves."""
+    items = load_books()
+    changed = False
+    for b in items:
+        if (b.get("render_all") or {}).get("running"):
+            b["render_all"]["running"] = False
+            changed = True
+        for c in b.get("chapters") or []:
+            if c.get("state") == "rendering":
+                c.update(state="pending", segments=[], error=None)
+                changed = True
+    if changed:
+        write_books(items)
+
 if __name__ == "__main__":
+    clear_stale_state()
     if TTS_IDLE_SECONDS > 0:
         threading.Thread(target=worker_reaper, daemon=True).start()
     app.run(host="127.0.0.1", port=PORT, threaded=True)

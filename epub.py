@@ -80,14 +80,29 @@ def extract(path):
     spine = [manifest[r["idref"]] for r in soup.find_all("itemref")
              if r.get("idref") in manifest]
 
+    # Walk the TOC as a tree, not a flat list. Novels in parts number their chapters from 1
+    # within each part — The Institute has four "Chapter 1"s — so a child's label only makes
+    # sense with its parent's: "The Night Knocker · Chapter 1".
     titles = {}
     ncx = next((h for h in manifest.values() if h.endswith(".ncx")), None)
     if ncx:
         nav = BeautifulSoup(z.read(ncx), "xml")
-        for p in nav.find_all("navPoint"):
-            c, lbl = p.find("content"), p.find("navLabel")
-            if c and lbl and c.get("src"):
-                titles[unquote(urljoin(opf, c["src"])).split("#")[0]] = lbl.get_text(strip=True)
+
+        def walk(points, parent=""):
+            for p in points:
+                lbl = p.find("navLabel", recursive=False)
+                c   = p.find("content", recursive=False)
+                kids = p.find_all("navPoint", recursive=False)
+                label = lbl.get_text(strip=True) if lbl else ""
+                if c and c.get("src") and label:
+                    href = unquote(urljoin(opf, c["src"])).split("#")[0]
+                    titles[href] = f"{parent} · {label}" if parent else label
+                if kids:
+                    walk(kids, label or parent)
+
+        navmap = nav.find("navMap")
+        if navmap:
+            walk(navmap.find_all("navPoint", recursive=False))
 
     chapters, skipped = [], []
     for href in spine:

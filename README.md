@@ -219,8 +219,27 @@ design would need whole chapters in single files.
 released between them, so a chat reply or a transcription slots in between rather than waiting
 out a chapter. One book renders at a time.
 
+**Listening away from this PC.** Two buttons under *Whole book*:
+
+- **Narrate the whole book** works through every un-narrated chapter in the background, with
+  progress and a stop button. It's hours — 8.4 h for The Institute — so it's meant to run
+  overnight. It renders one chapter per turn rather than holding the render lock for the whole
+  job, so tapping a single chapter still gets served in between, and stopping lets the chapter
+  in flight finish rather than leaving half of one behind.
+- **Export as audiobook (.m4b)** builds one file from whatever is narrated: chapter markers,
+  cover art, title and author, AAC 48 kbps mono. On the phone, tap the download and Share →
+  Books. Apple Books then gives you chapters, sleep timer and position with no PC involved.
+  The full book is ~564 MB; 32 kbps would be ~380 MB but AAC is meaningfully worse than opus
+  at that rate, hence 48.
+
 Storage is `books.json` for the index and `books/<id>/` for the EPUB, extracted text and audio.
-At 32 kbps opus a 20-hour book is ~290 MB. Both are gitignored, as is `*.epub`.
+At 32 kbps opus a 20-hour book is ~290 MB of parts, plus the export if you make one. All
+gitignored, as is `*.epub`.
+
+Every index (`clips.json`, `presets.json`, `chats.json`, `books.json`) is written to a temp
+file and renamed. A whole-book render rewrites the book index after every chapter while the
+page polls it, and a plain truncate-and-write briefly made the book vanish from the API —
+0 failures in 400 reads afterwards.
 
 ## How it fits together
 

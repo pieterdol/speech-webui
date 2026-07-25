@@ -12,3 +12,4 @@ samples/
 books/
 *.epub
 books.json
+*.tmp

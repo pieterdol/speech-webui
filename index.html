@@ -367,8 +367,11 @@
         your phone's lock screen while it plays.</div>
       <div class="hint" id="bookSkipped"></div>
       <div class="acts" style="margin-top:14px">
+        <button id="bookRescan" class="btn">🔄 Re-read the EPUB</button>
         <button id="bookDel" class="btn del">🗑 Delete book</button>
       </div>
+      <div class="hint">Re-reading picks up improvements to chapter extraction. Narrated audio
+        is kept as long as the chapters still line up.</div>
     </div>
 
     <div class="card" id="nowPlaying" style="margin-top:12px;display:none">
@@ -380,6 +383,22 @@
       </div>
       <div class="hint" id="npHint"></div>
     </div>
+
+    <h2>Whole book</h2>
+    <div class="card">
+      <div class="hint" id="allHint"></div>
+      <div class="acts" style="margin-top:10px">
+        <button id="renderAll" class="btn">📖 Narrate the whole book</button>
+        <button id="renderStop" class="btn del" style="display:none">⏹ Stop after this chapter</button>
+        <button id="exportBook" class="btn">⬇ Export as audiobook (.m4b)</button>
+      </div>
+      <div class="hint">An audiobook file plays offline in Apple Books — chapters, sleep timer
+        and position, without needing this PC. It uses whatever has been narrated so far.</div>
+      <div id="exportOut"></div>
+    </div>
+
+    <h2 id="partsHead" hidden>Parts</h2>
+    <div class="card" id="partList" hidden></div>
 
     <h2>Chapters</h2>
     <div class="card" id="chapterList"></div>
@@ -1218,14 +1237,14 @@ function previewVoice(sel, btn){
 $("#voicePlay").addEventListener("click", e => previewVoice($("#voice"), e.currentTarget));
 $("#chatVoicePlay").addEventListener("click", e => previewVoice($("#chatVoice"), e.currentTarget));
 
-function waitForJob(job){
+function waitForJob(job, labels = GEN_LABELS){
   return new Promise((resolve, reject)=>{
     const tick = ()=> fetch("/api/status/" + job).then(r => r.json().then(d => ({ok:r.ok, d})))
       .then(({ok, d})=>{
         if(!ok || d.error) return reject(new Error(d.error || "the server restarted"));
         if(d.status === "error") return reject(new Error(d.error || "failed"));
         if(d.status === "done")  return resolve(d);
-        setStatus('<span class="spin"></span>' + (GEN_LABELS[d.status] || d.status));
+        setStatus('<span class="spin"></span>' + (labels[d.status] || d.status));
         setTimeout(tick, 1200);
       }).catch(()=> setTimeout(tick, 2000));
     tick();
@@ -1354,7 +1373,76 @@ $("#bookCog").addEventListener("click", ()=>{
   b.style.display = b.style.display === "none" ? "block" : "none";
 });
 
+// The whole-book panel: how much is narrated, and what's left to do at 2.4x realtime.
+function renderWholeBook(){
+  const chs = BOOK.chapters || [];
+  const ready = chs.filter(c => c.state === "ready");
+  const left  = chs.filter(c => c.state === "pending");
+  const leftMin = left.reduce((n, c) => n + c.words / 146, 0) / 2.4;
+  const ra = BOOK.render_all || {};
+  $("#renderStop").style.display = ra.running ? "block" : "none";
+  $("#renderAll").disabled = !!ra.running || !left.length;
+  $("#allHint").innerHTML = ra.running
+    ? `<span class="spin"></span>Narrating the whole book — ${ready.length} of ${chs.length}`
+      + ` chapters done, roughly ${Math.round(leftMin / 60)} h left. It keeps going if you`
+      + ` close the page.`
+    : `${ready.length} of ${chs.length} chapters narrated.`
+      + (left.length ? ` The rest is about ${Math.round(leftMin / 60)} h of work.` : " All done.");
+}
+
+// Books divided into parts — The Institute has four — can be narrated and downloaded a part
+// at a time, which is a far more useful unit than one 4-minute chapter or the whole 20 hours.
+function renderParts(){
+  // Derived from the chapters rather than tracked separately, so it can't fall out of step
+  // with them after a voice change or a rescan.
+  const by = new Map();
+  (BOOK.chapters || []).forEach(c => {
+    const name = (c.name || "");
+    const part = name.includes(" · ") ? name.split(" · ")[0] : "";
+    if(!by.has(part)) by.set(part, {part, chapters:0, ready:0, words:0});
+    const p = by.get(part);
+    p.chapters++; p.words += c.words || 0; p.ready += (c.state === "ready") ? 1 : 0;
+  });
+  const real = [...by.values()].filter(p => p.part);
+  const show = real.length > 1;
+  $("#partsHead").hidden = !show;
+  $("#partList").hidden  = !show;
+  if(!show) return;
+  const box = $("#partList");
+  box.innerHTML = "";
+  real.forEach(p => {
+    const el = document.createElement("div");
+    el.className = "clip";
+    const hrs = (p.words / 146 / 60).toFixed(1);
+    const all = p.ready === p.chapters;
+    el.innerHTML = `<div class="cliphead"><div class="nm">${esc(p.part)}</div>
+        <div class="dur">${hrs} h</div></div>
+      <div class="tr">${p.ready} of ${p.chapters} chapters narrated</div>
+      <div class="clipacts">
+        <button class="nar"${all ? " disabled" : ""}>${all ? "✓ narrated" : "📖 Narrate part"}</button>
+        <button class="exp"${p.ready ? "" : " disabled"}>⬇ Download part</button>
+      </div>`;
+    el.querySelector(".nar").addEventListener("click", async e => {
+      e.stopPropagation();
+      const mins = Math.round(p.words / 146 / 2.4);
+      if(!confirm(`Narrate the rest of “${p.part}”? Roughly ${mins} min of work.`)) return;
+      await fetch("/api/books/render_all", {method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({id: BOOK.id, part: p.part})});
+      setStatus(`Narrating “${p.part}” in the background.`);
+      watchRenders();
+    });
+    el.querySelector(".exp").addEventListener("click", e => {
+      e.stopPropagation();
+      exportBook(p.part, e.currentTarget);
+    });
+    box.appendChild(el);
+  });
+}
+
 function renderChapterList(){
+  renderWholeBook();
+  renderParts();
   const box = $("#chapterList");
   box.innerHTML = "";
   (BOOK.chapters || []).forEach(c => {
@@ -1394,12 +1482,57 @@ function watchRenders(){
     const r = await fetch("/api/books/" + BOOK.id);
     if(!r.ok) return stopWatching();
     const b = (await r.json()).book;
-    const busy = (b.chapters || []).some(c => c.state === "rendering");
+    const busy = (b.chapters || []).some(c => c.state === "rendering")
+              || ((b.render_all || {}).running);
     BOOK = b;
     renderChapterList();
     if(!busy) stopWatching();
   }, 4000);
 }
+
+$("#renderAll").addEventListener("click", async ()=>{
+  if(!BOOK) return;
+  const left = (BOOK.chapters || []).filter(c => c.state === "pending");
+  const hrs = (left.reduce((n, c) => n + c.words / 146, 0) / 2.4 / 60).toFixed(1);
+  if(!confirm(`Narrate ${left.length} chapters? That's roughly ${hrs} h of work — it carries`
+              + ` on in the background, and you can stop it any time.`)) return;
+  await fetch("/api/books/render_all", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: BOOK.id})});
+  setStatus("Narrating the whole book — it keeps going if you close the page.");
+  watchRenders();
+});
+$("#renderStop").addEventListener("click", async ()=>{
+  await fetch("/api/books/render_stop", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: BOOK.id})});
+  setStatus("Stopping after the chapter being narrated now.");
+});
+
+const EXPORT_LABELS = {queued:"Queued…", collecting:"Gathering the chapters…",
+                       encoding:"🎧 Building the audiobook…"};
+async function exportBook(part, btn){
+  if(!BOOK) return;
+  if(btn) btn.disabled = true;
+  $("#exportOut").innerHTML = "";
+  try{
+    const r = await fetch("/api/books/export", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({id: BOOK.id, part: part || undefined})});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error || r.status);
+    const done = await waitForJob(d.job_id, EXPORT_LABELS);
+    // A download link rather than an automatic download: on iOS you want to choose where
+    // it goes, and it can be a few hundred MB.
+    $("#exportOut").innerHTML =
+      `<div class="out"><div class="outhead">${esc(part || BOOK.title)} · ${esc(done.text || "")}
+         · ${fmt(done.seconds)}</div>
+       <div class="acts"><a href="${done.url}" download>⬇ Download the .m4b</a></div>
+       <div class="hint">On the phone: tap it, then Share → Books to add it to Apple Books.</div></div>`;
+    setStatus("✅ Audiobook ready.");
+    $("#exportOut").scrollIntoView({behavior:"smooth", block:"nearest"});
+  }catch(e){ setStatus("❌ " + e.message, true); }
+  if(btn) btn.disabled = false;
+}
+$("#exportBook").addEventListener("click", e => exportBook(null, e.currentTarget));
 function stopWatching(){ if(bookPoll){ clearInterval(bookPoll); bookPoll = null; } }
 
 // ---- the player ----
@@ -1518,6 +1651,23 @@ $("#bookCoverFile").addEventListener("change", async e => {
     setStatus("✅ Cover updated.");
   }catch(err){ setStatus("❌ " + err, true); }
   e.target.value = "";
+});
+$("#bookRescan").addEventListener("click", async ()=>{
+  if(!BOOK) return;
+  const call = extra => fetch("/api/books/rescan", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: BOOK.id, ...extra})}).then(r => r.json());
+  setStatus('<span class="spin"></span>Re-reading the EPUB…');
+  let d = await call({});
+  if(d.needs_confirm){
+    if(!confirm(`${d.msg}. Go ahead?`)){ setStatus("Left as it was."); return; }
+    d = await call({confirm: true});
+  }
+  if(!d.ok){ setStatus("❌ " + (d.msg || "couldn't re-read it"), true); return; }
+  BOOK = d.book;
+  renderChapterList();
+  setStatus(d.kept_audio ? "✅ Re-read, and the narration was kept."
+                         : "✅ Re-read. The chapters changed, so the audio was cleared.");
 });
 $("#bookDel").addEventListener("click", async ()=>{
   if(!BOOK || !confirm(`Delete “${BOOK.title}” and everything narrated from it?`)) return;
