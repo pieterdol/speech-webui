@@ -203,7 +203,8 @@ nothing is narrated until you ask for it — a full book is hours of work.
   itself — a full stop buys about a third of a second, which doesn't read as a new chapter,
   and a separately generated silence file would risk disagreeing with the engine's sample
   rate (Kokoro 24 kHz, Piper 22.05) and breaking the concatenation. Numbers are spoken as
-  words so "21" can't come out as a year. Off via ⚙, which re-renders the book.
+  words so "21" can't come out as a year, and a chapter closes with 1.8 s of silence so it
+  doesn't run straight into the next announcement. Off via ⚙, which re-renders the book.
 - **Clear narration** in ⚙ throws away the audio and keeps the book, its text and its cover —
   useful after changing something that should be re-spoken.
 - **Covers** come from the EPUB, in the library grid, beside the title, and on the phone's

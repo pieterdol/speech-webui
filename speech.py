@@ -601,7 +601,10 @@ def render_chapter(book_id, index):
                 name = f"ch{index:03d}-s{si:02d}.opus"
                 out  = os.path.join(audio_dir, name)
                 if not os.path.exists(out):
-                    _render_segment(seg_text, voice, out, intro=intro if si == 0 else None)
+                    # the closing pause belongs to the chapter, so only the last part gets it
+                    _render_segment(seg_text, voice, out,
+                                    intro=intro if si == 0 else None,
+                                    tail_pause=CHAPTER_END_PAUSE if si == len(segments) - 1 else 0)
                 made.append({"file": name, "seconds": audio_seconds(out)})
                 # publish each finished segment: you can start listening to segment 1 while
                 # segment 2 is still being made
@@ -630,6 +633,9 @@ PART_SEP = " · "     # how epub.py joins a part name to its chapter label
 # which isn't enough to read as "a new chapter is starting".
 PART_PAUSE    = 1.2
 CHAPTER_PAUSE = 0.9
+# And a longer one at the end, so a chapter closes rather than running straight into the next
+# announcement — the moment you'd use to notice a chapter has ended.
+CHAPTER_END_PAUSE = 1.8
 
 _ONES = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
          "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
@@ -796,11 +802,22 @@ def export_worker(jid, book_id, part=None):
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-def _render_segment(text, voice, out_path, intro=None):
+def pad_with_silence(src, seconds, dst):
+    """Append silence to a rendered clip. apad rather than a separately generated silence
+    file: it re-encodes this wav in place, so the padding can't disagree with the engine's
+    sample rate and break the concat (Kokoro is 24 kHz, Piper voices are 22.05).
+    Returns the padded file, or the original if ffmpeg couldn't do it."""
+    r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-i", src,
+                        "-af", f"apad=pad_dur={seconds}", dst],
+                       capture_output=True, text=True, timeout=120)
+    return dst if r.returncode == 0 and os.path.exists(dst) else src
+
+def _render_segment(text, voice, out_path, intro=None, tail_pause=0):
     """One segment = many TTS calls concatenated. run_lock is taken per chunk, not for the
     whole segment, so hours of narration don't starve everything else.
 
-    `intro` is [(phrase, pause_after)] spoken first — the part name and chapter number."""
+    `intro` is [(phrase, pause_after)] spoken first — the part name and chapter number.
+    `tail_pause` is silence appended at the very end, for the last segment of a chapter."""
     tmpdir = tempfile.mkdtemp(prefix="book-")
     parts = []
     try:
@@ -808,14 +825,7 @@ def _render_segment(text, voice, out_path, intro=None):
             raw = os.path.join(tmpdir, f"intro-{ii}.wav")
             with run_lock:
                 tts_say(voice, respell(phrase), 1.0, raw)
-            # apad rather than a separately generated silence file: it re-encodes this wav in
-            # place, so the padding can't disagree with the engine's sample rate and break
-            # the concat (Kokoro is 24 kHz, Piper voices are 22.05).
-            padded = os.path.join(tmpdir, f"intro-{ii}-pad.wav")
-            r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-i", raw,
-                                "-af", f"apad=pad_dur={pause}", padded],
-                               capture_output=True, text=True, timeout=120)
-            parts.append(padded if r.returncode == 0 and os.path.exists(padded) else raw)
+            parts.append(pad_with_silence(raw, pause, os.path.join(tmpdir, f"intro-{ii}-pad.wav")))
         for ci, chunk in enumerate(split_chunks(text)):
             wav = os.path.join(tmpdir, f"{ci:04d}.wav")
             with run_lock:
@@ -823,6 +833,10 @@ def _render_segment(text, voice, out_path, intro=None):
             parts.append(wav)
         if not parts:
             raise RuntimeError("nothing to say in this segment")
+        if tail_pause:
+            # pad the final clip rather than adding a silent one, for the same format reason
+            parts[-1] = pad_with_silence(parts[-1], tail_pause,
+                                         os.path.join(tmpdir, "tail-pad.wav"))
         # The audio directory can vanish underneath a render — changing the narrator deletes
         # it — and ffmpeg's failure then reads as a mysterious "No such file or directory".
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
