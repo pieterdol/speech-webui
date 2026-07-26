@@ -1,9 +1,10 @@
 """Shared fixtures.
 
-books.py keeps its paths in module-level globals (BOOKS_DIR, BOOKS_FILE) rather than in
-config. That's what lets a test point the whole book layer at a tmpdir — and also what makes
-forgetting to do so destructive, since the default is the real library. So the redirect is
-autouse: no test can touch books.json by accident, including one that never asked.
+Each module keeps the paths it stores things under in module-level globals rather than in
+config. That's what lets a test point a whole layer at a tmpdir — and also what makes
+forgetting to do so destructive, since the default is the developer's own clips, chats and
+books. So the redirect is autouse and covers every module: no test can reach real storage by
+accident, including one that never asked.
 """
 import json
 import os
@@ -15,9 +16,11 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import epub          # noqa: E402
 import books        # noqa: E402
+import chat         # noqa: E402
+import clips        # noqa: E402
 import core         # noqa: E402
+import tts          # noqa: E402
 
 HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 needs_ffmpeg = pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg/ffprobe not installed")
@@ -39,51 +42,102 @@ def pytest_configure(config):
             + ", ".join(f"{t} ({why})" for t, why in missing.items())
             + " — the suite would skip those tests and still pass.")
 
-# Captured before anything redirects them: the developer's own library, which no test may
-# touch. Recorded at import so it survives every monkeypatch in every test.
-REAL_BOOKS_DIR = books.BOOKS_DIR
-REAL_BOOKS_FILE = books.BOOKS_FILE
+# Every place a module stores something, captured before anything redirects it. Recorded at
+# import so it survives every monkeypatch in every test.
+#
+# (module, attribute, kind) — "dir" is created empty per test, "file" just gets a path that
+# doesn't exist yet.
+STORAGE = [
+    (books, "BOOKS_DIR", "dir"),   (books, "BOOKS_FILE", "file"),
+    (clips, "CLIPS_DIR", "dir"),   (clips, "PRESETS_DIR", "dir"),
+    (clips, "INDEX_FILE", "file"), (clips, "PRESETS_FILE", "file"),
+    (tts, "OUT_DIR", "dir"),       (tts, "SAMPLES_DIR", "dir"),
+    (chat, "CHATS_FILE", "file"),
+]
+REAL = {(m.__name__, attr): getattr(m, attr) for m, attr, _kind in STORAGE}
 
 
 @pytest.fixture(autouse=True)
-def real_library_untouched():
+def real_storage_untouched():
     """The backstop for the fixture below.
 
     A redirect that gets undone mid-test is silent — the test still passes, having written
-    into the real books.json. So the real library is snapshotted around every test, and a
-    test that so much as adds a directory to it fails.
+    into the developer's own clips.json or books.json. So everything the app stores is
+    snapshotted around every test, and a test that adds to any of it fails.
+
+    It reports the damage rather than preventing it: by the time the assert runs the write
+    has happened and has to be undone by hand. Loud and after the fact still beats a test
+    suite that quietly edits your library for weeks.
     """
     def snapshot():
-        listing = sorted(os.listdir(REAL_BOOKS_DIR)) if os.path.isdir(REAL_BOOKS_DIR) else []
-        try:
-            with open(REAL_BOOKS_FILE) as f:
-                ids = sorted(b.get("id") for b in json.load(f))
-        except (OSError, ValueError):
-            ids = []
-        return listing, ids
+        state = {}
+        for key, path in REAL.items():
+            if os.path.isdir(path):
+                state[key] = sorted(os.listdir(path))
+            elif os.path.exists(path):
+                # what's in it, not when it changed: the dev server is usually up on the same
+                # machine rewriting these, so a timestamp would fail at random
+                try:
+                    with open(path) as f:
+                        state[key] = sorted(x.get("id") for x in json.load(f))
+                except (OSError, ValueError, AttributeError):
+                    state[key] = "unreadable"
+            else:
+                state[key] = None
+        return state
 
-    # Which books exist, not when the file was last written: the dev server is usually up on
-    # the same machine and rewrites the index after every chapter it narrates, so a timestamp
-    # here fails at random. A test appending its own book changes the ids, which is the thing
-    # actually worth catching.
     before = snapshot()
     yield
-    assert snapshot() == before, "a test wrote into the real book library"
+    after = snapshot()
+    changed = [k for k in before if before[k] != after[k]]
+    assert not changed, f"a test wrote into real storage: {changed}"
 
 
 @pytest.fixture(autouse=True)
-def isolated_books(tmp_path, monkeypatch):
-    """Every test gets an empty library of its own.
+def isolated_storage(tmp_path, monkeypatch):
+    """Every test gets empty storage of its own, for every module that has any.
 
     Do not call monkeypatch.undo() in a test: it reverts every patch on the shared
-    function-scoped monkeypatch, this redirect included, and the rest of the test then runs
-    against the real library. Ask for the narrower fixture you want instead.
+    function-scoped monkeypatch, these redirects included, and the rest of the test then runs
+    against your own clips and books. Ask for the narrower fixture you want instead.
     """
-    library = tmp_path / "books"
-    library.mkdir()
-    monkeypatch.setattr(books, "BOOKS_DIR", str(library))
-    monkeypatch.setattr(books, "BOOKS_FILE", str(tmp_path / "books.json"))
-    return library
+    # under a subdirectory, so tmp_path itself stays empty for tests that use it directly
+    root = tmp_path / "_storage"
+    root.mkdir()
+    for module, attr, kind in STORAGE:
+        target = root / f"{module.__name__}-{attr.lower()}"
+        if kind == "dir":
+            target.mkdir()
+        monkeypatch.setattr(module, attr, str(target))
+    return root
+
+
+@pytest.fixture
+def isolated_books(isolated_storage):
+    """The book library's own directory, for tests that want to look inside it."""
+    return isolated_storage / "books-books_dir"
+
+
+@pytest.fixture(autouse=True)
+def no_real_engines(monkeypatch):
+    """No test starts a speech engine.
+
+    kokoro_voices and piper_voices look like list lookups but each spawns a resident worker
+    with its own interpreter and a few hundred MB of model, then caches the answer in a module
+    global that would leak into every test after it.
+
+    Replacing worker_call is what actually prevents that. The raise is only a signpost for
+    anything calling it directly — kokoro_voices and piper_voices catch every exception and
+    return [] by design, so through those two the effect is an empty voice list rather than a
+    failure. That's the same path a machine without Piper installed takes, so it's honest; a
+    test that wants voices patches kokoro_voices/piper_voices themselves.
+    """
+    def refuse(engine, payload, timeout=None):
+        raise AssertionError(
+            f"a test tried to start the {engine} engine — patch the function you meant to")
+
+    monkeypatch.setattr(tts, "worker_call", refuse)
+    monkeypatch.setattr(tts, "_voices", {})     # and no cache carried in from elsewhere
 
 
 @pytest.fixture

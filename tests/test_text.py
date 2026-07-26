@@ -3,7 +3,6 @@ cutting a chapter into renderable pieces. No files, no locks, no engines."""
 import pytest
 
 import books
-import core
 
 
 class TestNumberWord:

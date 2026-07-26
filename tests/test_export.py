@@ -8,8 +8,6 @@ import json
 import os
 import subprocess
 
-import pytest
-
 import books
 import core
 from conftest import needs_ffmpeg

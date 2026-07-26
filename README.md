@@ -454,17 +454,29 @@ uv pip install --python .venv/bin/python pytest    # once
 
 Also on every push and pull request, via `.github/workflows/tests.yml`.
 
-**What's covered.** The books state machine, which is where the bugs actually live: a render
-being cancelled under itself, what survives a restart, which chapters an export takes, how a
-part run scopes its progress, the queue. Then the pure functions — reading a chapter number
-out of a heading in digits or words, cutting a chapter into segments and chunks, what gets
-announced before the prose — and the HTTP contracts, including the cache headers on narration
-audio, which are as much a part of the response as the body.
+**What's covered.** Every module, ~270 tests. The books state machine, which is where the
+bugs actually live: a render being cancelled under itself, what survives a restart, which
+chapters an export takes, how a part run scopes its progress, the queue. The pure functions —
+reading a chapter number out of a heading in digits or words, cutting text into segments,
+chunks and sentences, what gets announced before the prose. The stores behind clips, presets
+and chats. And the HTTP contracts, including the cache headers on narration audio, which are
+as much a part of the response as the body.
+
+Two things get more attention than their size suggests. `safe_path` is the only security
+boundary in the app — four routes hand it a filename off the wire — so it's tested against
+climbing out, absolute paths, symlinks pointing outward and sibling directories with a shared
+prefix. And the arrangement that gets an English answer out of a Dutch question, because its
+central rule is invisible from the outside: the marker and the primer are attached to what
+gets *sent* and must never reach `chats.json`.
 
 **What isn't.** Anything you have to hear. Whether a pause is long enough, whether a voice
 reads a name right, whether the lock screen looks right — no assertion tells you that, and
-writing one would only fix the wrong answer in place. Rendering is stubbed at
-`_render_segment`, the one function that costs GPU time; everything above it is real.
+writing one would only fix the wrong answer in place. The three external engines aren't
+exercised either: Whisper is a 500 MB download, Ollama is a separate server, and Kokoro and
+Piper are resident subprocesses with their own interpreters. Each is stubbed at its boundary —
+`_render_segment`, `run_stt`, `worker_call`, `ollama_models` — and everything above it is
+real. What *is* tested around them is which model gets asked for, what happens to the answer,
+and that dictation audio is deleted afterwards whether or not transcription succeeded.
 
 `tests/test_export.py` is the exception and runs ffmpeg for real, building actual opus parts
 and reading the chapter marks back out of the finished `.m4b` — the only way to know the
@@ -482,12 +494,18 @@ element that exists, no element is left unreferenced, tags balance, ids are uniq
 inline script parses under `node --check`. One file with no build step means nothing else
 catches a dangling reference before the phone does.
 
-**Isolation.** `speech.py` keeps its paths in module globals, so tests point `BOOKS_DIR` and
-`BOOKS_FILE` at a tmpdir — autouse, so no test can reach the real library by forgetting to
-ask. Don't call `monkeypatch.undo()` in a test: it reverts every patch on the shared
-function-scoped `monkeypatch`, that redirect included, and the rest of the test then runs
-against your own books. A second autouse fixture snapshots the real library around every test
-and fails if it changed, because that mistake is otherwise completely silent.
+**Isolation.** Each module keeps the paths it stores under in module globals, so tests point
+all nine — books, clips, presets, outputs, samples, chats — at a tmpdir. Autouse, so no test
+can reach real storage by forgetting to ask. Don't call `monkeypatch.undo()` in a test: it
+reverts every patch on the shared function-scoped `monkeypatch`, those redirects included, and
+the rest of the test then runs against your own library. A second autouse fixture snapshots
+real storage around every test and fails if any of it changed, because that mistake is
+otherwise completely silent — it reports the damage rather than preventing it, but loud and
+after the fact beats a suite that quietly edits your books for weeks.
+
+A third refuses to start a speech engine. `kokoro_voices()` reads like a list lookup and is
+actually a subprocess launch plus a module-global cache that would leak into every test after
+it, so `worker_call` is replaced for the whole suite.
 
 ## Gotchas
 

@@ -5,7 +5,6 @@ import os
 import pytest
 
 import books
-import core
 
 
 @pytest.fixture(autouse=True)

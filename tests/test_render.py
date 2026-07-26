@@ -8,8 +8,6 @@ import threading
 import time
 
 import books
-import core
-from conftest import needs_ffmpeg
 
 
 def files(book_id):
