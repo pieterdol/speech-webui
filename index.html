@@ -1434,7 +1434,7 @@ async function openBook(id){
   const cov = $("#bookCover");
   cov.hidden = false;
   cov.onerror = ()=> { cov.hidden = true; };
-  cov.src = `/cover/${BOOK.id}/full.jpg?v=${BOOK.updated || 0}`;
+  cov.src = `/cover/${BOOK.id}/thumb.jpg?v=${BOOK.updated || 0}`;
   pickOption($("#bookVoice"), BOOK.voice);
   $("#bookHeadings").checked = BOOK.announce !== false;
   $("#bookSkipped").textContent = (BOOK.skipped || []).length
@@ -2032,7 +2032,7 @@ $("#bookCoverFile").addEventListener("change", async e => {
     const v = Date.now();
     const cov = $("#bookCover");
     cov.hidden = false;
-    cov.src = `/cover/${BOOK.id}/full.jpg?v=${v}`;
+    cov.src = `/cover/${BOOK.id}/thumb.jpg?v=${v}`;
     setStatus("✅ Cover updated.");
   }catch(err){ setStatus("❌ " + err, true); }
   e.target.value = "";

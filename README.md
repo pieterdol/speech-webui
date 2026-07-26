@@ -261,15 +261,20 @@ nothing is narrated until you ask for it — a full book is hours of work.
   longer matches.
 - **Clear narration** in ⚙ throws away the audio and keeps the book, its text and its cover —
   useful after changing something that should be re-spoken.
-- **Covers** come from the EPUB, in the library grid, beside the title, and on the phone's
-  lock screen while it plays. Two sizes are derived once with ffmpeg — 200 px wide for the
-  grid, 600 px for the reader and the lock screen — because 130 KB beats sending the 1.9 MB
-  original every time. Both keep the book's proportions: a phone lays cover art out at
-  whatever shape it's handed, so a tall cover fills the lock screen the way it does in
-  BookPlayer, and squaring one off only adds bars. The dimensions are measured in the browser
-  and go out with the artwork, since `sizes` is the shape the OS lays it out by and has to
-  match the file — a 600×906 cover announced as 512×512 gets bars. ⚙ has a **Replace the
-  cover** upload for books that declare none.
+- **Covers** come from the EPUB, in the library grid, beside the title, in the player, and on
+  the phone's lock screen while it plays. Two sizes are derived once with ffmpeg, because the
+  original is often ~2 MB and not worth sending a phone repeatedly: **thumb** for everywhere
+  it appears small — no wider than 104 px, but on a 3× screen — and **full** for the lock
+  screen and the `.m4b`'s artwork, where iOS draws it around 1050 px across.
+
+  Both cap rather than resize, `min(400,iw)` and `min(1000,iw)`, so a book whose own cover is
+  smaller is left alone instead of being blown up — of three books here the sources are 825,
+  986 and 1325 px wide, and only the last is reduced. Both keep the book's proportions: a
+  phone lays cover art out at whatever shape it's handed, so a tall cover fills the lock
+  screen the way it does in BookPlayer, and squaring one off only adds bars. The dimensions
+  are measured in the browser and go out with the artwork, since `sizes` is the shape the OS
+  lays it out by and has to match the file — a 600×906 cover announced as 512×512 gets bars.
+  ⚙ has a **Replace the cover** upload for books that declare none.
 
   The cover is whichever image the book *declares* — EPUB 3 `properties="cover-image"`, then
   the EPUB 2 `<meta name="cover">` id, then the guide reference. Never the first or biggest

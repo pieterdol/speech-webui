@@ -488,9 +488,15 @@ def update_book(book_id, fn):
 # wasteful to send a phone repeatedly. Both keep the book's own proportions: a phone shows
 # cover art at whatever shape it's given — BookPlayer displays the tall artwork embedded in
 # an exported .m4b full-height on the lock screen — so squaring one off only adds bars.
+#
+# thumb is for the library grid, the reader's header and the player, none wider than 104 px
+# but all of them on a 3x screen. full is the lock screen and the .m4b's artwork, where iOS
+# draws it about 1050 px across. min(…,iw) rather than a flat width so a book whose own cover
+# is smaller than the target is left alone instead of being blown up: of three books here the
+# source covers are 825, 986 and 1325 px wide.
 COVER_SIZES = {
-    "thumb": "scale=200:-2",
-    "full":  "scale=600:-2",
+    "thumb": r"scale=min(400\,iw):-2",
+    "full":  r"scale=min(1000\,iw):-2",
 }
 
 def cover_path(book_id, size):
