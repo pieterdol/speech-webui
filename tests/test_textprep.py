@@ -109,6 +109,32 @@ class TestSpokenAbbreviations:
     def test_left_alone(self, text):
         assert textprep.respell(text) == text
 
+    @pytest.mark.parametrize("text", [
+        "my contacts in the DR, and elsewhere",            # the Dominican Republic
+        "like some MS-13 lookout",                          # a gang
+        "the intersection of SR 92 and the old highway",   # a state route
+        "where the road reverted to SR 92 again",
+        "a phone booth on SR 109, half a mile along",
+    ])
+    def test_an_all_caps_initialism_is_not_a_title(self, text):
+        """All five are real sentences out of these books, and all five were being expanded —
+        "the Doctor", "Miz-13", "Senior 92" — until the all-caps form was made to carry its
+        full stop. Two capitals without one is an initialism far more often than a title."""
+        assert textprep.respell(text) == text
+
+    @pytest.mark.parametrize("text,spoken", [
+        ("and Mrs Ashgrove steering", "and Missus Ashgrove controlling it"),
+        ("the old Spy vs Spy cartoons", "the old Spy versus Spy cartoons"),
+    ])
+    def test_but_the_stop_is_not_required_otherwise(self, text, spoken):
+        """Also real sentences from the same books. British style drops the stop after a
+        title, and "Spy vs Spy" wants reading out in full."""
+        assert textprep.respell(text) == spoken
+
+    def test_an_all_caps_heading_still_expands(self):
+        """Because it does carry the stop."""
+        assert textprep.respell("MR. HALLOWAY") == "Mister HALLOWAY"
+
     def test_mrs_is_not_read_as_mr(self):
         """Whichever order the patterns are tried in."""
         assert textprep.respell("Mrs. Smith") == "Missus Smith"

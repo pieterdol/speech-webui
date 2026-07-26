@@ -34,14 +34,21 @@ SPOKEN_ABBREV = {"Jr": "Junior", "Sr": "Senior", "vs": "versus", "etc": "et cete
 
 
 def _abbrev_re(abbr):
-    """Matches the abbreviation with or without its full stop, never inside a longer word —
-    so "Mr." matches and "Mrs." doesn't, whichever order the two are tried in.
+    """Matches the abbreviation, never inside a longer word — so "Mr." matches and "Mrs."
+    doesn't, whichever order the two are tried in.
 
-    Case is not ignored. Lowercase "ms" is milliseconds far more often than it is an
-    honorific, so only the forms actually written for the abbreviation are accepted.
+    Case is not ignored, and the all-caps form has to carry its full stop. Both rules are
+    there because a two-letter capital without a stop is almost always an initialism for
+    something else: in these three books alone, "the DR" is the Dominican Republic, "MS-13"
+    is a gang, and "SR 92" is a state route — five occurrences of that last one. An all-caps
+    heading like "MR. HALLOWAY" does have the stop, so it still expands. Lowercase "ms" isn't
+    accepted at all: it's milliseconds far more often than it's an honorific.
     """
-    forms = sorted({abbr, abbr.upper(), abbr.capitalize()}, key=len, reverse=True)
-    return re.compile(r"(?<!\w)(?:%s)\.?(?!\w)" % "|".join(re.escape(f) for f in forms))
+    natural = sorted({abbr, abbr.capitalize()}, key=len, reverse=True)
+    alts = [re.escape(f) + r"\.?" for f in natural]
+    if abbr.upper() not in natural:
+        alts.append(re.escape(abbr.upper()) + r"\.")
+    return re.compile(r"(?<!\w)(?:%s)(?!\w)" % "|".join(alts))
 
 
 _HONORIFIC = [(_abbrev_re(a), full) for a, full in HONORIFICS.items()]
