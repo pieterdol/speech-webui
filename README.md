@@ -189,7 +189,12 @@ it — a full book is hours of work.
   realtime, a 5-minute chapter takes ~2 minutes.
 - **Playing** — parts are ordinary opus files played by an `<audio>` element, chaining into
   the next part and then the next chapter. Position is saved server-side every 5 seconds, so
-  the phone resumes where the PC left off. Speed is adjustable 0.75–2×.
+  the phone resumes where the PC left off. Speed is adjustable 0.75–2×, and **↺10 / 30↻** skip
+  back ten seconds or forward thirty — asymmetric because going back is for a sentence you
+  missed and going forward is for skipping something. A skip crosses into the next part or the
+  previous one rather than stopping at the edge of the file that happens to be loaded, using the
+  durations in the index to know where a part ends. The lock screen's own skip buttons do the
+  same, so a missed sentence doesn't need the phone unlocked.
 - **▶ Resume** sits at the top of a book you've started and names where it goes back to — the
   chapter, the part, and how far in. One tap and it plays from there. It's absent while that book
   is the one playing, since the player is the control then, and absent when the position points
