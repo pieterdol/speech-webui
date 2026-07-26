@@ -84,6 +84,8 @@
   .cliphead { display:flex; align-items:baseline; gap:8px; }
   .cliphead .nm { flex:1; font-size:14px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .cliphead .dur { flex:none; font-size:12px; color:var(--muted); }
+  .cliphead .narrow { padding:4px 8px; font-size:12px; border-radius:8px; white-space:nowrap;
+                      border:1px solid var(--line); background:#2a2640; color:var(--text); }
   .clip audio { width:100%; margin-top:8px; height:34px; }
   .clipacts { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
   .clipacts button { flex:1 1 30%; padding:9px; font-size:13px; border-radius:9px;
@@ -1463,7 +1465,12 @@ $("#bookCog").addEventListener("click", ()=>{
   b.style.display = b.style.display === "none" ? "block" : "none";
 });
 
-// The whole-book panel: how much is narrated, and what's left to do at 2.4x realtime.
+// Work left, at the measured 2.4x realtime. A part can be twenty minutes, and rounding that
+// to "0 h" reads as nothing left to do.
+const hoursLeft = mins => mins >= 90 ? `${(mins / 60).toFixed(1)} h`
+                                     : `${Math.max(1, Math.round(mins))} min`;
+
+// The whole-book panel: how much is narrated, and what's left to do.
 function renderWholeBook(){
   const chs = BOOK.chapters || [];
   const ready = chs.filter(c => c.state === "ready");
@@ -1474,13 +1481,19 @@ function renderWholeBook(){
   const ra = BOOK.render_all || {};
   $("#renderStop").style.display = ra.running ? "block" : "none";
   $("#renderAll").disabled = !!ra.running || !left.length;
+  // A run started from a part narrates only that part, so it shouldn't report itself as the
+  // whole book — the counts and the hours left are the part's, and so is the name.
+  const scope = ra.running && ra.part ? chs.filter(c => partOf(c) === ra.part) : chs;
+  const scopeDone = scope.filter(c => c.state === "ready").length;
+  const scopeLeftMin = scope.filter(c => c.state === "pending")
+                            .reduce((n, c) => n + c.words / 146, 0) / 2.4;
   $("#allHint").innerHTML = ra.running
-    ? `<span class="spin"></span>Narrating the whole book — ${ready.length} of ${chs.length}`
-      + ` chapters done, roughly ${Math.round(leftMin / 60)} h left. It keeps going if you`
-      + ` close the page.`
+    ? `<span class="spin"></span>Narrating ${ra.part ? `“${esc(ra.part)}”` : "the whole book"}`
+      + ` — ${scopeDone} of ${scope.length} chapters done, roughly `
+      + hoursLeft(scopeLeftMin) + ` left. It keeps going if you close the page.`
     : `${ready.length} of ${chs.length} chapters narrated.`
       + (part ? ` ${part} more ${part === 1 ? "is" : "are"} part-way through.` : "")
-      + (left.length ? ` The rest is about ${Math.round(leftMin / 60)} h of work.` : " All done.");
+      + (left.length ? ` The rest is about ${hoursLeft(leftMin)} of work.` : " All done.");
 }
 
 // What the narrator is on, and what is stacked up behind it. The whole-book hint says how
@@ -1625,11 +1638,19 @@ function chapterRow(c, grouped){
   else if(c.state === "error") note = "❌ " + (c.error || "failed");
   else if(segs.length)
     note = `▶ ${fmt(segsSeconds(segs))} narrated · ${segs.length} part(s), unfinished`;
+  // Every chapter carries its own narrate button. Tapping the row does it too, but that only
+  // works while the chapter has nothing to play — once it has, tapping plays instead — and a
+  // book with no parts has no "Narrate part" either, so there was nothing visible to press.
+  const todo = c.state === "pending" || c.state === "error";
   el.innerHTML = `<div class="cliphead"><div class="nm">${esc(chapterLabel(c, grouped))}</div>
-      <div class="dur">${c.state === "ready" ? "✓" : ""}</div></div>
+      <div class="dur">${c.state === "ready" ? "✓"
+                       : c.state === "rendering" ? '<span class="spin"></span>'
+                       : todo ? '<button class="narrow">📖 Narrate</button>' : ""}</div></div>
     <div class="tr">${esc(note)}</div>`;
   el.querySelector(".cliphead").addEventListener("click", ()=> chapterTapped(c.i));
   el.querySelector(".tr").addEventListener("click", ()=> chapterTapped(c.i));
+  const nar = el.querySelector(".narrow");
+  if(nar) nar.addEventListener("click", e => { e.stopPropagation(); narrateChapter(c.i); });
   if(segs.length || c.state === "rendering") el.appendChild(partsPanel(c));
   return el;
 }
@@ -1697,9 +1718,13 @@ async function chapterTapped(i){
 async function narrateChapter(i){
   const c = BOOK.chapters[i];
   const left = c.words * (1 - (c.segments || []).length / Math.max(c.total || 1, 1));
-  setStatus('<span class="spin"></span>Narrating — roughly '
-    + Math.max(1, Math.round(left / 146 / 2.4)) + ' min of work for '
-    + Math.round(left / 146) + ' min of audio.');
+  const mins = Math.max(1, Math.round(left / 146 / 2.4));
+  // A single chapter has no stop button — only a whole-book or part run does — and 1984's
+  // chapters are four hours of work each, so anything long enough to regret asks first.
+  if(mins > 10 && !confirm(`Narrate “${c.name}”? Roughly ${hoursLeft(mins)} of work, and a`
+                           + ` single chapter can't be stopped once it starts.`)) return;
+  setStatus('<span class="spin"></span>Narrating — roughly ' + hoursLeft(mins)
+    + ' of work for ' + Math.round(left / 146) + ' min of audio.');
   await fetch("/api/books/render", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({id: BOOK.id, chapter: i})});
   watchRenders();

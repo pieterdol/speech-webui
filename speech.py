@@ -870,10 +870,13 @@ def render_all_worker(book_id, part=None):
         if nxt is None:
             break
         render_chapter(book_id, nxt)
+        # Counted over the part being narrated, not the whole book. Reporting 3 of 192 for a
+        # run that only ever intended four chapters made a part run look like a whole-book one.
         book = find_book(book_id) or {}
-        done = sum(1 for c in book.get("chapters") or [] if c.get("state") == "ready")
-        update_book(book_id, lambda b, n=done: b.setdefault("render_all", {}).update(
-            done=n, total=len(b.get("chapters") or [])))
+        scope = chapters_in(book, part)
+        done = sum(1 for c in scope if c.get("state") == "ready")
+        update_book(book_id, lambda b, n=done, t=len(scope):
+                    b.setdefault("render_all", {}).update(done=n, total=t))
     update_book(book_id, lambda b: b.setdefault("render_all", {}).update(running=False))
 
 def export_worker(jid, book_id, part=None):

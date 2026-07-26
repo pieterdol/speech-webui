@@ -217,7 +217,12 @@ nothing is narrated until you ask for it — a full book is hours of work.
   moment it exists — a chapter three parts into a six-part render is already worth listening
   to, and one left half-made offers to finish itself. What opens unasked is the part you're
   reading and anything rendering or half-done; the state survives the 4-second refresh, so a
-  panel you're reading doesn't snap shut while the book narrates.
+  panel you're reading doesn't snap shut while the book narrates. Every chapter carries its
+  own **Narrate** button: tapping the row does it too, but only while the chapter has nothing
+  to play — once it has, tapping plays instead — and a book with no parts has no *Narrate
+  part* either, so otherwise there'd be nothing visible to press. A single chapter has no
+  stop button, unlike a part or whole-book run, so anything over ten minutes of work asks
+  first.
 - **Narrating now**, above *Whole book*, says which chapter the engine is on and which of its
   parts, and folds open to what's behind it with a rough total of the work left. It appears
   only when something is happening. `render_lock` serializes renders but a lock says nothing
@@ -303,7 +308,10 @@ the process died.
   progress and a stop button. It's hours — 8.4 h for The Institute — so it's meant to run
   overnight. It renders one chapter per turn rather than holding the render lock for the whole
   job, so tapping a single chapter still gets served in between, and stopping lets the chapter
-  in flight finish rather than leaving half of one behind.
+  in flight finish rather than leaving half of one behind. *Narrate part* starts the same run
+  scoped to one part, and reports itself that way — it's named in the panel and its progress
+  and hours-left are counted over the part, not the book, so four chapters don't show up as
+  "3 of 192".
 - **Export as audiobook (.m4b)** builds one file from whatever is narrated: chapter markers,
   cover art, title and author, AAC 48 kbps mono. On the phone, tap the download and share it
   into **BookPlayer**, which gives you chapters, sleep timer and position with no PC involved.
