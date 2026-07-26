@@ -74,6 +74,8 @@
   .btn.primary { background:var(--accent); color:#fff; border:none; font-weight:700; }
   .btn:disabled { opacity:.5; }
   .wide { width:100%; margin-top:14px; padding:15px; font-size:17px; }
+  /* not .dim: that colour is for muted text on the page background, and this sits on the accent */
+  #bookResume .where { display:block; margin-top:3px; font-size:13px; font-weight:400; opacity:.85; }
   #recBtn { width:100%; padding:18px; font-size:18px; font-weight:700; border-radius:12px;
             border:1px solid var(--line); background:#2a2640; color:var(--text);
             display:flex; align-items:center; justify-content:center; gap:10px; }
@@ -408,6 +410,10 @@
       </div>
       <button id="bookCog" class="iconbtn" title="Book settings" aria-label="Book settings">⚙</button>
     </div>
+
+    <!-- One tap back to where you stopped. Hidden until there is a position to go back to and
+         audio still sitting under it. -->
+    <button id="bookResume" class="btn primary wide" style="display:none"></button>
 
     <div id="bookSettings" class="card" style="display:none;margin-top:10px">
       <label for="bookVoice">Narrator</label>
@@ -1484,6 +1490,40 @@ $("#bookCog").addEventListener("click", ()=>{
 const hoursLeft = mins => mins >= 90 ? `${(mins / 60).toFixed(1)} h`
                                      : `${Math.max(1, Math.round(mins))} min`;
 
+// Where you'd carry on from, or null. The stored position is only an offer if the part it names
+// is still on disk: clearing a book's narration, or switching narrator, leaves a position
+// pointing at audio that no longer exists.
+function resumePoint(){
+  const p = (BOOK && BOOK.position) || null;
+  if(!p) return null;
+  const ci = p.chapter || 0, si = p.segment || 0, offset = p.offset || 0;
+  if(!ci && !si && !offset) return null;              // never started
+  const c = (BOOK.chapters || [])[ci];
+  const seg = c && (c.segments || [])[si];
+  if(!seg) return null;
+  return {ci, si, offset, name: c.name || `Chapter ${ci + 1}`,
+          parts: (c.segments || []).length};
+}
+
+function renderResume(){
+  const btn = $("#bookResume");
+  const r = BOOK ? resumePoint() : null;
+  // Nothing to offer while this book is the one playing: the player is the control then.
+  if(!r || (NP && BOOK && NP.id === BOOK.id)){ btn.style.display = "none"; return; }
+  const mins = Math.floor(r.offset / 60), secs = Math.floor(r.offset % 60);
+  btn.style.display = "block";
+  btn.innerHTML = "▶ Resume"
+    + `<span class="where">${esc(r.name)}`
+    + (r.parts > 1 ? ` · part ${r.si + 1} of ${r.parts}` : "")
+    // seconds in are worth naming, a few seconds in are not
+    + (r.offset >= 20 ? ` · ${mins}:${String(secs).padStart(2, "0")}` : "")
+    + "</span>";
+}
+$("#bookResume").addEventListener("click", ()=>{
+  const r = resumePoint();
+  if(r) playChapter(r.ci, r.si, r.offset);
+});
+
 // The whole-book panel: how much is narrated, and what's left to do.
 function renderWholeBook(){
   const chs = BOOK.chapters || [];
@@ -1570,6 +1610,7 @@ const chapterLabel = (c, grouped) =>
 function renderChapterList(){
   renderWholeBook();
   renderNarrating();
+  renderResume();
   const box = $("#chapterList");
   box.innerHTML = "";
   // Derived from the chapters rather than tracked separately, so it can't fall out of step
@@ -1904,6 +1945,9 @@ $("#mpOpen").addEventListener("click", ()=>{
 // Move the highlight in the parts panels without rebuilding the list — on a 192-chapter book
 // that would also shut every panel and lose the scroll position.
 function markPlayingPart(){
+  // Called on play and on closing the player, which is exactly when resuming stops or starts
+  // being something to offer — and the reader only polls while a render is running.
+  renderResume();
   document.querySelectorAll("#chapterList .seg.on, #chapterList .clip.now")
     .forEach(el => el.classList.remove("on", "now"));
   // The list on screen only shows the playing chapter when it's the playing book's list.

@@ -190,6 +190,11 @@ it — a full book is hours of work.
 - **Playing** — parts are ordinary opus files played by an `<audio>` element, chaining into
   the next part and then the next chapter. Position is saved server-side every 5 seconds, so
   the phone resumes where the PC left off. Speed is adjustable 0.75–2×.
+- **▶ Resume** sits at the top of a book you've started and names where it goes back to — the
+  chapter, the part, and how far in. One tap and it plays from there. It's absent while that book
+  is the one playing, since the player is the control then, and absent when the position points
+  at audio that no longer exists, which is what clearing a narration or changing narrator leaves
+  behind.
 - **The player floats at the bottom** and lives outside every view, so going back to the
   library, opening a different book or switching to Studio or Chat interrupts neither the audio
   nor the controls. It carries the cover, the chapter and part, the speed, and a way back to the
