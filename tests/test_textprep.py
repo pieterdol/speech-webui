@@ -155,6 +155,71 @@ class TestSpokenAbbreviations:
         assert {a.lower() for a in expandable} <= textprep._ABBREV
 
 
+class TestNumberWords:
+    """Digits a voice would otherwise guess at."""
+
+    @pytest.mark.parametrize("n,said", [
+        (1, "one"), (13, "thirteen"), (21, "twenty-one"), (112, "one hundred twelve"),
+    ])
+    def test_numbers(self, n, said):
+        assert textprep.number_word(n) == said
+
+    @pytest.mark.parametrize("n,said", [
+        (1963, "nineteen sixty-three"),
+        (1958, "nineteen fifty-eight"),
+        (2010, "twenty ten"),
+        (1900, "nineteen hundred"),
+        (2000, "two thousand"),
+        (2005, "two thousand five"),
+        (63, "sixty-three"),                 # two digits are already a year
+    ])
+    def test_years_go_in_pairs(self, n, said):
+        """espeak reads 1963 as "one thousand nine hundred and sixty-three", which nobody says
+        about a year."""
+        assert textprep.year_word(n) == said
+
+    def test_the_reverse_lookup_can_be_built_from_the_tables(self):
+        """books.py reads chapter numbers written out in words, and builds that from these."""
+        assert textprep.ONES[11] == "eleven" and textprep.TENS[6] == "sixty"
+
+
+class TestSlashNumbers:
+    """A slash between numbers is a writing convention, not a sound: "11/22/63" read as written
+    comes out "eleven slash twenty-two slash sixty-three"."""
+
+    @pytest.mark.parametrize("written,spoken", [
+        ("11/22/63", "eleven, twenty-two, sixty-three"),
+        ("11/22/63: A Novel", "eleven, twenty-two, sixty-three: A Novel"),
+        ("10/7/58", "ten, seven, fifty-eight"),
+        ("9/30/1958", "nine, thirty, nineteen fifty-eight"),
+        ("9/11", "nine, eleven"),
+        ("20/20", "twenty, twenty"),
+        ("24/7", "twenty-four, seven"),
+        ("The card was dated 11/22/63, in pencil.",
+         "The card was dated eleven, twenty-two, sixty-three, in pencil."),
+        ("11/21/63 and 11/22/63", "eleven, twenty-one, sixty-three and "
+                                  "eleven, twenty-two, sixty-three"),
+    ])
+    def test_each_group_is_spoken_as_a_number(self, written, spoken):
+        assert textprep.respell(written) == spoken
+
+    @pytest.mark.parametrize("text", [
+        "he ate 1/2 of it",                 # a fraction, not a date — "one two" is worse
+        "a 3/4 majority",
+        "and/or",
+        "Jake/George",
+        "see example.com/5/8 for that",     # a path
+        "version 1.2/3 of it",
+    ])
+    def test_left_alone(self, text):
+        assert textprep.respell(text) == text
+
+    def test_the_comma_is_the_beat_between_the_groups(self):
+        """Joined by a space they run together into one long number, which is the other way to
+        get this wrong."""
+        assert textprep.respell("11/22/63").count(",") == 2
+
+
 class TestCutSentences:
     """Chat speaks a reply while it's still being written, so this has to decide what's a
     finished sentence and what's still arriving."""

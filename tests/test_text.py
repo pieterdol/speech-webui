@@ -64,6 +64,28 @@ class TestPartOf:
         assert books.part_of(None) == ""
 
 
+class TestSpokenTitle:
+    """A title is written to be read, not heard. "11/22/63: A Novel" has a subtitle no narrator
+    says out loud, so the book can carry its own spoken form — and where it doesn't, the written
+    title is already what you'd say."""
+
+    def test_the_written_title_by_default(self):
+        assert books.spoken_title({"title": "Dark Matter"}) == "Dark Matter"
+
+    def test_the_spoken_one_wins(self):
+        assert books.spoken_title({"title": "11/22/63: A Novel",
+                                   "spoken_title": "eleven, twenty-two, sixty-three"}) \
+            == "eleven, twenty-two, sixty-three"
+
+    @pytest.mark.parametrize("spoken", ["", "   ", None])
+    def test_nothing_in_it_falls_back(self, spoken):
+        assert books.spoken_title({"title": "Dark Matter", "spoken_title": spoken}) \
+            == "Dark Matter"
+
+    def test_no_title_at_all(self):
+        assert books.spoken_title({}) == ""
+
+
 class TestChapterIntro:
     """What gets spoken before the prose."""
 
@@ -79,6 +101,12 @@ class TestChapterIntro:
     def test_book_opens_with_title_and_author(self):
         b = self.book(["Chapter One", "Chapter Two"])
         assert self.said(books.chapter_intro(b, 0)) == ["Dark Matter", "by Blake Crouch", "one"]
+
+    def test_the_spoken_title_is_what_opens_the_book(self):
+        b = self.book(["Chapter One"], title="11/22/63: A Novel",
+                      spoken_title="eleven, twenty-two, sixty-three")
+        assert self.said(books.chapter_intro(b, 0)) \
+            == ["eleven, twenty-two, sixty-three", "by Blake Crouch", "one"]
 
     def test_later_chapters_get_only_their_number(self):
         b = self.book(["Chapter One", "Chapter Two"])

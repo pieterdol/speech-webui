@@ -11,7 +11,7 @@ from flask import jsonify, request, send_from_directory
 import epub
 from core import app, index_lock, jobs, new_job, run_lock, safe_path, write_json, HERE
 from media import audio_seconds, pad_with_silence
-from textprep import cut_sentences, respell
+from textprep import ONES, TENS, cut_sentences, number_word, respell
 from tts import piper_voice_ids, tts_engine_of, tts_say
 
 BOOKS_DIR  = os.path.join(HERE, "books")
@@ -344,16 +344,12 @@ AUTHOR_PAUSE  = 1.6
 # announcement — the moment you'd use to notice a chapter has ended.
 CHAPTER_END_PAUSE = 1.8
 
-_ONES = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-         "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
-         "eighteen", "nineteen"]
-_TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
-
-# The reverse direction, for books that spell their chapter headings out. Dark Matter names
-# them "Chapter One" rather than "Chapter 1", and looking only for digits found nothing —
+# Digits to words lives in textprep, which is where everything about how text sounds lives.
+# This is the reverse direction, for books that spell their chapter headings out: Dark Matter
+# names them "Chapter One" rather than "Chapter 1", and looking only for digits found nothing —
 # so the whole book was narrated with no announcement at all.
-_ONES_N = {w: i for i, w in enumerate(_ONES) if w}
-_TENS_N = {w: i * 10 for i, w in enumerate(_TENS) if w}
+_ONES_N = {w: i for i, w in enumerate(ONES) if w}
+_TENS_N = {w: i * 10 for i, w in enumerate(TENS) if w}
 
 def word_number(label):
     """The chapter number written out in a heading, or None. Handles "One", "Twenty-One" and
@@ -387,17 +383,12 @@ def label_number(label):
     m = re.search(r"\d+", label or "")
     return int(m.group(0)) if m else word_number(label)
 
-def number_word(n):
-    """Chapter numbers as words. Kokoro reads a bare "21" acceptably, but "twenty-one" is
-    unambiguous and doesn't risk being read as a year or a list item."""
-    if n < 0 or n > 999:
-        return str(n)
-    if n < 20:
-        return _ONES[n] or "zero"
-    if n < 100:
-        return _TENS[n // 10] + (f"-{_ONES[n % 10]}" if n % 10 else "")
-    rest = n % 100
-    return _ONES[n // 100] + " hundred" + (f" {number_word(rest)}" if rest else "")
+def spoken_title(book):
+    """What the opening announcement calls the book. A title is written to be read, not heard:
+    "11/22/63: A Novel" has a subtitle no narrator says out loud, and respell can only fix the
+    parts of it that follow a rule. So the book carries an optional spoken form, and where it's
+    empty the written title is already what you'd say."""
+    return (book.get("spoken_title") or "").strip() or (book.get("title") or "")
 
 def chapter_intro(book, index):
     """[(phrase, pause_after)] to speak before the chapter — the book's title and author at
@@ -415,8 +406,9 @@ def chapter_intro(book, index):
     pieces = []
     if index == 0:
         # How a published audiobook opens, and it's what the .m4b plays first as well
-        if book.get("title"):
-            pieces.append((book["title"], TITLE_PAUSE))
+        said = spoken_title(book)
+        if said:
+            pieces.append((said, TITLE_PAUSE))
         if book.get("author"):
             pieces.append((f"by {book['author']}", AUTHOR_PAUSE))
     if part and not any(part_of(c.get("name")) == part for c in chapters[:index]):
@@ -695,8 +687,21 @@ def api_book_update():
         return jsonify(ok=False, needs_confirm=True, rendered=rendered, resume=resume,
                        msg=(f"the audio for {rendered} chapter(s) was made with the old voice "
                             f"and gets discarded — only “{name}” is re-made now"), ), 409
+    def rename(b):
+        """The two fields the opening announcement is made of, applied to whichever copy of the
+        book asks — the real one, or a throwaway to see what the announcement would become."""
+        if d.get("title"): b["title"] = d["title"][:200]
+        if "spoken_title" in d: b["spoken_title"] = (d["spoken_title"] or "").strip()[:200]
+        return b
+    # The opening announcement lives inside chapter 0's first segment, so renaming the book
+    # leaves that one file saying the old name. Re-making it costs a few seconds and throws
+    # nothing away — the chapter's other segments stay on disk and the render skips them — so
+    # unlike a voice change this doesn't need confirming, it just happens.
+    renamed = bool(spoken_title(rename(dict(book))) != spoken_title(book)
+                   and not resets and chapters and chapters[0].get("state") == "ready")
+
     def apply(b):
-        if d.get("title"):  b["title"] = d["title"][:200]
+        rename(b)
         if d.get("voice") and tts_engine_of(d["voice"]): b["voice"] = d["voice"]
         if d.get("announce") is not None: b["announce"] = bool(d["announce"])
         if isinstance(d.get("position"), dict): b["position"] = d["position"]
@@ -705,13 +710,19 @@ def api_book_update():
             b.setdefault("render_all", {})["running"] = False
             for c in b["chapters"]:
                 c.update(state="pending", segments=[], error=None)
+        # Pending, but with its segments kept: render_chapter compares the intro it's about to
+        # speak against the one on record and deletes only the file that has gone stale.
+        if renamed:
+            b["chapters"][0].update(state="pending", error=None)
     update_book(book["id"], apply)
     if resets:
         shutil.rmtree(book_dir(book["id"], "audio"), ignore_errors=True)
         # Re-make just the one you'd carry on from, so the new narrator is ready to listen to
         # without re-rendering everything you'd already been through.
         threading.Thread(target=render_chapter, args=(book["id"], resume), daemon=True).start()
-    return jsonify(ok=True, book=find_book(book["id"]), resume=resume)
+    if renamed:
+        threading.Thread(target=render_chapter, args=(book["id"], 0), daemon=True).start()
+    return jsonify(ok=True, book=find_book(book["id"]), resume=resume, renamed=renamed)
 
 @app.post("/api/books/delete")
 def api_book_delete():

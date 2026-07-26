@@ -89,10 +89,9 @@ named preset and the app defaults to it from then on — no re-picking the clip 
 transcript. A preset keeps **its own copy** of the audio (trim already applied) in `presets/`, so
 it keeps working after the clip it came from is deleted: clips are scratch space, presets last.
 
-**Quality dial.** F5-TTS sampling steps are selectable: standard (32) or faster (16). Measured on
-the same sentence, 16 steps took 66 s against ~120 s for 32, and Whisper transcribed the faster
-output back word-perfect. Generation time scales with output length, so treat "about a minute a
-sentence" as a guide rather than a promise.
+**Quality dial.** F5-TTS sampling steps are selectable: standard (32) or faster (16) — on the same
+sentence, ~120 s against 66 s. Generation time scales with output length, so treat "about a minute
+a sentence" as a guide rather than a promise.
 
 Note that a saved voice does **not** make generation faster. F5-TTS is a zero-shot cloner: it
 re-derives the voice from the reference on every run, and the minutes go into generating the
@@ -115,17 +114,16 @@ keeps working without it.
 - **Model** — every model installed in Ollama, Qwen first (`qwen3:8b` is the default). Sizes are
   shown because they have to fit in the 16 GB alongside anything ComfyUI has loaded: `qwen3:8b`
   is ~5.2 GB, `qwen3:14b` ~9.3 GB. A **👁** marks a vision model (Ollama's `vision` capability,
-  looked up once per model and cached). They answer text perfectly well — tested, all three
-  reply — but they trade some text ability for images this UI has no way to send them, and
-  `moondream` is 1B and shows it. For plain chat, prefer a non-👁 model.
+  looked up once per model and cached). They answer text perfectly well, but they trade some text
+  ability for images this UI has no way to send them, and `moondream` is 1B and shows it. For
+  plain chat, prefer a non-👁 model.
 - **Voice** — the same picker as panel 3, ▶ preview included, remembered separately from the
   panel-3 choice.
 - **🔊 Speak replies out loud** — off by default. On, the reply is spoken **sentence by
   sentence as it is written**, not rendered in one go at the end: the server cuts the token
   stream at sentence boundaries, hands each piece to Kokoro, and the page plays them back to
-  back. On a twelve-sentence answer the first audio arrived at 4.6 s — while the model was
-  still writing, and against ~45 s of silence for a single whole-reply render. Rendering runs
-  ~2.5× faster than playback, so it stays ahead once it starts.
+  back, so the first audio arrives a few seconds in, while the model is still writing. Rendering
+  runs ~2.5× faster than playback, so it stays ahead once it starts.
 
   Chunks are held to 45 characters (20 for the first, which sets the perceived wait). Below
   roughly half a second of audio a render takes longer than the playback it has to cover, and
@@ -153,17 +151,14 @@ keeps working without it.
 - **System prompt** — per chat. The default asks for short, plain-prose answers, because markdown
   bullets and code fences read terribly out loud.
 
-**Getting an English answer to a Dutch question takes more than asking** — this applies only
-when an English voice is selected. A system-prompt
-instruction alone did not hold: `qwen3:8b` mirrors the language of the latest user turn and
-answered in Dutch anyway, most stubbornly on Dutch subject matter. What works, measured 16/16
-against 3/5 for the instruction alone, is three things together — the note in the system
-prompt, a `[Reply in English.]` marker on the turn itself, and a two-exchange primer showing a
-Dutch question answered in English (the second example deliberately being a factual question
-about the Netherlands, which is where it slipped). The marker and the primer are attached to
-what gets **sent**, never to what's stored, so `chats.json` and the on-screen transcript stay
-clean. Getting turn one right matters most: one Dutch reply in the history and every later
-turn copies it.
+**Getting an English answer to a Dutch question takes three things together** — this applies only
+when an English voice is selected. `qwen3:8b` mirrors the language of the latest user turn, and a
+system-prompt instruction on its own doesn't hold against it, so the app also sends a
+`[Reply in English.]` marker on the turn itself and a two-exchange primer showing a Dutch question
+answered in English, one example of it about the Netherlands. The marker and the primer are
+attached to what gets **sent**, never to what's stored, so `chats.json` and the on-screen
+transcript stay clean. Turn one matters most: one Dutch reply in the history and every later turn
+copies it.
 
 Chats live in `chats.json` on the server rather than in the browser, so a conversation started
 on the PC continues on the phone. The first thing you say names the chat.
@@ -259,6 +254,12 @@ nothing is narrated until you ask for it — a full book is hours of work.
   phrases used are recorded with the chapter, so resuming a chapter that was interrupted
   before the wording changed re-makes that one part instead of keeping an opening that no
   longer matches.
+
+  A title is written to be read, not heard — *11/22/63: A Novel* has a subtitle no narrator
+  says out loud — so ⚙ has a **Say the title as** field that only the announcement uses. The
+  written title still goes in the library, the chapter marks and the `.m4b`. Changing either
+  one re-records the opening if the first chapter was already narrated: that's one part of one
+  chapter, so it happens without asking, unlike a change of voice.
 - **Clear narration** in ⚙ throws away the audio and keeps the book, its text and its cover —
   useful after changing something that should be re-spoken.
 - **Covers** come from the EPUB, in the library grid, beside the title, in the player, and on
@@ -268,26 +269,22 @@ nothing is narrated until you ask for it — a full book is hours of work.
   screen and the `.m4b`'s artwork, where iOS draws it around 1050 px across.
 
   Both cap rather than resize, `min(400,iw)` and `min(1000,iw)`, so a book whose own cover is
-  smaller is left alone instead of being blown up — of three books here the sources are 825,
-  986 and 1325 px wide, and only the last is reduced. Both keep the book's proportions: a
-  phone lays cover art out at whatever shape it's handed, so a tall cover fills the lock
-  screen the way it does in BookPlayer, and squaring one off only adds bars. The dimensions
+  smaller is left alone instead of being blown up. Both keep the book's proportions: a phone lays
+  cover art out at whatever shape it's handed, so a tall cover fills the lock screen the way it
+  does in BookPlayer, and squaring one off only adds bars. The dimensions
   are measured in the browser and go out with the artwork, since `sizes` is the shape the OS
   lays it out by and has to match the file — a 600×906 cover announced as 512×512 gets bars.
   ⚙ has a **Replace the cover** upload for books that declare none.
 
   The cover is whichever image the book *declares* — EPUB 3 `properties="cover-image"`, then
   the EPUB 2 `<meta name="cover">` id, then the guide reference. Never the first or biggest
-  image: The Institute ships six `buylink_*_cover.jpg` files, which are the covers of other
-  novels advertised in the back matter. Books added before covers existed get one made on
-  demand from the stored EPUB, so nothing needs re-adding.
+  image: a book's back matter can carry the covers of other novels advertised in it. A book
+  whose covers haven't been derived yet gets them made on demand from the stored EPUB.
 
 **Why files rather than streaming.** iOS suspends a page's timers when the screen locks, so
 the sentence-at-a-time approach Chat uses would stall the moment the phone goes in a pocket.
-Measured instead: with the phone locked, three files played back to back, each advancing in
-**under a second**, and the page's own beacons still arrived — so iOS kept the JavaScript
-running as well as the audio. That result is what makes ~10-minute parts safe; without it the
-design would need whole chapters in single files.
+Files don't: with the phone locked, parts play back to back, each advancing in **under a
+second**, and the page's beacons keep arriving — which is what makes ~10-minute parts safe.
 
 **Rendering doesn't monopolise the machine.** `run_lock` is taken per ~600-character chunk and
 released between them, so a chat reply or a transcription slots in between rather than waiting
@@ -337,9 +334,8 @@ At 32 kbps opus a 20-hour book is ~290 MB of parts, plus the export if you make 
 gitignored, as is `*.epub`.
 
 Every index (`clips.json`, `presets.json`, `chats.json`, `books.json`) is written to a temp
-file and renamed. A whole-book render rewrites the book index after every chapter while the
-page polls it, and a plain truncate-and-write briefly made the book vanish from the API —
-0 failures in 400 reads afterwards.
+file and renamed, so a read that lands mid-write gets a whole file rather than half of one —
+a whole-book render rewrites the book index after every chapter while the page is polling it.
 
 ## Modules
 
@@ -379,21 +375,15 @@ takes one JSON request per line over a pipe. It's launched with **Kokoro's own i
 (`~/.local/share/kokoro-tts/venv/bin/python`), so its 524 MB of ONNX dependencies stay where
 they already are rather than being duplicated here.
 
-| same text | CLI per render | resident worker |
-| --- | --- | --- |
-| "Hello there." (0.9 s audio) | 2.0 s | **0.6 s** |
-| one sentence (4.2 s audio) | 3.0 s | **1.8 s** |
-| eight sentences (24.5 s audio) | 11.1 s | **10.3 s** |
-
-Fixed cost per render drops from ~1.9 s to ~0.3 s; the marginal cost (~0.38 s per second of
-audio) is unchanged, so long text barely improves and short text improves a lot.
+With the worker the fixed cost is ~0.3 s. The marginal cost (~0.38 s per second of audio) is the
+same either way, so short text improves a lot and long text barely changes.
 
 The worker costs 530 MB–1 GB of RAM while it's loaded, growing with the longest text rendered
 (onnxruntime widens its arena and keeps it), so it **unloads itself after 10 minutes with no
-renders** and starts again on the next one. That restart costs about 1.4 s (2.2 s against 0.8 s
-warm), which is well worth ~700 MB back on an idle machine. `KOKORO_IDLE_MINUTES` changes the
-window; `0` disables the reaper and keeps it resident. Killing the worker by hand is also safe
-at any time — the next render just restarts it.
+renders** and starts again on the next one. That restart costs about 1.4 s, which is well worth
+~700 MB back on an idle machine. `KOKORO_IDLE_MINUTES` changes the window; `0` disables the reaper
+and keeps it resident. Killing the worker by hand is also safe at any time — the next render just
+restarts it.
 
 Two locks, not one. `run_lock` serializes the CPU model work (Whisper, Kokoro, F5-TTS) because
 F5-TTS saturates all 12 cores. Chat gets its own `chat_lock`: Ollama offloads the whole model to
@@ -407,8 +397,7 @@ most-used path, so `faster-whisper` lives in this app's venv and the model stays
 between requests. All three model paths are now warm between calls.
 
 Long jobs are threads writing into a `jobs` dict that the page polls at `/api/status/<id>`, the
-same pattern as `~/Code/comfy-webui`. A single lock serializes all model work: F5-TTS saturates
-all 12 cores, so overlapping a clone with a transcription would just make both crawl.
+same pattern as `~/Code/comfy-webui`.
 
 ## Layout
 
@@ -454,7 +443,7 @@ uv pip install --python .venv/bin/python pytest    # once
 
 Also on every push and pull request, via `.github/workflows/tests.yml`.
 
-**What's covered.** Every module, ~270 tests. The books state machine, which is where the
+**What's covered.** Every module, ~340 tests. The books state machine, which is where the
 bugs actually live: a render being cancelled under itself, what survives a restart, which
 chapters an export takes, how a part run scopes its progress, the queue. The pure functions —
 reading a chapter number out of a heading in digits or words, cutting text into segments,
@@ -486,8 +475,7 @@ Tests needing a tool beyond python skip when it isn't installed, which is right 
 that hasn't got it and wrong in CI, where skipping is how a suite passes without having run.
 `STRICT_TESTS=1` refuses the run instead, naming what's missing and what it would have
 skipped; CI sets it. The check lives in `pytest_configure` rather than a shell step on
-purpose — `ffmpeg -version | head -1` exits 0 whether or not ffmpeg exists, which is how the
-first version of this passed while testing neither.
+purpose — `ffmpeg -version | head -1` exits 0 whether or not ffmpeg exists.
 
 `tests/test_frontend.py` is structural, not behavioural: every `$("#id")` resolves to an
 element that exists, no element is left unreferenced, tags balance, ids are unique, and the
@@ -500,8 +488,8 @@ can reach real storage by forgetting to ask. Don't call `monkeypatch.undo()` in 
 reverts every patch on the shared function-scoped `monkeypatch`, those redirects included, and
 the rest of the test then runs against your own library. A second autouse fixture snapshots
 real storage around every test and fails if any of it changed, because that mistake is
-otherwise completely silent — it reports the damage rather than preventing it, but loud and
-after the fact beats a suite that quietly edits your books for weeks.
+otherwise completely silent. It reports the damage rather than preventing it, which still beats
+a suite that quietly edits your books.
 
 A third refuses to start a speech engine. `kokoro_voices()` reads like a list lookup and is
 actually a subprocess launch plus a module-global cache that would leak into every test after
@@ -517,12 +505,10 @@ it, so `worker_call` is replaced for the whole suite.
 - **Restarting drops running jobs** — the `jobs` dict is in memory. The page says so if you poll
   a job the server no longer knows. Chat *messages* survive (they're in `chats.json`); only a
   reply still being written is lost.
-- **Ollama picks the wrong GPU backend.** Ollama 0.32.0 (installed 2026-07-14) ships only a
-  ROCm 7.2 runtime, and ROCm 7 dropped consumer RDNA2 — which is what the RX 6900 XT (gfx1030)
-  is. Left alone Ollama chooses ROCm and the upload to VRAM crawls: measured here, a 732 MiB
-  model didn't load in three minutes, and `qwen3:8b` hit Ollama's five-minute load timeout every
-  time, on a cold GPU with 15 GB free. Those aborted loads also left VRAM allocated (1.6 GB →
-  16 GB over three attempts), which made each retry worse until a reboot cleared it.
+- **Ollama picks the wrong GPU backend.** Ollama ships only a ROCm 7.2 runtime, and ROCm 7
+  dropped consumer RDNA2 — which is what the RX 6900 XT (gfx1030) is. Left alone Ollama chooses
+  ROCm and the upload to VRAM crawls: `qwen3:8b` hits Ollama's five-minute load timeout with
+  15 GB free, and the aborted loads keep VRAM allocated until a reboot.
 
   Hiding the GPU from ROCm makes Ollama fall back to the Vulkan backend it already ships, and
   the same `qwen3:8b` loads in **~3 s and runs at 48-81 tok/s**:
@@ -531,13 +517,10 @@ it, so `worker_call` is replaced for the whole suite.
   HIP_VISIBLE_DEVICES=-1 ROCR_VISIBLE_DEVICES=-1 ollama serve
   ```
 
-  This affects everything on this box that uses Ollama, `~/Code/comfy-agent` included — it
-  worked before the update because the older build carried a ROCm 6 runtime.
+  This affects everything on this box that uses Ollama, `~/Code/comfy-agent` included.
 
   On Vulkan, VRAM behaves: an idle `ollama serve` holds none, a resident `qwen3:8b` holds
   ~6.3 GB, and when `keep_alive` expires the card goes back to its ~1.2 GB desktop baseline.
-  (Killing Ollama mid-session instead of letting the model expire leaves the buffers allocated
-  for a while — that's the driver reclaiming lazily, not a leak.)
 - **Ollama isn't a service.** Started by hand, so after a reboot Chat is down until it runs
   again, while the rest of the app is fine. `ollama.service` in this repo fixes that *and* sets
   the two variables above; install it with the three commands in its header comment.
@@ -550,10 +533,16 @@ it, so `worker_call` is replaced for the whole suite.
   something the engine says correctly — `movies` → `movees`, because espeak clips the `-ies`
   to "movis". Kokoro's documented `[word](/phonemes/)` override is not available here: that
   belongs to the `kokoro` KPipeline package, and `kokoro_onnx` takes either plain text or
-  nothing but phonemes, so the markup is read out — measured, the clip went from 1.6 s to
-  4.2 s and Whisper heard *"movies. slash m stress u lengthen v i z slash"*. espeak's own
-  `[[…]]` inline form does survive the pipeline but is no easier to get right: `[[mu:viz]]`
-  came back as "MooVis".
+  nothing but phonemes, so the markup itself gets read out loud. espeak's own `[[…]]` inline
+  form does survive the pipeline but is no easier to get right. Respelling is the whole toolkit.
+- **A slash between numbers isn't a sound.** `11/22/63` read as written comes out *"eleven
+  slash twenty-two slash sixty-three"*, so each group is spoken as a number with a comma
+  between: *"eleven, twenty-two, sixty-three"*, and *"nine, eleven"*, *"twenty, twenty"*. The
+  comma is the beat between the groups; a space instead runs them together into one long
+  number. Which group is the month is never guessed at — `10/7` is October 7th in an American
+  book and July 10th in a Dutch one. Two single digits are left alone, since `1/2` is a
+  fraction far more often than a date, and a four-digit year goes in pairs: *"nineteen
+  sixty-three"*, not "one thousand nine hundred and sixty-three". Prose as much as titles.
 - **Titles are written out before they're spoken.** `Mr.` reaches the engine as `Mister`,
   because the full stop otherwise reads as a sentence break and drops a pause between the
   title and the name. Same for `Mrs.`, `Ms.`, `Dr.`, `Prof.`, and for `Jr.`, `Sr.`, `vs.`,
@@ -562,10 +551,8 @@ it, so `worker_call` is replaced for the whole suite.
   alone: it's Saint before a name and Street after one, and nothing here can tell which.
 - **Kokoro has no Dutch voice** — its 54 cover nine languages and Dutch isn't one. That's why
   Piper is here. Kokoro *can* be forced at Dutch (`kokoro-tts -l nl` phonemizes through
-  espeak-ng, which knows Dutch) but it's an American accent reading Dutch spelling: on "Het is
-  uitstekend gezellig in Scheveningen…" Whisper heard back "in Skeveningen, waar de
-  Schoonerhuis in Oudzicht gaven op de Rooige Zee", while Piper's nathalie came back nearly
-  intact. Not exposed in the UI; use a Piper voice.
+  espeak-ng, which knows Dutch) but it's an American accent reading Dutch spelling, and place
+  names in particular come back unrecognizable. Not exposed in the UI; use a Piper voice.
 - **Five of Piper's ten Dutch voices are installed.** The rest are lower-quality `x_low`/`low`
   variants of the same speakers, plus `nl_NL-mls-medium`, which is a 52-speaker model needing a
   speaker id the UI doesn't have. Add more by dropping the `.onnx` and `.onnx.json` from

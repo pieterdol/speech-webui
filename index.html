@@ -415,6 +415,11 @@
         Announce the title, the part and the chapter number</label>
       <div class="hint">“The Institute” … “by Stephen King” … “The Night Knocker” … “one” …
         then the text, with a pause after each. The title and author open the book only.</div>
+      <label for="bookSayTitle">Say the title as</label>
+      <input type="text" id="bookSayTitle">
+      <div class="hint">For a title written to be read rather than heard. “11/22/63: A Novel”
+        wants “eleven, twenty-two, sixty-three”. Only the announcement changes — the written
+        title, the library and the .m4b keep the real one. Empty means say it as written.</div>
       <label for="bookCoverFile">Replace the cover</label>
       <input type="file" id="bookCoverFile" accept="image/*">
       <div class="hint">Taken from the EPUB when it declares one. Shows in the list and on
@@ -1437,6 +1442,8 @@ async function openBook(id){
   cov.src = `/cover/${BOOK.id}/thumb.jpg?v=${BOOK.updated || 0}`;
   pickOption($("#bookVoice"), BOOK.voice);
   $("#bookHeadings").checked = BOOK.announce !== false;
+  $("#bookSayTitle").value = BOOK.spoken_title || "";
+  $("#bookSayTitle").placeholder = BOOK.title || "";
   $("#bookSkipped").textContent = (BOOK.skipped || []).length
     ? `Left out ${BOOK.skipped.length} sections that look like front or back matter.` : "";
   // Nothing folded open carries across books. What opens unasked: the part you're reading,
@@ -1990,6 +1997,8 @@ $("#bookSpeed").addEventListener("input", ()=>{
 
 $("#bookVoice").addEventListener("change", ()=> changeBook({voice: $("#bookVoice").value}));
 $("#bookHeadings").addEventListener("change", ()=> changeBook({announce: $("#bookHeadings").checked}));
+// On change, not on every keystroke: each save can re-make the book's opening.
+$("#bookSayTitle").addEventListener("change", ()=> changeBook({spoken_title: $("#bookSayTitle").value}));
 // Changing narrator or heading handling makes the existing audio wrong, so the server asks
 // before throwing it away.
 async function changeBook(patch){
@@ -2009,11 +2018,17 @@ async function changeBook(patch){
   }
   if(!d.ok){ setStatus("❌ " + (d.msg || "couldn't change that"), true); return; }
   BOOK = d.book;
-  stopIfPlaying(BOOK.id);
+  // A rename re-makes one file, the opening of chapter 1 — so only somebody listening to that
+  // has the ground moved under them. Stopping the player halfway through chapter forty over a
+  // spelling change would be gratuitous.
+  if(!d.renamed || (PLAY.chapter === 0 && PLAY.segment === 0)) stopIfPlaying(BOOK.id);
   renderChapterList();
   if(d.resume !== undefined && BOOK.chapters[d.resume]){
     setStatus(`Re-narrating “${esc(BOOK.chapters[d.resume].name)}” in the new voice — the rest`
               + " when you get to them.");
+    watchRenders();
+  } else if(d.renamed){
+    setStatus("Saved — re-recording the opening.");
     watchRenders();
   } else setStatus("Saved.");
 }

@@ -89,6 +89,67 @@ class TestPosition:
         assert books.find_book("browsing").get("position") is None
 
 
+class TestSpokenTitle:
+    """The opening announcement can be given its own wording without touching the title the
+    library and the .m4b are built from. It lives inside chapter 1's first part, so changing it
+    means that one file now says the old name."""
+
+    def test_saved_beside_the_written_title(self, client, make_book):
+        make_book(title="11/22/63: A Novel")
+        client.post("/api/books/update",
+                    json={"id": "b1", "spoken_title": "eleven, twenty-two, sixty-three"})
+        b = books.find_book("b1")
+        assert b["spoken_title"] == "eleven, twenty-two, sixty-three"
+        assert b["title"] == "11/22/63: A Novel"
+
+    def test_emptying_it_goes_back_to_the_written_title(self, client, make_book):
+        make_book(spoken_title="said differently")
+        client.post("/api/books/update", json={"id": "b1", "spoken_title": "   "})
+        assert books.spoken_title(books.find_book("b1")) == "A Book"
+
+    def test_a_narrated_opening_is_remade(self, client, make_book, no_background_work):
+        make_book()
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        r = client.post("/api/books/update", json={"id": "b1", "spoken_title": "Said aloud"})
+        assert r.get_json()["renamed"] is True
+        # pending, but keeping its segments: the render deletes only the part that went stale
+        assert books.find_book("b1")["chapters"][0]["state"] == "pending"
+        assert no_background_work["chapters"] == [("b1", 0)]
+
+    def test_renaming_the_written_title_counts_too(self, client, make_book, no_background_work):
+        """With no spoken form set, the written title is what gets said."""
+        make_book()
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        r = client.post("/api/books/update", json={"id": "b1", "title": "Another Book"})
+        assert r.get_json()["renamed"] is True
+        assert no_background_work["chapters"] == [("b1", 0)]
+
+    def test_but_not_when_the_wording_is_unchanged(self, client, make_book, no_background_work):
+        make_book(spoken_title="Said aloud")
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        r = client.post("/api/books/update", json={"id": "b1", "spoken_title": "Said aloud"})
+        assert r.get_json()["renamed"] is False
+        assert no_background_work["chapters"] == []
+
+    def test_nothing_narrated_means_nothing_to_remake(self, client, make_book,
+                                                      no_background_work):
+        make_book()
+        r = client.post("/api/books/update", json={"id": "b1", "spoken_title": "Said aloud"})
+        assert r.get_json()["renamed"] is False
+        assert no_background_work["chapters"] == []
+
+    def test_a_position_save_never_remakes_anything(self, client, make_book,
+                                                    no_background_work):
+        """The player writes a position every five seconds. Reading that as a rename would
+        re-record the book's opening every five seconds with it."""
+        make_book(title="11/22/63: A Novel", spoken_title="eleven, twenty-two, sixty-three")
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        r = client.post("/api/books/update",
+                        json={"id": "b1", "position": {"chapter": 3, "segment": 0, "offset": 9}})
+        assert r.get_json()["renamed"] is False
+        assert no_background_work["chapters"] == []
+
+
 class TestDelete:
     def test_removes_the_index_entry_and_the_directory(self, client, make_book):
         make_book()
