@@ -266,8 +266,12 @@ the files sitting right there.
   job, so tapping a single chapter still gets served in between, and stopping lets the chapter
   in flight finish rather than leaving half of one behind.
 - **Export as audiobook (.m4b)** builds one file from whatever is narrated: chapter markers,
-  cover art, title and author, AAC 48 kbps mono. On the phone, tap the download and Share →
-  Books. Apple Books then gives you chapters, sleep timer and position with no PC involved.
+  cover art, title and author, AAC 48 kbps mono. On the phone, tap the download and share it
+  into **BookPlayer** — that's the player in use, and it gives you chapters, sleep timer and
+  position with no PC involved. Apple Books was the original target and reads the same file,
+  but importing one onto the phone wasn't straightforward and looked like it wanted the PC
+  after all, which defeats the point. Nothing in the export is player-specific: it's a plain
+  .m4b with ffmetadata chapter marks.
   The full book is ~564 MB; 32 kbps would be ~380 MB but AAC is meaningfully worse than opus
   at that rate, hence 48. *Whatever is narrated* means every part on disk, not only the
   chapters that finished — a chapter cut short still has real audio in it, and the count of

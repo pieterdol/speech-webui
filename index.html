@@ -418,7 +418,7 @@
         <button id="renderStop" class="btn del" style="display:none">⏹ Stop after this chapter</button>
         <button id="exportBook" class="btn">⬇ Export as audiobook (.m4b)</button>
       </div>
-      <div class="hint">An audiobook file plays offline in Apple Books — chapters, sleep timer
+      <div class="hint">An audiobook file plays offline in BookPlayer — chapters, sleep timer
         and position, without needing this PC. It uses whatever has been narrated so far.</div>
     </div>
 
@@ -1669,7 +1669,7 @@ async function exportBook(part, btn){
       `<div class="outhead">${esc(part || BOOK.title)} · ${esc(done.text || "")}
          · ${fmt(done.seconds)}</div>
        <div class="acts"><a href="${done.url}" download>⬇ Download the .m4b</a></div>
-       <div class="hint">On the phone: tap it, then Share → Books to add it to Apple Books.</div>`);
+       <div class="hint">On the phone: tap it, then share it into BookPlayer.</div>`);
     $("#exportOut").scrollIntoView({behavior:"smooth", block:"nearest"});
   }catch(e){
     exportSays("❌ " + esc(e.message), true);

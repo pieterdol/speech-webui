@@ -847,12 +847,12 @@ def export_worker(jid, book_id, part=None):
             # attached_pic is what makes players show it as the book's artwork
             cmd += ["-map", "2:v", "-c:v", "copy", "-disposition:v:0", "attached_pic"]
         # 48 kbps AAC mono: the source is already 32 kbps opus, so this adds little loss
-        # while staying in the format Apple Books and every audiobook player reads.
+        # while staying in the format every audiobook player reads.
         cmd += ["-c:a", "aac", "-b:a", "48k", "-ac", "1", "-movflags", "+faststart", out]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
         if r.returncode != 0 or not os.path.exists(out):
             raise RuntimeError("ffmpeg failed: " + (r.stderr or "")[-300:])
-        # The name keeps its spaces — it's what Apple Books will show — so the URL has to be
+        # The name keeps its spaces — it's what the player will show — so the URL has to be
         # encoded rather than handed over raw.
         job.update(status="done", url=f"/export/{book_id}/{urllib.parse.quote(name)}", file=name,
                    text=f"{len(marks)} chapters"
