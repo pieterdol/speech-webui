@@ -111,6 +111,20 @@ class TestSpeakRoute:
         body = client.post("/api/speak", json={"text": "hello", "voice": "af_heart"}).get_json()
         assert body["job_id"] in core.jobs
 
+    def test_only_cloning_needs_a_reference_clip(self, client, fake_say, monkeypatch):
+        """Piper is picked by voice name exactly as Kokoro is, so asking it for speech takes no
+        reference clip — only F5 does. The page sent Piper down the cloning path once and was
+        told to pick a clip it has no use for."""
+        monkeypatch.setattr(tts, "tts_engine_of", lambda v: "piper")
+        body = client.post("/api/speak", json={"text": "10-02-1986", "engine": "piper",
+                                              "voice": "nl_NL-nathalie-medium"}).get_json()
+        assert body.get("job_id") in core.jobs
+        assert "error" not in body
+
+    def test_cloning_without_a_clip_is_refused(self, client, fake_say):
+        r = client.post("/api/speak", json={"text": "hello", "engine": "f5"})
+        assert r.status_code == 400 and "reference clip" in r.get_json()["error"]
+
     def test_markdown_is_stripped_when_asked(self, client, fake_say, monkeypatch):
         """The chat panel sends its reply verbatim and asks for the markup to come out here,
         so there's one implementation of that rather than one per caller."""

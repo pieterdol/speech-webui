@@ -877,7 +877,10 @@ async function generate(){
   if(!text){ setStatus("Type what it should say.", true); return; }
   const engine = $("#engine").value;
   const body = {engine, text, speed: parseFloat($("#speed").value) || 1};
-  if(engine === "kokoro"){ body.voice = $("#voice").value; store.set("voice", body.voice); }
+  // Piper belongs with Kokoro here, not with F5: both are picked by voice name, and only
+  // cloning needs a reference clip. Testing for kokoro instead of for "not f5" is what sent
+  // Piper down the cloning path and had it asking for a clip it has no use for.
+  if(engine !== "f5"){ body.voice = $("#voice").value; store.set("voice", body.voice); }
   else {
     body.nfe = $("#nfe").value;
     store.set("nfe", body.nfe);
