@@ -410,6 +410,15 @@
       <div class="hint" id="npHint"></div>
     </div>
 
+    <!-- What the narrator is on right now. Hidden entirely when nothing is rendering, so it
+         only ever appears when it has something to say. -->
+    <div class="card" id="narrating" style="margin-top:12px;display:none">
+      <div class="outhead"><span class="nm" id="narratingHead">Narrating now</span></div>
+      <div id="narratingNow"></div>
+      <button id="queueToggle" class="segtoggle" style="display:none"></button>
+      <div id="queueList" class="seglist" hidden></div>
+    </div>
+
     <h2>Whole book</h2>
     <div class="card">
       <div class="hint" id="allHint"></div>
@@ -1370,7 +1379,9 @@ $("#bookFile").addEventListener("change", async e => {
 async function openBook(id){
   const r = await fetch("/api/books/" + id);
   if(!r.ok) return loadBooks();
-  BOOK = (await r.json()).book;
+  const d = await r.json();
+  BOOK = d.book;
+  NARRATING = d.narrating || {current: null, queue: []};
   $("#library").hidden = true;
   $("#reader").hidden  = false;
   $("#bookTitle").textContent  = BOOK.title;
@@ -1432,6 +1443,48 @@ function renderWholeBook(){
       + (left.length ? ` The rest is about ${Math.round(leftMin / 60)} h of work.` : " All done.");
 }
 
+// What the narrator is on, and what is stacked up behind it. The whole-book hint says how
+// far through a bulk run is, which is not the same question as "what is it doing right now"
+// — a single chapter you tapped, or one queued behind another book's, showed nothing at all.
+let NARRATING = {current: null, queue: []};
+let QUEUE_OPEN = false;
+
+const workMin = words => Math.max(1, Math.round(words / 146 / 2.4));
+
+function renderNarrating(){
+  const now = NARRATING.current, q = NARRATING.queue || [];
+  $("#narrating").style.display = (now || q.length) ? "block" : "none";
+  if(!now && !q.length) return;
+  // The book's name only when it isn't the one you're looking at — renders are serialized
+  // across books, so the thing holding you up can be a different book entirely.
+  const where = e => (BOOK && e.book === BOOK.id) ? "" : `${esc(e.title)} · `;
+  // Between two chapters of a bulk run there's a queue but nothing in the engine, so the
+  // heading follows what's actually true rather than claiming a chapter is being read.
+  $("#narratingHead").textContent = now ? "Narrating now" : "Queued";
+  $("#narratingNow").innerHTML = now
+    ? `<div class="seg"><div class="n"><span class="spin"></span>${where(now)}${esc(now.name)}</div>
+         <div class="d">${now.total ? `part ${Math.min(now.done + 1, now.total)} of ${now.total}`
+                                    : "starting…"}</div></div>`
+    : "";
+  const btn = $("#queueToggle"), list = $("#queueList");
+  btn.style.display = q.length ? "block" : "none";
+  if(!q.length){ list.hidden = true; return; }
+  const mins = q.reduce((n, e) => n + e.words / 146 / 2.4, 0);
+  btn.className = "segtoggle" + (QUEUE_OPEN ? " open" : "");
+  btn.innerHTML = `<span class="caret">▸</span> ${q.length} more waiting · about `
+    + (mins >= 90 ? `${(mins / 60).toFixed(1)} h` : `${Math.round(mins)} min`);
+  list.hidden = !QUEUE_OPEN;
+  list.innerHTML = "";
+  q.forEach(e => {
+    const row = document.createElement("div");
+    row.className = "seg wait";
+    row.innerHTML = `<div class="n">${where(e)}${esc(e.name)}</div>
+      <div class="d">${e.state === "waiting" ? "next up" : `~${workMin(e.words)} min`}</div>`;
+    list.appendChild(row);
+  });
+}
+$("#queueToggle").addEventListener("click", ()=>{ QUEUE_OPEN = !QUEUE_OPEN; renderNarrating(); });
+
 // Which parts and which chapters are folded open. Kept outside the render so the 4-second
 // refresh while narrating doesn't snap a panel you're reading shut again.
 const OPEN_PARTS = new Set();     // chapter index -> its segments are showing
@@ -1449,6 +1502,7 @@ const chapterLabel = (c, grouped) =>
 // books without parts are the same list with that level left out.
 function renderChapterList(){
   renderWholeBook();
+  renderNarrating();
   const box = $("#chapterList");
   box.innerHTML = "";
   // Derived from the chapters rather than tracked separately, so it can't fall out of step
@@ -1615,17 +1669,23 @@ async function narrateChapter(i){
 // listening to part 1 while part 2 is still being made.
 function watchRenders(){
   stopWatching();
-  bookPoll = setInterval(async ()=>{
+  const tick = async ()=>{
     if(!BOOK) return stopWatching();
     const r = await fetch("/api/books/" + BOOK.id);
     if(!r.ok) return stopWatching();
-    const b = (await r.json()).book;
-    const busy = (b.chapters || []).some(c => c.state === "rendering")
-              || ((b.render_all || {}).running);
-    BOOK = b;
+    const d = await r.json();
+    BOOK = d.book;
+    NARRATING = d.narrating || {current: null, queue: []};
+    // Also while the queue has anything in it: a chapter of this book waiting behind another
+    // book's render leaves nothing here marked "rendering", and the poll used to stop dead.
+    const busy = (BOOK.chapters || []).some(c => c.state === "rendering")
+              || (BOOK.render_all || {}).running
+              || NARRATING.current || (NARRATING.queue || []).length;
     renderChapterList();
     if(!busy) stopWatching();
-  }, 4000);
+  };
+  bookPoll = setInterval(tick, 4000);
+  tick();      // don't make the panel wait 4 s to appear after you tap something
 }
 
 $("#renderAll").addEventListener("click", async ()=>{

@@ -16,6 +16,7 @@ Reach it from your phone over Tailscale at https://your-machine.your-tailnet.ts.
 (HTTPS is required — Safari blocks the microphone and the clipboard on plain http).
 """
 import json, os, queue, re, select, shutil, subprocess, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, uuid
+from contextlib import contextmanager
 from flask import Flask, Response, jsonify, request, send_from_directory
 
 import epub
@@ -442,6 +443,11 @@ def chat_worker(jid, chat_id, user_text, model, voice=None, speed=1.0, english_o
 SEGMENT_CHARS = 8000      # ≈10 min of speech at the measured ~13.6 characters per second
 CHUNK_CHARS   = 600       # one Kokoro/Piper call ≈45 s of audio ≈17 s of work
 render_lock   = threading.Lock()      # one book render at a time
+# render_lock serializes renders, but a lock says nothing about who is holding it or who is
+# stacked up behind them — so tapping three chapters looked identical to tapping one, and a
+# chapter waiting its turn was indistinguishable from a chapter nobody had asked for.
+render_state      = {"current": None, "waiting": []}    # each entry: (book_id, chapter index)
+render_state_lock = threading.Lock()
 
 def load_books():
     try:
@@ -559,10 +565,71 @@ def split_chunks(text, limit=CHUNK_CHARS):
         out.append(buf.strip())
     return out
 
+@contextmanager
+def render_slot(book_id, index):
+    """Books this render in as waiting, then — once the caller says the lock is theirs — as
+    the one in progress, and clears it however the render ends, including the early returns
+    for a chapter that turned out to be ready already.
+
+    Yields the function that marks the switch. Taken as `with render_slot(...), render_lock:`
+    so the render body keeps the one level of indentation it had."""
+    job = (book_id, index)
+    with render_state_lock:
+        render_state["waiting"].append(job)
+    def started():
+        with render_state_lock:
+            if job in render_state["waiting"]:
+                render_state["waiting"].remove(job)
+            render_state["current"] = job
+    try:
+        yield started
+    finally:
+        with render_state_lock:
+            if job in render_state["waiting"]:
+                render_state["waiting"].remove(job)
+            if render_state["current"] == job:
+                render_state["current"] = None
+
+def render_status():
+    """What the narrator is on and what is behind it. Composed from books.json each time
+    rather than kept in step with it, so it can't drift from the chapters it describes."""
+    with render_state_lock:
+        current, waiting = render_state["current"], list(render_state["waiting"])
+    books = {b["id"]: b for b in load_books()}
+
+    def entry(job, state):
+        bid, i = job
+        b = books.get(bid) or {}
+        chapters = b.get("chapters") or []
+        c = chapters[i] if 0 <= i < len(chapters) else {}
+        return {"book": bid, "title": b.get("title") or "", "chapter": i, "state": state,
+                "name": c.get("name") or f"Chapter {i + 1}", "words": c.get("words") or 0,
+                "done": len(c.get("segments") or []), "total": c.get("total") or 0}
+
+    # Two threads can be waiting on the same chapter — you tapped it and the bulk run reached
+    # it too — and the second one finds it already made and returns. One line in the queue.
+    seen = set([current] if current else [])
+    queue_ = []
+    for j in waiting:
+        if j not in seen:
+            seen.add(j)
+            queue_.append(entry(j, "waiting"))
+    # A whole-book run doesn't queue its chapters up front — it takes the next pending one
+    # each time round the loop — so the rest of it would otherwise be invisible.
+    for b in books.values():
+        ra = b.get("render_all") or {}
+        if not ra.get("running"):
+            continue
+        for c in chapters_in(b, ra.get("part")):
+            if c.get("state") == "pending" and (b["id"], c["i"]) not in seen:
+                queue_.append(entry((b["id"], c["i"]), "queued"))
+    return {"current": entry(current, "narrating") if current else None, "queue": queue_}
+
 def render_chapter(book_id, index):
     """Render one chapter to opus, a segment at a time. Marks progress in books.json as it
     goes so the page can show it."""
-    with render_lock:
+    with render_slot(book_id, index) as started, render_lock:
+        started()                       # the lock is ours: waiting becomes narrating
         book = find_book(book_id)
         if not book:
             return
@@ -594,15 +661,19 @@ def render_chapter(book_id, index):
         # files are already on disk — so a chapter left half-made before the announcement
         # changed would keep an opening that no longer matches. Only the first one has to go.
         spoken = [p for p, _ in intro]
+        # Split before publishing the state, not after: how many parts a chapter comes to is
+        # pure text work, and knowing it up front is the difference between "part 1 of 2" and
+        # ten minutes of "starting…" in the queue panel.
+        segments = split_segments(text)
         update_book(book_id, lambda b: b["chapters"][index].update(
-            state="rendering", error=None, done=0, segments=[], intro=spoken))
+            state="rendering", error=None, done=0, segments=[], intro=spoken,
+            total=len(segments)))
         audio_dir = book_dir(book_id, "audio")
         os.makedirs(audio_dir, exist_ok=True)
         if chapter.get("intro") != spoken:
             stale = os.path.join(audio_dir, f"ch{index:03d}-s00.opus")
             if os.path.exists(stale):
                 os.remove(stale)
-        segments = split_segments(text)
         made = []
         try:
             for si, seg_text in enumerate(segments):
@@ -1443,7 +1514,10 @@ def api_book(book_id):
     b = find_book(book_id)
     if not b:
         return jsonify(error="unknown book"), 404
-    return jsonify(book=b, parts=book_parts(b))
+    # The reader polls this every 4 s while anything is rendering, so the queue rides along
+    # rather than needing a second request. It's global: renders are serialized across books,
+    # so this book can be waiting on another one's chapter.
+    return jsonify(book=b, parts=book_parts(b), narrating=render_status())
 
 @app.post("/api/books/update")
 def api_book_update():

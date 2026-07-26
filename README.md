@@ -205,6 +205,22 @@ nothing is narrated until you ask for it — a full book is hours of work.
   to, and one left half-made offers to finish itself. What opens unasked is the part you're
   reading and anything rendering or half-done; the state survives the 4-second refresh, so a
   panel you're reading doesn't snap shut while the book narrates.
+- **Narrating now**, above *Whole book*, says which chapter the engine is on and which of its
+  parts, and folds open to what's behind it with a rough total of the work left. It appears
+  only when something is happening. `render_lock` serializes renders but a lock says nothing
+  about who is holding it or who is stacked up behind them, so `render_slot` books each render
+  in as waiting and then as current, and clears it however the render ends — including the
+  early return for a chapter that turned out to be narrated already. A whole-book run doesn't
+  queue its chapters up front, it takes the next pending one each time round the loop, so the
+  rest of it is derived from the book rather than from the waiting list. The queue is global:
+  renders are serialized *across* books, so what's holding this one up can be another book,
+  and the panel names it when it isn't the one you're looking at. Two threads can be waiting
+  on the same chapter — you tapped it and the bulk run reached it too — and that's one line,
+  since the second finds it already made and returns.
+
+  The panel needs a chapter's part count before its first part exists, so the split now
+  happens before the state is published rather than after. It's pure text work, and it's the
+  difference between "part 1 of 8" and half an hour of "starting…".
 - **The book announces itself.** It opens with the title and author — *"Dark Matter" … "by
   Blake Crouch" …* — the way a published audiobook does, and that's also the first thing the
   exported `.m4b` plays. Then before each chapter's prose you hear the part's name and the
