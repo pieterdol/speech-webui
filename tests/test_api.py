@@ -4,7 +4,8 @@ import os
 
 import pytest
 
-import speech
+import books
+import core
 
 
 @pytest.fixture(autouse=True)
@@ -13,9 +14,9 @@ def no_background_work(monkeypatch):
     that let one start would outlive the tmpdir it was writing into, and go on writing after
     pytest had removed it. These tests are about what the endpoint records and returns."""
     started = {"chapters": [], "runs": []}
-    monkeypatch.setattr(speech, "render_chapter",
+    monkeypatch.setattr(books, "render_chapter",
                         lambda book_id, i: started["chapters"].append((book_id, i)))
-    monkeypatch.setattr(speech, "render_all_worker",
+    monkeypatch.setattr(books, "render_all_worker",
                         lambda book_id, part=None: started["runs"].append((book_id, part)))
     return started
 
@@ -26,7 +27,7 @@ class TestBooksIndex:
 
     def test_summary_counts_without_shipping_every_chapter(self, client, make_book):
         make_book(names=["One", "Two", "Three"], texts=["word " * 10] * 3)
-        speech.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
         got = client.get("/api/books").get_json()["books"][0]
         assert got["chapters"] == 3 and got["ready"] == 1
         assert isinstance(got["chapters"], int)          # a count, not the list
@@ -53,7 +54,7 @@ class TestRenderEndpoints:
 
     def test_a_ready_chapter_is_not_restarted(self, client, make_book):
         make_book()
-        speech.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
         assert client.post("/api/books/render", json={"id": "b1", "chapter": 0}
                            ).get_json()["started"] == []
 
@@ -61,7 +62,7 @@ class TestRenderEndpoints:
                                                           no_background_work):
         make_book(names=["A · Chapter 1", "B · Chapter 1"], texts=["word " * 10] * 2)
         client.post("/api/books/render_all", json={"id": "b1", "part": "A"})
-        ra = speech.find_book("b1")["render_all"]
+        ra = books.find_book("b1")["render_all"]
         assert ra["part"] == "A"
         assert ra["total"] == 1                      # the part's size, not the book's 2
         assert no_background_work["runs"] == [("b1", "A")]
@@ -76,7 +77,7 @@ class TestRenderEndpoints:
     def test_stop_is_only_a_flag(self, client, make_book):
         make_book(render_all={"running": True, "done": 0, "total": 1})
         client.post("/api/books/render_stop", json={"id": "b1"})
-        assert speech.find_book("b1")["render_all"]["running"] is False
+        assert books.find_book("b1")["render_all"]["running"] is False
 
 
 class TestPosition:
@@ -85,17 +86,17 @@ class TestPosition:
         make_book(book_id="browsing")
         pos = {"chapter": 2, "segment": 1, "offset": 30}
         client.post("/api/books/update", json={"id": "playing", "position": pos})
-        assert speech.find_book("playing")["position"] == pos
-        assert speech.find_book("browsing").get("position") is None
+        assert books.find_book("playing")["position"] == pos
+        assert books.find_book("browsing").get("position") is None
 
 
 class TestDelete:
     def test_removes_the_index_entry_and_the_directory(self, client, make_book):
         make_book()
-        assert os.path.exists(speech.book_dir("b1"))
+        assert os.path.exists(books.book_dir("b1"))
         assert client.post("/api/books/delete", json={"id": "b1"}).get_json()["ok"]
-        assert speech.find_book("b1") is None
-        assert not os.path.exists(speech.book_dir("b1"))
+        assert books.find_book("b1") is None
+        assert not os.path.exists(books.book_dir("b1"))
 
     def test_unknown_book(self, client):
         assert client.post("/api/books/delete", json={"id": "nope"}).status_code == 404
@@ -106,20 +107,20 @@ class TestClearNarration:
         # the state a finished render leaves, built directly — render_chapter is stubbed here,
         # and undoing that would take the tmpdir redirect with it
         make_book(texts=["word " * 400])
-        part = speech.book_dir("b1", "audio", "ch000-s00.opus")
+        part = books.book_dir("b1", "audio", "ch000-s00.opus")
         os.makedirs(os.path.dirname(part), exist_ok=True)
         open(part, "wb").write(b"\0" * 128)
-        speech.update_book("b1", lambda b: b["chapters"][0].update(
+        books.update_book("b1", lambda b: b["chapters"][0].update(
             state="ready", segments=[{"file": "ch000-s00.opus", "seconds": 9.0}], seconds=9.0))
-        assert os.path.isdir(speech.book_dir("b1", "audio"))
+        assert os.path.isdir(books.book_dir("b1", "audio"))
         client.post("/api/books/clear", json={"id": "b1"})
-        b = speech.find_book("b1")
+        b = books.find_book("b1")
         assert b is not None
         assert b["chapters"][0]["state"] == "pending"
         assert b["chapters"][0]["segments"] == []
         assert b["position"] == {"chapter": 0, "segment": 0, "offset": 0}
-        assert not os.path.isdir(speech.book_dir("b1", "audio"))
-        assert os.path.exists(speech.book_dir("b1", "text", "ch000.txt"))
+        assert not os.path.isdir(books.book_dir("b1", "audio"))
+        assert os.path.exists(books.book_dir("b1", "text", "ch000.txt"))
 
 
 class TestAudioHeaders:
@@ -128,7 +129,7 @@ class TestAudioHeaders:
 
     def serve(self, client, make_book):
         make_book()
-        p = speech.book_dir("b1", "audio", "ch000-s00.opus")
+        p = books.book_dir("b1", "audio", "ch000-s00.opus")
         os.makedirs(os.path.dirname(p), exist_ok=True)
         open(p, "wb").write(b"\0" * 4096)
         return client.get("/book/b1/ch000-s00.opus")
@@ -150,7 +151,7 @@ class TestAudioHeaders:
 
     def test_range_requests_still_work(self, client, make_book):
         make_book()
-        p = speech.book_dir("b1", "audio", "ch000-s00.opus")
+        p = books.book_dir("b1", "audio", "ch000-s00.opus")
         os.makedirs(os.path.dirname(p), exist_ok=True)
         open(p, "wb").write(b"\0" * 4096)
         r = client.get("/book/b1/ch000-s00.opus", headers={"Range": "bytes=0-99"})
@@ -173,7 +174,7 @@ class TestCoverRoute:
 
     def test_served_with_a_cache_header(self, client, make_book):
         make_book()
-        p = speech.cover_path("b1", "thumb")
+        p = books.cover_path("b1", "thumb")
         os.makedirs(os.path.dirname(p), exist_ok=True)
         open(p, "wb").write(b"\xff\xd8\xff\xdb" + b"\0" * 64)     # enough to be sent
         r = client.get("/cover/b1/thumb.jpg")

@@ -341,6 +341,26 @@ file and renamed. A whole-book render rewrites the book index after every chapte
 page polls it, and a plain truncate-and-write briefly made the book vanish from the API —
 0 failures in 400 reads afterwards.
 
+## Modules
+
+One file per feature, plus a thin `core.py` holding what they share: the Flask app, the job
+table, the locks that keep one model on the GPU at a time, and two file helpers. It exists so
+`books.py` and `chat.py` can both reach the app without importing each other.
+
+Routes are registered by importing the modules for their side effect — `speech.py` imports
+all five and each decorates the shared `app`. That's the one fragile part: a module that stops
+being imported takes its endpoints with it and nothing else notices, so `tests/test_routes.py`
+writes the whole URL table out and fails on any difference.
+
+Each module owns the storage it's responsible for — `books.py` holds `BOOKS_DIR` and
+`BOOKS_FILE` rather than taking them from core. That's what lets a test point the whole book
+layer at a tmpdir by patching two names on one module.
+
+The import order is `core` → `textprep`/`media` → `clips` → `tts` → `stt`/`chat`/`books`, and
+nothing imports upwards. Functions are grouped by feature rather than wrapped in classes:
+this is functions over a JSON document and a few locks, and there's no object model in it
+straining to get out.
+
 ## How it fits together
 
 ```
@@ -394,9 +414,19 @@ all 12 cores, so overlapping a clone with a transcription would just make both c
 
 ```
 setup.sh      one-time install of the app venv and all three speech engines
+speech.py     entry point (port 8600). Imports the feature modules for the routes they
+              register, serves the page, and starts the worker reaper. Named speech.py,
+              not app.py, so restart.sh can't collide with comfy-webui's (which kills
+              anything matching "app.py").
+core.py       the Flask app, the job table, the locks, write_json/safe_path
+textprep.py   prose -> speakable text, and cutting it into sentences
+media.py      ffmpeg and ffprobe helpers
+clips.py      recorded/uploaded audio, transcripts, voice presets
+stt.py        faster-whisper
+tts.py        Kokoro and Piper resident workers, F5 cloning, /api/speak
+chat.py       Ollama, chats.json, replies spoken as they stream
+books.py      EPUB narration: index, rendering, queue, .m4b export
 epub.py       EPUB -> chapters of narratable prose
-speech.py     Flask app (port 8600). Named speech.py, not app.py, so restart.sh can't
-              collide with comfy-webui's (which kills anything matching "app.py").
 kokoro_worker.py  resident Kokoro process (English), run with Kokoro's venv interpreter
 piper_worker.py   resident Piper process (Dutch), run with Piper's venv interpreter
 index.html    the whole UI — one file, no build step

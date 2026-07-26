@@ -7,24 +7,25 @@ import os
 import threading
 import time
 
-import speech
+import books
+import core
 from conftest import needs_ffmpeg
 
 
 def files(book_id):
-    d = speech.book_dir(book_id, "audio")
+    d = books.book_dir(book_id, "audio")
     return sorted(os.listdir(d)) if os.path.isdir(d) else []
 
 
 def chapter(book_id, i=0):
-    return speech.find_book(book_id)["chapters"][i]
+    return books.find_book(book_id)["chapters"][i]
 
 
 def delete_book(book_id):
     """What POST /api/books/delete does."""
-    speech.write_books([b for b in speech.load_books() if b.get("id") != book_id])
+    books.write_books([b for b in books.load_books() if b.get("id") != book_id])
     import shutil
-    shutil.rmtree(speech.book_dir(book_id), ignore_errors=True)
+    shutil.rmtree(books.book_dir(book_id), ignore_errors=True)
 
 
 LONG = "\n".join(["word " * 200] * 40)          # splits into several segments
@@ -33,7 +34,7 @@ LONG = "\n".join(["word " * 200] * 40)          # splits into several segments
 class TestRenderChapter:
     def test_marks_ready_and_keeps_every_part(self, make_book, fake_tts):
         make_book(texts=[LONG])
-        speech.render_chapter("b1", 0)
+        books.render_chapter("b1", 0)
         c = chapter("b1")
         assert c["state"] == "ready"
         assert len(c["segments"]) == len(files("b1")) > 1
@@ -45,14 +46,14 @@ class TestRenderChapter:
         seen = []
 
         def slow_segment(text, voice, out_path, intro=None, tail_pause=0):
-            seen.append(dict(speech.find_book("b1")["chapters"][0]))
+            seen.append(dict(books.find_book("b1")["chapters"][0]))
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0")
 
-        monkeypatch.setattr(speech, "_render_segment", slow_segment)
-        monkeypatch.setattr(speech, "audio_seconds", lambda p: 1.0)
+        monkeypatch.setattr(books, "_render_segment", slow_segment)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
         make_book(texts=[LONG])
-        speech.render_chapter("b1", 0)
+        books.render_chapter("b1", 0)
         assert seen[0]["total"] > 1                 # known before any audio was made
         assert seen[0]["segments"] == []
 
@@ -60,39 +61,39 @@ class TestRenderChapter:
         counts = []
 
         def watch(text, voice, out_path, intro=None, tail_pause=0):
-            counts.append(len(speech.find_book("b1")["chapters"][0]["segments"]))
+            counts.append(len(books.find_book("b1")["chapters"][0]["segments"]))
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0")
 
-        monkeypatch.setattr(speech, "_render_segment", watch)
-        monkeypatch.setattr(speech, "audio_seconds", lambda p: 1.0)
+        monkeypatch.setattr(books, "_render_segment", watch)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
         make_book(texts=[LONG])
-        speech.render_chapter("b1", 0)
+        books.render_chapter("b1", 0)
         assert counts == list(range(len(counts)))   # 0,1,2… — one more visible each time
 
     def test_already_ready_is_left_alone(self, make_book, fake_tts):
         make_book(texts=[LONG])
-        speech.render_chapter("b1", 0)
+        books.render_chapter("b1", 0)
         made = len(fake_tts)
-        speech.render_chapter("b1", 0)
+        books.render_chapter("b1", 0)
         assert len(fake_tts) == made
 
     def test_existing_parts_are_reused(self, make_book, fake_tts):
         make_book(texts=[LONG])
-        speech.render_chapter("b1", 0)
+        books.render_chapter("b1", 0)
         n = len(files("b1"))
         # put it back to pending as an interrupted render leaves it, minus the last part
-        os.remove(speech.book_dir("b1", "audio", f"ch000-s{n - 1:02d}.opus"))
-        speech.update_book("b1", lambda b: b["chapters"][0].update(state="pending"))
+        os.remove(books.book_dir("b1", "audio", f"ch000-s{n - 1:02d}.opus"))
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="pending"))
         fake_tts.clear()
-        speech.render_chapter("b1", 0)
+        books.render_chapter("b1", 0)
         assert len(fake_tts) == 1                   # only the missing one was remade
         assert chapter("b1")["state"] == "ready"
 
     def test_missing_text_is_an_error_not_a_crash(self, make_book, fake_tts):
         make_book(texts=[LONG])
-        os.remove(speech.book_dir("b1", "text", "ch000.txt"))
-        speech.render_chapter("b1", 0)
+        os.remove(books.book_dir("b1", "text", "ch000.txt"))
+        books.render_chapter("b1", 0)
         assert chapter("b1")["state"] == "error"
         assert "missing text" in chapter("b1")["error"]
 
@@ -103,16 +104,16 @@ class TestAnnouncementInvalidation:
 
     def test_first_part_remade_when_the_wording_changes(self, make_book, fake_tts):
         make_book(names=["Chapter One"], texts=[LONG], announce=False)
-        speech.render_chapter("b1", 0)
-        first = speech.book_dir("b1", "audio", "ch000-s00.opus")
+        books.render_chapter("b1", 0)
+        first = books.book_dir("b1", "audio", "ch000-s00.opus")
         before = os.path.getmtime(first)
         assert chapter("b1")["intro"] == []
 
         time.sleep(0.01)
-        speech.update_book("b1", lambda b: b.update(announce=True))
-        speech.update_book("b1", lambda b: b["chapters"][0].update(state="pending"))
+        books.update_book("b1", lambda b: b.update(announce=True))
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="pending"))
         fake_tts.clear()
-        speech.render_chapter("b1", 0)
+        books.render_chapter("b1", 0)
 
         assert chapter("b1")["intro"] == ["A Book", "by An Author", "one"]
         assert os.path.getmtime(first) > before          # s00 remade
@@ -120,10 +121,10 @@ class TestAnnouncementInvalidation:
 
     def test_unchanged_wording_reuses_everything(self, make_book, fake_tts):
         make_book(names=["Chapter One"], texts=[LONG])
-        speech.render_chapter("b1", 0)
-        speech.update_book("b1", lambda b: b["chapters"][0].update(state="pending"))
+        books.render_chapter("b1", 0)
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="pending"))
         fake_tts.clear()
-        speech.render_chapter("b1", 0)
+        books.render_chapter("b1", 0)
         assert fake_tts == []
 
 
@@ -133,21 +134,21 @@ class TestCancellation:
             time.sleep(delay)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0" * 64)
-        monkeypatch.setattr(speech, "_render_segment", _seg)
-        monkeypatch.setattr(speech, "audio_seconds", lambda p: 1.0)
+        monkeypatch.setattr(books, "_render_segment", _seg)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
 
     def test_deleting_the_book_stops_it_and_leaves_nothing(self, make_book, monkeypatch):
         self.slow_tts(monkeypatch)
         make_book(texts=[LONG])
-        t = threading.Thread(target=speech.render_chapter, args=("b1", 0))
+        t = threading.Thread(target=books.render_chapter, args=("b1", 0))
         t.start()
         time.sleep(0.35)
         delete_book("b1")
         t.join(timeout=20)
         assert not t.is_alive()
-        assert not os.path.exists(speech.book_dir("b1"))
-        assert "b1" not in os.listdir(speech.BOOKS_DIR)
-        assert speech.find_book("b1") is None
+        assert not os.path.exists(books.book_dir("b1"))
+        assert "b1" not in os.listdir(books.BOOKS_DIR)
+        assert books.find_book("b1") is None
 
     def test_it_stops_within_a_segment_not_at_the_end(self, make_book, monkeypatch):
         made = []
@@ -156,12 +157,12 @@ class TestCancellation:
             time.sleep(0.15)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0")
-        monkeypatch.setattr(speech, "_render_segment", _seg)
-        monkeypatch.setattr(speech, "audio_seconds", lambda p: 1.0)
+        monkeypatch.setattr(books, "_render_segment", _seg)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
         make_book(texts=[LONG])
-        total = len(speech.split_segments(LONG))
+        total = len(books.split_segments(LONG))
         assert total >= 4                             # otherwise the test proves nothing
-        t = threading.Thread(target=speech.render_chapter, args=("b1", 0))
+        t = threading.Thread(target=books.render_chapter, args=("b1", 0))
         t.start()
         time.sleep(0.35)
         delete_book("b1")
@@ -171,12 +172,12 @@ class TestCancellation:
     def test_narrator_change_resets_the_chapter_and_keeps_the_book(self, make_book, monkeypatch):
         self.slow_tts(monkeypatch)
         make_book(texts=[LONG])
-        t = threading.Thread(target=speech.render_chapter, args=("b1", 0))
+        t = threading.Thread(target=books.render_chapter, args=("b1", 0))
         t.start()
         time.sleep(0.35)
-        speech.update_book("b1", lambda b: b.update(gen=b.get("gen", 0) + 1))
+        books.update_book("b1", lambda b: b.update(gen=b.get("gen", 0) + 1))
         t.join(timeout=20)
-        assert speech.find_book("b1") is not None
+        assert books.find_book("b1") is not None
         assert chapter("b1")["state"] == "pending"
         assert chapter("b1")["segments"] == []
         assert files("b1") == []
@@ -187,12 +188,12 @@ class TestRestartRecovery:
 
     def test_finished_parts_survive(self, make_book, fake_tts):
         make_book(texts=[LONG])
-        speech.render_chapter("b1", 0)
+        books.render_chapter("b1", 0)
         n = len(files("b1"))
         # a render in flight: state rendering, and the list emptied ready to be refilled
-        speech.update_book("b1", lambda b: b["chapters"][0].update(
+        books.update_book("b1", lambda b: b["chapters"][0].update(
             state="rendering", segments=[]))
-        speech.clear_stale_state()
+        books.clear_stale_state()
         c = chapter("b1")
         assert c["state"] == "pending"
         assert len(c["segments"]) == n              # read back off disk, not from the index
@@ -200,58 +201,58 @@ class TestRestartRecovery:
 
     def test_a_running_bulk_job_is_cleared(self, make_book):
         make_book(render_all={"running": True, "done": 1, "total": 4})
-        speech.clear_stale_state()
-        assert speech.find_book("b1")["render_all"]["running"] is False
+        books.clear_stale_state()
+        assert books.find_book("b1")["render_all"]["running"] is False
 
     def test_untouched_books_are_left_alone(self, make_book, fake_tts):
         make_book(texts=[LONG])
-        speech.render_chapter("b1", 0)
-        before = speech.find_book("b1")
-        speech.clear_stale_state()
-        assert speech.find_book("b1") == before
+        books.render_chapter("b1", 0)
+        before = books.find_book("b1")
+        books.clear_stale_state()
+        assert books.find_book("b1") == before
 
 
 class TestSegmentsOnDisk:
     def write(self, book_id, indexes):
         for si in indexes:
-            p = speech.book_dir(book_id, "audio", f"ch000-s{si:02d}.opus")
+            p = books.book_dir(book_id, "audio", f"ch000-s{si:02d}.opus")
             os.makedirs(os.path.dirname(p), exist_ok=True)
             open(p, "wb").write(b"\0")
 
     def test_reads_them_in_order(self, make_book, monkeypatch):
-        monkeypatch.setattr(speech, "audio_seconds", lambda p: 3.0)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 3.0)
         make_book()
         self.write("b1", [0, 1, 2])
-        got = speech.segments_on_disk("b1", 0)
+        got = books.segments_on_disk("b1", 0)
         assert [s["file"] for s in got] == ["ch000-s00.opus", "ch000-s01.opus", "ch000-s02.opus"]
         assert all(s["seconds"] == 3.0 for s in got)
 
     def test_stops_at_the_first_gap(self, make_book, monkeypatch):
         """Playback walks the parts in order, so a run that skips one is no run at all."""
-        monkeypatch.setattr(speech, "audio_seconds", lambda p: 3.0)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 3.0)
         make_book()
         self.write("b1", [0, 1, 3, 4])
-        assert len(speech.segments_on_disk("b1", 0)) == 2
+        assert len(books.segments_on_disk("b1", 0)) == 2
 
     def test_missing_first_part_yields_nothing(self, make_book, monkeypatch):
-        monkeypatch.setattr(speech, "audio_seconds", lambda p: 3.0)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 3.0)
         make_book()
         self.write("b1", [1, 2])
-        assert speech.segments_on_disk("b1", 0) == []
+        assert books.segments_on_disk("b1", 0) == []
 
     def test_a_half_written_last_file_is_dropped(self, make_book, monkeypatch):
         """ffprobe can't read a duration out of the file the process died writing."""
         make_book()
         self.write("b1", [0, 1, 2])
-        bad = speech.book_dir("b1", "audio", "ch000-s02.opus")
-        monkeypatch.setattr(speech, "audio_seconds", lambda p: 0.0 if p == bad else 3.0)
-        got = speech.segments_on_disk("b1", 0)
+        bad = books.book_dir("b1", "audio", "ch000-s02.opus")
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 0.0 if p == bad else 3.0)
+        got = books.segments_on_disk("b1", 0)
         assert len(got) == 2
         assert not os.path.exists(bad)              # and removed, so the retry remakes it
 
     def test_nothing_rendered(self, make_book):
         make_book()
-        assert speech.segments_on_disk("b1", 0) == []
+        assert books.segments_on_disk("b1", 0) == []
 
 
 class TestRenderAllWorker:
@@ -259,56 +260,56 @@ class TestRenderAllWorker:
         names = [f"A · Chapter {i+1}" for i in range(3)] + [f"B · Chapter {i+1}" for i in range(7)]
         make_book(names=names, texts=["word " * 40] * 10)
         seen = []
-        real_update = speech.update_book
+        real_update = books.update_book
 
         def spy(book_id, fn):
             real_update(book_id, fn)
-            ra = (speech.find_book(book_id) or {}).get("render_all") or {}
+            ra = (books.find_book(book_id) or {}).get("render_all") or {}
             if ra.get("total") is not None:
                 seen.append((ra.get("done"), ra["total"]))
 
-        speech.update_book = spy
+        books.update_book = spy
         try:
-            scope = speech.chapters_in(speech.find_book("b1"), "A")
-            speech.update_book("b1", lambda b: b.update(render_all={
+            scope = books.chapters_in(books.find_book("b1"), "A")
+            books.update_book("b1", lambda b: b.update(render_all={
                 "running": True, "done": 0, "total": len(scope), "part": "A"}))
-            speech.render_all_worker("b1", "A")
+            books.render_all_worker("b1", "A")
         finally:
-            speech.update_book = real_update
+            books.update_book = real_update
 
-        chapters = speech.find_book("b1")["chapters"]
+        chapters = books.find_book("b1")["chapters"]
         assert [c["state"] for c in chapters[:3]] == ["ready"] * 3
         assert [c["state"] for c in chapters[3:]] == ["pending"] * 7
         assert {t for _d, t in seen} == {3}                  # never the book's 10
-        assert speech.find_book("b1")["render_all"]["running"] is False
+        assert books.find_book("b1")["render_all"]["running"] is False
 
     def test_a_whole_book_run_covers_everything(self, make_book, fake_tts):
         make_book(names=["Chapter One", "Chapter Two"], texts=["word " * 40] * 2)
-        speech.update_book("b1", lambda b: b.update(render_all={
+        books.update_book("b1", lambda b: b.update(render_all={
             "running": True, "done": 0, "total": 2, "part": None}))
-        speech.render_all_worker("b1", None)
-        assert all(c["state"] == "ready" for c in speech.find_book("b1")["chapters"])
+        books.render_all_worker("b1", None)
+        assert all(c["state"] == "ready" for c in books.find_book("b1")["chapters"])
 
     def test_stopping_ends_it(self, make_book, fake_tts):
         make_book(names=[f"Chapter {i}" for i in range(5)], texts=["word " * 40] * 5)
-        speech.update_book("b1", lambda b: b.update(render_all={
+        books.update_book("b1", lambda b: b.update(render_all={
             "running": False, "done": 0, "total": 5}))
-        speech.render_all_worker("b1", None)
-        assert all(c["state"] == "pending" for c in speech.find_book("b1")["chapters"])
+        books.render_all_worker("b1", None)
+        assert all(c["state"] == "pending" for c in books.find_book("b1")["chapters"])
 
     def test_an_errored_chapter_is_skipped_not_retried_forever(self, make_book, fake_tts):
         make_book(names=["One", "Two"], texts=["word " * 40] * 2)
-        speech.update_book("b1", lambda b: b["chapters"][0].update(state="error"))
-        speech.update_book("b1", lambda b: b.update(render_all={
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="error"))
+        books.update_book("b1", lambda b: b.update(render_all={
             "running": True, "done": 0, "total": 2}))
-        speech.render_all_worker("b1", None)
-        states = [c["state"] for c in speech.find_book("b1")["chapters"]]
+        books.render_all_worker("b1", None)
+        states = [c["state"] for c in books.find_book("b1")["chapters"]]
         assert states == ["error", "ready"]
 
 
 class TestQueue:
     def test_idle(self):
-        assert speech.render_status() == {"current": None, "queue": []}
+        assert books.render_status() == {"current": None, "queue": []}
 
     def test_waiting_and_current(self, make_book, monkeypatch):
         make_book(names=["One", "Two", "Three"], texts=["word " * 40] * 3)
@@ -321,17 +322,17 @@ class TestQueue:
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0")
 
-        monkeypatch.setattr(speech, "_render_segment", _seg)
-        monkeypatch.setattr(speech, "audio_seconds", lambda p: 1.0)
+        monkeypatch.setattr(books, "_render_segment", _seg)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
 
-        threads = [threading.Thread(target=speech.render_chapter, args=("b1", i))
+        threads = [threading.Thread(target=books.render_chapter, args=("b1", i))
                    for i in range(3)]
         for t in threads:
             t.start()
         assert started.wait(timeout=10)
         time.sleep(0.2)                       # let the other two stack up behind the lock
 
-        st = speech.render_status()
+        st = books.render_status()
         assert st["current"] is not None
         assert st["current"]["state"] == "narrating"
         assert len(st["queue"]) == 2
@@ -340,7 +341,7 @@ class TestQueue:
         release.set()
         for t in threads:
             t.join(timeout=20)
-        assert speech.render_status() == {"current": None, "queue": []}
+        assert books.render_status() == {"current": None, "queue": []}
 
     def test_a_chapter_asked_for_twice_is_one_line(self, make_book, monkeypatch):
         make_book(names=["One"], texts=["word " * 40])
@@ -353,16 +354,16 @@ class TestQueue:
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0")
 
-        monkeypatch.setattr(speech, "_render_segment", _seg)
-        monkeypatch.setattr(speech, "audio_seconds", lambda p: 1.0)
-        threads = [threading.Thread(target=speech.render_chapter, args=("b1", 0))
+        monkeypatch.setattr(books, "_render_segment", _seg)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
+        threads = [threading.Thread(target=books.render_chapter, args=("b1", 0))
                    for _ in range(3)]
         for t in threads:
             t.start()
         assert started.wait(timeout=10)
         time.sleep(0.2)
 
-        st = speech.render_status()
+        st = books.render_status()
         keys = [(e["book"], e["chapter"]) for e in st["queue"]]
         assert len(keys) == len(set(keys))
         assert ("b1", 0) not in keys          # it's the current one, not also queued
@@ -373,6 +374,6 @@ class TestQueue:
 
     def test_a_bulk_run_shows_what_it_has_yet_to_reach(self, make_book):
         make_book(names=[f"Chapter {i}" for i in range(4)], texts=["word " * 40] * 4)
-        speech.update_book("b1", lambda b: b.update(render_all={"running": True, "part": None}))
-        st = speech.render_status()
+        books.update_book("b1", lambda b: b.update(render_all={"running": True, "part": None}))
+        st = books.render_status()
         assert [e["state"] for e in st["queue"]] == ["queued"] * 4

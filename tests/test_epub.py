@@ -8,6 +8,7 @@ import zipfile
 
 import pytest
 
+import books
 import epub
 
 CONTAINER = """<?xml version="1.0"?>
@@ -84,10 +85,9 @@ class TestNestedToc:
             "Part Two · Chapter 1", "Part Two · Chapter 2"]
 
     def test_the_separator_is_the_one_the_app_splits_on(self, book):
-        import speech
         _meta, chapters, _skipped = epub.extract(book)
-        assert speech.part_of(chapters[0]["name"]) == "Part One"
-        assert speech.label_number(chapters[3]["name"].split(speech.PART_SEP, 1)[1]) == 2
+        assert books.part_of(chapters[0]["name"]) == "Part One"
+        assert books.label_number(chapters[3]["name"].split(books.PART_SEP, 1)[1]) == 2
 
     def test_metadata(self, book):
         meta, _chapters, _skipped = epub.extract(book)
@@ -105,8 +105,7 @@ class TestFlatToc:
                ("PART III", "c2.html", [])]
         _meta, chapters, _skipped = epub.extract(build(tmp_path, docs, nav))
         assert [c["name"] for c in chapters] == ["PART I", "PART II", "PART III"]
-        import speech
-        assert all(speech.part_of(c["name"]) == "" for c in chapters)
+        assert all(books.part_of(c["name"]) == "" for c in chapters)
 
 
 class TestSkipping:

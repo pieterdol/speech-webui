@@ -1,6 +1,6 @@
 """Shared fixtures.
 
-speech.py keeps its paths in module-level globals (BOOKS_DIR, BOOKS_FILE) rather than in
+books.py keeps its paths in module-level globals (BOOKS_DIR, BOOKS_FILE) rather than in
 config. That's what lets a test point the whole book layer at a tmpdir — and also what makes
 forgetting to do so destructive, since the default is the real library. So the redirect is
 autouse: no test can touch books.json by accident, including one that never asked.
@@ -16,7 +16,8 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import epub          # noqa: E402
-import speech        # noqa: E402
+import books        # noqa: E402
+import core         # noqa: E402
 
 HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 needs_ffmpeg = pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg/ffprobe not installed")
@@ -40,8 +41,8 @@ def pytest_configure(config):
 
 # Captured before anything redirects them: the developer's own library, which no test may
 # touch. Recorded at import so it survives every monkeypatch in every test.
-REAL_BOOKS_DIR = speech.BOOKS_DIR
-REAL_BOOKS_FILE = speech.BOOKS_FILE
+REAL_BOOKS_DIR = books.BOOKS_DIR
+REAL_BOOKS_FILE = books.BOOKS_FILE
 
 
 @pytest.fixture(autouse=True)
@@ -78,11 +79,11 @@ def isolated_books(tmp_path, monkeypatch):
     function-scoped monkeypatch, this redirect included, and the rest of the test then runs
     against the real library. Ask for the narrower fixture you want instead.
     """
-    books = tmp_path / "books"
-    books.mkdir()
-    monkeypatch.setattr(speech, "BOOKS_DIR", str(books))
-    monkeypatch.setattr(speech, "BOOKS_FILE", str(tmp_path / "books.json"))
-    return books
+    library = tmp_path / "books"
+    library.mkdir()
+    monkeypatch.setattr(books, "BOOKS_DIR", str(library))
+    monkeypatch.setattr(books, "BOOKS_FILE", str(tmp_path / "books.json"))
+    return library
 
 
 @pytest.fixture
@@ -100,10 +101,10 @@ def make_book():
         book = {"id": book_id, "title": "A Book", "author": "An Author", "language": "en",
                 "voice": "af_heart", "gen": 0, "announce": False, "chapters": chapters}
         book.update(extra)
-        speech.write_books(speech.load_books() + [book])
-        os.makedirs(speech.book_dir(book_id, "text"), exist_ok=True)
+        books.write_books(books.load_books() + [book])
+        os.makedirs(books.book_dir(book_id, "text"), exist_ok=True)
         for i, t in enumerate(texts):
-            with open(speech.book_dir(book_id, "text", f"ch{i:03d}.txt"), "w") as f:
+            with open(books.book_dir(book_id, "text", f"ch{i:03d}.txt"), "w") as f:
                 f.write(t)
         return book
     return _make
@@ -125,8 +126,8 @@ def fake_tts(monkeypatch):
         with open(out_path, "wb") as f:
             f.write(b"\0" * 256)
 
-    monkeypatch.setattr(speech, "_render_segment", _render_segment)
-    monkeypatch.setattr(speech, "audio_seconds", lambda p: 12.5)
+    monkeypatch.setattr(books, "_render_segment", _render_segment)
+    monkeypatch.setattr(books, "audio_seconds", lambda p: 12.5)
     return calls
 
 
@@ -145,6 +146,6 @@ def silence():
 
 @pytest.fixture
 def client():
-    speech.app.config["TESTING"] = True
-    with speech.app.test_client() as c:
+    core.app.config["TESTING"] = True
+    with core.app.test_client() as c:
         yield c

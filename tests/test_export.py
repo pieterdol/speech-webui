@@ -10,7 +10,8 @@ import subprocess
 
 import pytest
 
-import speech
+import books
+import core
 from conftest import needs_ffmpeg
 
 pytestmark = needs_ffmpeg
@@ -28,17 +29,17 @@ def narrate(book_id, index, silence, seconds, parts=1, state="ready"):
     segs = []
     for si in range(parts):
         name = f"ch{index:03d}-s{si:02d}.opus"
-        silence(speech.book_dir(book_id, "audio", name), seconds)
+        silence(books.book_dir(book_id, "audio", name), seconds)
         segs.append({"file": name, "seconds": seconds})
-    speech.update_book(book_id, lambda b: b["chapters"][index].update(
+    books.update_book(book_id, lambda b: b["chapters"][index].update(
         state=state, segments=segs, seconds=seconds * parts))
     return segs
 
 
 def run_export(book_id, part=None):
-    jid = speech.new_job("export")
-    speech.export_worker(jid, book_id, part)
-    return speech.jobs[jid]
+    jid = core.new_job("export")
+    books.export_worker(jid, book_id, part)
+    return core.jobs[jid]
 
 
 class TestWholeBook:
@@ -48,7 +49,7 @@ class TestWholeBook:
         narrate("b1", 1, silence, 2.0)
         job = run_export("b1")
         assert job["status"] == "done", job.get("error")
-        out = speech.book_dir("b1", "export", job["file"])
+        out = books.book_dir("b1", "export", job["file"])
         assert os.path.exists(out)
         assert [m[2] for m in marks(out)] == ["Chapter One", "Chapter Two"]
         assert "2 chapters" in job["text"]
@@ -57,7 +58,7 @@ class TestWholeBook:
         make_book(names=["One", "Two"], texts=["word " * 10] * 2)
         narrate("b1", 0, silence, 2.0)
         narrate("b1", 1, silence, 3.0)
-        got = marks(speech.book_dir("b1", "export", run_export("b1")["file"]))
+        got = marks(books.book_dir("b1", "export", run_export("b1")["file"]))
         assert got[0][0] == 0.0
         assert abs(got[0][1] - 2.0) < 0.3          # first chapter ends where the second starts
         assert abs(got[1][0] - 2.0) < 0.3
@@ -66,7 +67,7 @@ class TestWholeBook:
     def test_several_parts_become_one_chapter(self, make_book, silence):
         make_book(names=["Long One"], texts=["word " * 10])
         narrate("b1", 0, silence, 1.0, parts=3)
-        got = marks(speech.book_dir("b1", "export", run_export("b1")["file"]))
+        got = marks(books.book_dir("b1", "export", run_export("b1")["file"]))
         assert len(got) == 1
         assert abs(got[0][1] - 3.0) < 0.3
 
@@ -80,7 +81,7 @@ class TestWhatGetsIncluded:
         narrate("b1", 1, silence, 1.0, parts=2, state="pending")     # interrupted
         job = run_export("b1")
         assert job["status"] == "done", job.get("error")
-        assert len(marks(speech.book_dir("b1", "export", job["file"]))) == 2
+        assert len(marks(books.book_dir("b1", "export", job["file"]))) == 2
         assert "1 unfinished" in job["text"]
         assert "1 not narrated" in job["text"]
 
@@ -94,10 +95,10 @@ class TestWhatGetsIncluded:
         make_book(names=["One", "Two"], texts=["word " * 10] * 2)
         narrate("b1", 0, silence, 1.0)
         narrate("b1", 1, silence, 1.0)
-        os.remove(speech.book_dir("b1", "audio", "ch001-s00.opus"))
+        os.remove(books.book_dir("b1", "audio", "ch001-s00.opus"))
         job = run_export("b1")
         assert job["status"] == "done", job.get("error")
-        assert [m[2] for m in marks(speech.book_dir("b1", "export", job["file"]))] == ["One"]
+        assert [m[2] for m in marks(books.book_dir("b1", "export", job["file"]))] == ["One"]
 
 
 class TestPartExport:
@@ -108,7 +109,7 @@ class TestPartExport:
             narrate("b1", i, silence, 1.0)
         job = run_export("b1", part="A")
         assert job["status"] == "done", job.get("error")
-        assert len(marks(speech.book_dir("b1", "export", job["file"]))) == 2
+        assert len(marks(books.book_dir("b1", "export", job["file"]))) == 2
 
     def test_the_part_prefix_is_dropped_from_the_marks(self, make_book, silence):
         """Inside a part export, "A · " on every marker is noise."""
@@ -116,7 +117,7 @@ class TestPartExport:
         narrate("b1", 0, silence, 1.0)
         narrate("b1", 1, silence, 1.0)
         job = run_export("b1", part="A")
-        got = [m[2] for m in marks(speech.book_dir("b1", "export", job["file"]))]
+        got = [m[2] for m in marks(books.book_dir("b1", "export", job["file"]))]
         assert got == ["Chapter 1", "Chapter 2"]
 
     def test_unknown_part(self, make_book, silence):
@@ -132,7 +133,7 @@ class TestMetadata:
         make_book(names=["One"], texts=["word " * 10])
         narrate("b1", 0, silence, 1.0)
         job = run_export("b1")
-        out = speech.book_dir("b1", "export", job["file"])
+        out = books.book_dir("b1", "export", job["file"])
         probe = subprocess.run(["ffprobe", "-v", "error", "-show_format", "-of", "json", out],
                                capture_output=True, text=True, timeout=60).stdout
         tags = {k.lower(): v for k, v in json.loads(probe)["format"]["tags"].items()}
