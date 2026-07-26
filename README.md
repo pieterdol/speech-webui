@@ -363,6 +363,7 @@ requirements-test.txt   what CI installs — flask, bs4, lxml, pytest, and nothi
 .github/workflows/tests.yml   runs the suite on push and pull request
 CLAUDE.md     house rules: tests come with the change, what belongs in this README,
               no copyrighted text in the repo
+LICENSE       MIT
 clips/        normalized input clips (gitignored)
 presets/      saved voices — own copy of the reference audio (gitignored)
 samples/      cached one-line voice previews, one wav per voice (gitignored)
@@ -480,3 +481,8 @@ redirects along with everything else, and the rest of the test then runs against
   variants of the same speakers, plus a 52-speaker model needing a speaker id the UI doesn't
   have. Add more by dropping the `.onnx` and `.onnx.json` from huggingface.co/rhasspy/piper-voices
   into `~/.local/share/piper-tts/voices` — picked up on the next restart, no code change.
+
+## License
+
+MIT, see [LICENSE](LICENSE). The speech engines it drives are separately licensed, and the books
+in `books/` are bought copies that stay out of the repository.
