@@ -262,9 +262,13 @@ nothing is narrated until you ask for it — a full book is hours of work.
 - **Clear narration** in ⚙ throws away the audio and keeps the book, its text and its cover —
   useful after changing something that should be re-spoken.
 - **Covers** come from the EPUB, in the library grid, beside the title, and on the phone's
-  lock screen while it plays. Three sizes are derived once with ffmpeg — 200 px for the grid,
-  600 px for the reader, and **512×512 padded** for the lock screen, because iOS crops a tall
-  cover badly and 43 KB beats sending the 1.9 MB original every time. ⚙ has a **Replace the
+  lock screen while it plays. Two sizes are derived once with ffmpeg — 200 px wide for the
+  grid, 600 px for the reader and the lock screen — because 130 KB beats sending the 1.9 MB
+  original every time. Both keep the book's proportions: a phone lays cover art out at
+  whatever shape it's handed, so a tall cover fills the lock screen the way it does in
+  BookPlayer, and squaring one off only adds bars. The dimensions are measured in the browser
+  and go out with the artwork, since `sizes` is the shape the OS lays it out by and has to
+  match the file — a 600×906 cover announced as 512×512 gets bars. ⚙ has a **Replace the
   cover** upload for books that declare none.
 
   The cover is whichever image the book *declares* — EPUB 3 `properties="cover-image"`, then

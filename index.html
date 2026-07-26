@@ -1908,15 +1908,28 @@ function markPlayingPart(){
   }
 }
 
+// Measured once per book. `sizes` is the shape the OS lays the artwork out by, so it has to
+// match the file: a tall cover announced as square gets bars along the top and bottom. The
+// cover keeps the book's own proportions, and its real dimensions go out with it.
+const ARTWORK = {};      // book id -> "600x906", or null when it has no cover
+
 function setMediaSession(){
   if(!("mediaSession" in navigator) || !NP) return;
-  // The 512×512 padded cover: iOS crops a tall book cover awkwardly on the lock screen, so
-  // the server pads it square rather than letting the phone cut it.
+  const id = NP.id, src = `/cover/${id}/full.jpg`;
+  const known = ARTWORK[id];
   navigator.mediaSession.metadata = new MediaMetadata({
     title: (NP.chapters[PLAY.chapter] || {}).name || "",
     artist: NP.author || "",
     album: NP.title,
-    artwork: [{src: `/cover/${NP.id}/lock.jpg`, sizes: "512x512", type: "image/jpeg"}]});
+    // Sent without `sizes` on the first pass rather than held back until measured — the
+    // lock screen gets its artwork immediately, and the shape follows a moment later.
+    artwork: [Object.assign({src, type: "image/jpeg"}, known ? {sizes: known} : {})]});
+  if(known !== undefined) return;
+  const done = s => { ARTWORK[id] = s; if(NP && NP.id === id) setMediaSession(); };
+  const img = new Image();
+  img.onload  = ()=> done(`${img.naturalWidth}x${img.naturalHeight}`);
+  img.onerror = ()=> done(null);
+  img.src = src;
 }
 
 // The next part, or the first part of the next chapter.

@@ -484,14 +484,13 @@ def update_book(book_id, fn):
                 b["updated"] = int(time.time())
         write_books(items)
 
-# Three derivations of the cover, made once on upload. The original is often ~2 MB, which is
-# wasteful to send a phone repeatedly; and iOS crops a tall cover awkwardly on the lock screen
-# unless it's given something square, so that one is padded rather than cropped.
+# Two derivations of the cover, made once on upload. The original is often ~2 MB, which is
+# wasteful to send a phone repeatedly. Both keep the book's own proportions: a phone shows
+# cover art at whatever shape it's given — BookPlayer displays the tall artwork embedded in
+# an exported .m4b full-height on the lock screen — so squaring one off only adds bars.
 COVER_SIZES = {
     "thumb": "scale=200:-2",
     "full":  "scale=600:-2",
-    "lock":  "scale=512:512:force_original_aspect_ratio=decrease,"
-             "pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x15131f",
 }
 
 def cover_path(book_id, size):
