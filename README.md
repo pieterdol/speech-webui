@@ -189,7 +189,9 @@ it — a full book is hours of work.
   realtime, a 5-minute chapter takes ~2 minutes.
 - **Playing** — parts are ordinary opus files played by an `<audio>` element, chaining into
   the next part and then the next chapter. Position is saved server-side every 5 seconds, so
-  the phone resumes where the PC left off. Speed is adjustable 0.75–2×, and **↺10 / 30↻** skip
+  the phone resumes where the PC left off. **⏱** in the bar says the current speed and opens a
+  list of the eight worth having, 0.75× to 2× — a 72-pixel range slider is not something you can
+  set accurately with a thumb. **↺10 / 30↻** skip
   back ten seconds or forward thirty — asymmetric because going back is for a sentence you
   missed and going forward is for skipping something. A skip crosses into the next part or the
   previous one rather than stopping at the edge of the file that happens to be loaded, using the

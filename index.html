@@ -218,9 +218,19 @@
             white-space:nowrap; }
   .mpbook { font-size:11.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis;
             white-space:nowrap; margin-top:1px; }
-  .mpspeed { flex:none; display:flex; align-items:center; gap:6px; margin:0; }
-  .mpspeed input { width:72px; }
-  #bookSpeedVal { font-size:11.5px; color:var(--muted); width:34px; flex:none; }
+  /* A 72 px range input is not something you can set accurately with a thumb, so the speed is a
+     button that says what it is and opens a list of the ones worth having. */
+  .mpspeed { flex:none; position:relative; }
+  #mpSpeed { width:auto; min-width:56px; height:34px; padding:0 8px; gap:4px; font-size:12px;
+             display:flex; align-items:center; justify-content:center; }
+  #mpSpeedVal { font-size:12.5px; font-weight:700; }
+  .speedmenu { position:absolute; right:0; bottom:calc(100% + 8px); z-index:30; padding:5px;
+               background:var(--card); border:1px solid var(--line); border-radius:11px;
+               box-shadow:0 8px 24px rgba(0,0,0,.5); }
+  .speedmenu button { display:block; width:100%; min-width:88px; text-align:right;
+                      padding:10px 14px; border:none; border-radius:8px; background:none;
+                      color:var(--text); font:inherit; font-size:14.5px; }
+  .speedmenu button.on { color:var(--accent); font-weight:700; background:#2a2640; }
   #mpClose { flex:none; width:34px; height:34px; font-size:19px; line-height:1; }
   /* 10 back, 30 forward — a chapter's own row, so the bar's height doesn't change */
   .mpseek { display:flex; align-items:center; gap:8px; margin-top:6px; }
@@ -234,6 +244,7 @@
     .mpspeed input { width:52px; }
     /* the native controls need what's left of the row more than these two do */
     .mpseek .iconbtn { width:40px; font-size:11px; }
+    #mpSpeed { min-width:50px; padding:0 5px; }
   }
   .spin { display:inline-block; width:15px; height:15px; border:2px solid var(--muted);
     border-top-color:var(--accent); border-radius:50%; animation:s .8s linear infinite; vertical-align:-2px; margin-right:7px; }
@@ -505,10 +516,13 @@
         <div class="mpchap" id="mpChapter"></div>
         <div class="mpbook" id="mpBook"></div>
       </button>
-      <label class="mpspeed" for="bookSpeed">
-        <input type="range" id="bookSpeed" min="0.75" max="2" step="0.05" value="1">
-        <span id="bookSpeedVal">1.0×</span>
-      </label>
+      <div class="mpspeed">
+        <button id="mpSpeed" class="iconbtn" title="Playback speed"
+                aria-haspopup="true" aria-expanded="false">⏱<span id="mpSpeedVal">1.0×</span></button>
+        <!-- Filled from SPEEDS, above the bar rather than below it: the bar is already at the
+             bottom of the screen. -->
+        <div id="speedMenu" class="speedmenu" hidden></div>
+      </div>
       <button id="mpClose" class="iconbtn" title="Stop and close the player"
               aria-label="Stop and close the player">×</button>
     </div>
@@ -1938,7 +1952,7 @@ function playNow(ci, si, offset){
   const au = bookAudio();
   showPlayer();
   au.src = `/book/${NP.id}/${segs[si].file}`;
-  au.playbackRate = parseFloat($("#bookSpeed").value) || 1;
+  au.playbackRate = SPEED;
   au.play().then(()=>{ if(offset) au.currentTime = offset; })
            .catch(()=> setStatus("Tap ▶ on the player to start listening.", true));
   setMediaSession();
@@ -2128,12 +2142,33 @@ function savePosition(offset){
     body: JSON.stringify({id: NP.id, position})}).catch(()=>{});
 }
 
-$("#bookSpeed").addEventListener("input", ()=>{
-  const v = parseFloat($("#bookSpeed").value) || 1;
-  $("#bookSpeedVal").textContent = v.toFixed(2).replace(/0$/, "") + "×";
+// Worth having rather than every step of 0.05: a list you can hit with a thumb.
+const SPEEDS = [0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+const speedLabel = v => v.toFixed(2).replace(/0$/, "") + "×";
+let SPEED = 1;
+
+function setSpeed(v){
+  SPEED = v;
   bookAudio().playbackRate = v;
+  $("#mpSpeedVal").textContent = speedLabel(v);
   store.set("bookSpeed", String(v));
+  [...$("#speedMenu").children].forEach(b =>
+    b.classList.toggle("on", parseFloat(b.dataset.speed) === v));
+}
+
+function showSpeedMenu(open){
+  $("#speedMenu").hidden = !open;
+  $("#mpSpeed").setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+$("#mpSpeed").addEventListener("click", e => {
+  e.stopPropagation();                          // or the document handler shuts it again
+  showSpeedMenu($("#speedMenu").hidden);
 });
+// Anywhere else, or Escape. The menu covers part of the player, so it has to be easy to dismiss
+// without choosing.
+document.addEventListener("click", ()=> showSpeedMenu(false));
+document.addEventListener("keydown", e => { if(e.key === "Escape") showSpeedMenu(false); });
 
 $("#bookVoice").addEventListener("change", ()=> changeBook({voice: $("#bookVoice").value}));
 $("#bookHeadings").addEventListener("change", ()=> changeBook({announce: $("#bookHeadings").checked}));
@@ -2336,8 +2371,17 @@ $("#chatAutoSend").addEventListener("change", ()=>
   store.set("chatAutoSend", $("#chatAutoSend").checked ? "1" : "0"));
 $("#chatLang").value = store.get("chatLang", "en");   // openChat overrides with the chat's own
 syncChatLang();
-$("#bookSpeed").value = store.get("bookSpeed", "1");
-$("#bookSpeed").dispatchEvent(new Event("input"));
+SPEEDS.forEach(v => {
+  const b = document.createElement("button");
+  b.dataset.speed = String(v);
+  b.textContent = speedLabel(v);
+  b.addEventListener("click", ()=> { setSpeed(v); showSpeedMenu(false); });
+  $("#speedMenu").appendChild(b);
+});
+// A speed stored by the old slider can be any step of 0.05, so it's snapped to the nearest of
+// these rather than left as a value no row is highlighted for.
+const wanted = parseFloat(store.get("bookSpeed", "1")) || 1;
+setSpeed(SPEEDS.reduce((a, b) => Math.abs(b - wanted) < Math.abs(a - wanted) ? b : a));
 if(!secure) $("#chatMic").title = "Talking needs https";
 setMode(store.get("mode", "studio"));   // chats load lazily on the first switch to Chat
 
