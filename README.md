@@ -74,10 +74,13 @@ the text fields in panel 3. Transcripts are cached per clip in `clips.json`.
   the voice prefix (`bm_george` → `en-gb`), otherwise British voices get phonemized with US rules
   and sound wrong. The pickers list the **American and British voices only**; the other 40-odd
   are still on `/api/voices`, just filtered out of the dropdowns by `GROUPS` in `fillVoices()`.
-- *Piper* — the Dutch engine, because Kokoro has no Dutch voice. Five voices: `alex`, `pim` and
-  `ronnie` (nl_NL), `nathalie` and `rdh` (nl_BE), all *medium* quality, ~61 MB each in
-  `~/.local/share/piper-tts/voices`. Faster than Kokoro — a chat reply of 16 s of audio
-  rendered in 2 s. Same ▶ preview button, in Dutch.
+- *Piper* — the Dutch engine, because Kokoro has no Dutch voice. Five single-speaker voices —
+  `alex`, `pim`, `ronnie` (nl_NL), `nathalie`, `rdh` (nl_BE) — plus `nl_NL-mls-medium`, one 76 MB
+  model holding **52 readers** from the Dutch MLS corpus, each offered as its own voice
+  (`nl_NL-mls-medium-2450`) and all sharing the one loaded model. All *medium* quality, which is
+  as good as Piper's Dutch gets: of the 13 `high` voices in the catalogue none is Dutch, so
+  choosing among speakers is the way to a better Dutch narrator. Faster than Kokoro — a chat
+  reply of 16 s of audio rendered in 2 s. Same ▶ preview button, in Dutch.
 - *F5-TTS* — clones a voice. Needs the exact transcript of the reference clip, which is
   auto-filled from Whisper when that clip has already been transcribed. Only clone your own
   voice, or one you have permission to use.
@@ -477,10 +480,11 @@ redirects along with everything else, and the rest of the test then runs against
 - **Kokoro has no Dutch voice** — its 54 cover nine languages and Dutch isn't one, which is why
   Piper is here. It *can* be forced at Dutch through espeak-ng, but the result is an American
   accent reading Dutch spelling. Not exposed in the UI; use a Piper voice.
-- **Five of Piper's ten Dutch voices are installed.** The rest are lower-quality `x_low`/`low`
-  variants of the same speakers, plus a 52-speaker model needing a speaker id the UI doesn't
-  have. Add more by dropping the `.onnx` and `.onnx.json` from huggingface.co/rhasspy/piper-voices
-  into `~/.local/share/piper-tts/voices` — picked up on the next restart, no code change.
+- **Six of Piper's ten Dutch models are installed**, which is 57 selectable voices once
+  `nl_NL-mls-medium`'s 52 speakers are counted. The rest are `x_low`/`low` variants of speakers
+  already here. Add more by dropping the `.onnx` and `.onnx.json` from
+  huggingface.co/rhasspy/piper-voices into `~/.local/share/piper-tts/voices` — picked up on the
+  next restart, no code change, and a multi-speaker model is expanded automatically.
 
 ## License
 

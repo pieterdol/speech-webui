@@ -35,6 +35,7 @@ nl/nl_NL/pim/medium/nl_NL-pim-medium.onnx
 nl/nl_NL/ronnie/medium/nl_NL-ronnie-medium.onnx
 nl/nl_BE/nathalie/medium/nl_BE-nathalie-medium.onnx
 nl/nl_BE/rdh/medium/nl_BE-rdh-medium.onnx
+nl/nl_NL/mls/medium/nl_NL-mls-medium.onnx
 }"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
