@@ -317,6 +317,15 @@ model loaded and takes one JSON request per line over a pipe, launched with **Ko
 interpreter** (`~/.local/share/kokoro-tts/venv/bin/python`) so its 524 MB of ONNX dependencies
 stay where they already are.
 
+**Kokoro reads 510 phonemes at a time**, and the worker does the splitting rather than leaving it
+to `kokoro-onnx`, whose own splitter only breaks at punctuation: text without any — a page of
+book titles, one per line — comes back as one oversized batch, and the model then indexes the
+voice's style table by the token count and falls off the end of it. So the text is phonemized
+once, cut at the latest punctuation, space or character that fits under the limit, and the
+pieces are read in turn and joined. It has to be counted in phonemes, not characters: English
+runs about 1.1 phonemes per character and *"$100,000"* is thirty, so no limit on the text could
+stand in for it.
+
 The worker costs 530 MB–1 GB of RAM while loaded, so it **unloads itself after 10 minutes with no
 renders** and starts again on the next one, a restart of about 1.4 s. `KOKORO_IDLE_MINUTES`
 changes the window; `0` keeps it resident. Killing it by hand is safe at any time — the next
@@ -409,8 +418,8 @@ Also on every push and pull request, via `.github/workflows/tests.yml`.
 **What's covered.** Every module, ~370 tests. The books state machine, which is where the bugs
 actually live: a render cancelled under itself, what survives a restart, which chapters an export
 takes, how a part run scopes its progress, the queue. The pure functions — reading a chapter
-number out of a heading, cutting text into segments, chunks and sentences, what gets announced
-before the prose. The stores behind clips, presets and chats. And the HTTP contracts, including
+number out of a heading, cutting text into segments, chunks, sentences and phoneme batches, what
+gets announced before the prose. The stores behind clips, presets and chats. And the HTTP contracts, including
 the cache headers on narration audio.
 
 Two things get more attention than their size suggests: `safe_path`, the app's only security
