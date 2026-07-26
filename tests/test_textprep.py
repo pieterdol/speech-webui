@@ -40,7 +40,7 @@ class TestSpeechText:
 
 
 class TestRespell:
-    """Neither engine has a pronunciation-override syntax, so hard words go in respelled."""
+    """Neither engine takes a pronunciation override, so hard words go in respelled."""
 
     def test_replaces_a_known_name(self):
         assert textprep.respell("Hello Pieter") == "Hello Peter"
@@ -53,6 +53,79 @@ class TestRespell:
 
     def test_leaves_everything_else(self):
         assert textprep.respell("nothing to do here") == "nothing to do here"
+
+    def test_a_word_espeak_gets_wrong(self):
+        """espeak clips the -ies and says "movis"."""
+        assert textprep.respell("I love watching movies.") == "I love watching movees."
+
+
+class TestSpokenAbbreviations:
+    """"Mr." is read as "mister" and then a sentence break, so the name lands after a pause
+    the text never asked for. Writing the word out takes the full stop with it."""
+
+    @pytest.mark.parametrize("written,spoken", [
+        ("Mr. Halloway looked up.", "Mister Halloway looked up."),
+        ("Mrs. Ashgrove arrived.", "Missus Ashgrove arrived."),
+        ("Dr. Evans agreed.", "Doctor Evans agreed."),
+        ("Ms. Brown spoke.", "Miz Brown spoke."),
+        ("Prof. Hall nodded.", "Professor Hall nodded."),
+        ("MR. HALLOWAY", "Mister HALLOWAY"),
+    ])
+    def test_titles_always_lose_the_full_stop(self, written, spoken):
+        """A title sits in front of a name, so its stop is never a sentence end."""
+        assert textprep.respell(written) == spoken
+
+    @pytest.mark.parametrize("written,spoken", [
+        ("Comparing this vs. that.", "Comparing this versus that."),
+        ("Cats, e.g. tabbies, and dogs.", "Cats, for example tabbies, and dogs."),
+        ("Dogs, i.e. hounds, bark.", "Dogs, that is hounds, bark."),
+        ("It was approx. ten miles.", "It was approximately ten miles."),
+        ("Sammy Jr. and Sammy Sr. went.", "Sammy Junior and Sammy Senior went."),
+    ])
+    def test_mid_sentence_the_stop_comes_off(self, written, spoken):
+        assert textprep.respell(written) == spoken
+
+    @pytest.mark.parametrize("written,spoken", [
+        ("There was Sammy Jr. Then he left.", "There was Sammy Junior. Then he left."),
+        ("He listed them, etc. Then he stopped.",
+         "He listed them, et cetera. Then he stopped."),
+        ("Cats and dogs, etc.", "Cats and dogs, et cetera."),
+        ('He said "etc." Then left.', 'He said "et cetera." Then left.'),
+    ])
+    def test_at_the_end_of_a_sentence_the_stop_stays(self, written, spoken):
+        """Otherwise the sentence runs straight into the next one."""
+        assert textprep.respell(written) == spoken
+
+    def test_no_is_a_number_only_before_one(self):
+        assert textprep.respell("Take No. 5 first.") == "Take number 5 first."
+        assert textprep.respell("No, I don't think so.") == "No, I don't think so."
+
+    @pytest.mark.parametrize("text", [
+        "They walked down Main St. to the corner.",   # Saint or Street — unknowable here
+        "See fig. 4 and Smith et al.",
+        "It took 300 ms to load.",                    # milliseconds, not an honorific
+        "Nothing to expand in this one.",
+    ])
+    def test_left_alone(self, text):
+        assert textprep.respell(text) == text
+
+    def test_mrs_is_not_read_as_mr(self):
+        """Whichever order the patterns are tried in."""
+        assert textprep.respell("Mrs. Smith") == "Missus Smith"
+        assert "Misters" not in textprep.respell("Mrs. Smith")
+
+    def test_expansion_happens_after_sentence_splitting(self):
+        """cut_sentences must still see "Mr." — it's what stops it cutting there. By the time
+        respell runs, the chunk boundaries are already decided."""
+        chunks = textprep.cut_sentences("Mr. Halloway looked up. Then he left.", 0)[0]
+        assert chunks == ["Mr. Halloway looked up."]
+        assert textprep.respell(chunks[0]) == "Mister Halloway looked up."
+
+    def test_every_expandable_abbreviation_is_also_a_known_one(self):
+        """An abbreviation this expands but _ABBREV doesn't know would get a sentence cut in
+        the middle of it before the expansion ever ran."""
+        expandable = set(textprep.HONORIFICS) | set(textprep.SPOKEN_ABBREV)
+        assert {a.lower() for a in expandable} <= textprep._ABBREV
 
 
 class TestCutSentences:

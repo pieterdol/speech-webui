@@ -2,11 +2,70 @@
 an engine can speak. Shared by chat, the studio and book narration."""
 import re
 
-# phonetically on the way in.
-RESPELL = {"Pieter": "Peter"}
+# Neither engine takes a pronunciation override, so hard words are respelled phonetically on
+# the way in. Kokoro's documented [word](/phonemes/) form belongs to the KPipeline package and
+# does nothing here: kokoro_onnx offers only all-or-nothing is_phonemes, so the markup is read
+# out loud as "slash m stress u lengthen v i z slash". Respelling is the whole toolkit.
+RESPELL = {
+    "Pieter": "Peter",
+    "movies": "movees",     # espeak clips the -ies to "movis"
+}
+
+# Abbreviations written short and meant to be heard in full. The full stop is the whole
+# problem: an engine reads "Mr. Halloway" as "mister", then a sentence break, then the name —
+# a pause the text never asked for. Writing the word out removes the stop along with it.
+#
+# This runs after sentence splitting, so _ABBREV has already done its own job of not cutting
+# the sentence at "Mr."; by the time a chunk reaches an engine the abbreviation is gone.
+#
+# A title always sits in front of a name, so its full stop is never the end of a sentence and
+# always comes off.
+HONORIFICS = {"Mr": "Mister", "Mrs": "Missus", "Ms": "Miz", "Dr": "Doctor",
+              "Prof": "Professor"}
+# These can fall at the end of a sentence — "…and Sammy Jr." — where the one full stop is
+# doing both jobs. Taking it off would run the sentence into the next one, so it's kept when
+# what follows looks like a new sentence and dropped when it doesn't.
+SPOKEN_ABBREV = {"Jr": "Junior", "Sr": "Senior", "vs": "versus", "etc": "et cetera",
+                 "e.g": "for example", "i.e": "that is", "approx": "approximately"}
+# Left alone on purpose. "St." is Saint before a name and Street after one, and this has no
+# way to tell which; "fig.", "al." and "inc." are rare enough in prose that guessing wrong
+# costs more than the abbreviation does. They stay in _ABBREV, so they still don't split a
+# sentence — they're just spoken as written.
+
+
+def _abbrev_re(abbr):
+    """Matches the abbreviation with or without its full stop, never inside a longer word —
+    so "Mr." matches and "Mrs." doesn't, whichever order the two are tried in.
+
+    Case is not ignored. Lowercase "ms" is milliseconds far more often than it is an
+    honorific, so only the forms actually written for the abbreviation are accepted.
+    """
+    forms = sorted({abbr, abbr.upper(), abbr.capitalize()}, key=len, reverse=True)
+    return re.compile(r"(?<!\w)(?:%s)\.?(?!\w)" % "|".join(re.escape(f) for f in forms))
+
+
+_HONORIFIC = [(_abbrev_re(a), full) for a, full in HONORIFICS.items()]
+_SPOKEN    = [(_abbrev_re(a), full) for a, full in SPOKEN_ABBREV.items()]
+# "No." is a number only when a number follows it. Everywhere else it's the ordinary word,
+# which is why it can't go in either table.
+_NUMBER_OF = re.compile(r"(?<!\w)No\.(?=\s*\d)")
+
+
+def _expand(match, full):
+    """Write the abbreviation out, keeping its full stop only when that stop is also ending a
+    sentence — nothing after it, or a capital letter starting the next one."""
+    if not match.group(0).endswith("."):
+        return full
+    after = match.string[match.end():].lstrip(" \t\"'”’)")
+    return full + ("." if not after or after[0].isupper() else "")
 
 
 def respell(text):
+    for pattern, full in _HONORIFIC:
+        text = pattern.sub(full, text)
+    for pattern, full in _SPOKEN:
+        text = pattern.sub(lambda m, f=full: _expand(m, f), text)
+    text = _NUMBER_OF.sub("number", text)
     for src, dst in RESPELL.items():
         text = re.sub(rf"\b{re.escape(src)}\b", dst, text, flags=re.IGNORECASE)
     return text

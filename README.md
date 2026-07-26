@@ -546,6 +546,20 @@ it, so `worker_call` is replaced for the whole suite.
 - **Spoken replies leave wavs in `outputs/`**, one per sentence-chunk rather than one per
   reply, so a talkative session accumulates quickly (~190 KB per chunk). They're gitignored
   and safe to delete wholesale.
+- **Fixing a mispronunciation means respelling it.** `RESPELL` in `textprep.py` maps a word to
+  something the engine says correctly — `movies` → `movees`, because espeak clips the `-ies`
+  to "movis". Kokoro's documented `[word](/phonemes/)` override is not available here: that
+  belongs to the `kokoro` KPipeline package, and `kokoro_onnx` takes either plain text or
+  nothing but phonemes, so the markup is read out — measured, the clip went from 1.6 s to
+  4.2 s and Whisper heard *"movies. slash m stress u lengthen v i z slash"*. espeak's own
+  `[[…]]` inline form does survive the pipeline but is no easier to get right: `[[mu:viz]]`
+  came back as "MooVis".
+- **Titles are written out before they're spoken.** `Mr.` reaches the engine as `Mister`,
+  because the full stop otherwise reads as a sentence break and drops a pause between the
+  title and the name. Same for `Mrs.`, `Ms.`, `Dr.`, `Prof.`, and for `Jr.`, `Sr.`, `vs.`,
+  `etc.`, `e.g.`, `i.e.`, `approx.` — those keep the stop when it's also ending a sentence
+  ("…and Sammy Jr.") and lose it when it isn't ("Sammy Jr. and…"). `St.` is deliberately left
+  alone: it's Saint before a name and Street after one, and nothing here can tell which.
 - **Kokoro has no Dutch voice** — its 54 cover nine languages and Dutch isn't one. That's why
   Piper is here. Kokoro *can* be forced at Dutch (`kokoro-tts -l nl` phonemizes through
   espeak-ng, which knows Dutch) but it's an American accent reading Dutch spelling: on "Het is
