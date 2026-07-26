@@ -196,15 +196,35 @@ nothing is narrated until you ask for it — a full book is hours of work.
 - **Playing** — parts are ordinary opus files played by an `<audio>` element, chaining into
   the next part and then the next chapter. Position is saved server-side every 5 seconds, so
   the phone resumes where the PC left off. Speed is adjustable 0.75–2×.
-- **Chapters announce themselves.** Before the prose you hear the part's name, then the
+- **One list, folded.** *Chapters* is a single list at two levels. A book divided into parts —
+  The Institute has four — shows them as the outer level, each folding open to its chapters
+  and carrying its own **Narrate part** and **Download part**, which is a far more useful unit
+  than one 4-minute chapter or the whole 20 hours; a book without parts is the same list with
+  that level missing. Every chapter then folds open to its ~10-minute parts, each playable the
+  moment it exists — a chapter three parts into a six-part render is already worth listening
+  to, and one left half-made offers to finish itself. What opens unasked is the part you're
+  reading and anything rendering or half-done; the state survives the 4-second refresh, so a
+  panel you're reading doesn't snap shut while the book narrates.
+- **The book announces itself.** It opens with the title and author — *"Dark Matter" … "by
+  Blake Crouch" …* — the way a published audiobook does, and that's also the first thing the
+  exported `.m4b` plays. Then before each chapter's prose you hear the part's name and the
   chapter number: *"The Night Knocker" … "one" …* and only then the text. The part is spoken
   only where a part actually begins; later chapters in it just get their number. The pauses
-  are real silence (1.2 s and 0.9 s) added with ffmpeg's `apad` on the announcement clip
-  itself — a full stop buys about a third of a second, which doesn't read as a new chapter,
-  and a separately generated silence file would risk disagreeing with the engine's sample
-  rate (Kokoro 24 kHz, Piper 22.05) and breaking the concatenation. Numbers are spoken as
-  words so "21" can't come out as a year, and a chapter closes with 1.8 s of silence so it
-  doesn't run straight into the next announcement. Off via ⚙, which re-renders the book.
+  are real silence (0.7/1.6 s for the opening, 1.2 s and 0.9 s for part and chapter) added
+  with ffmpeg's `apad` on the announcement clip itself — a full stop buys about a third of a
+  second, which doesn't read as a new chapter, and a separately generated silence file would
+  risk disagreeing with the engine's sample rate (Kokoro 24 kHz, Piper 22.05) and breaking
+  the concatenation. Numbers are spoken as words so "21" can't come out as a year, and a
+  chapter closes with 1.8 s of silence so it doesn't run straight into the next announcement.
+  Off via ⚙, which re-renders the book.
+
+  The number is read out of the heading in **digits or in words**: Dark Matter names its
+  chapters "Chapter One" rather than "Chapter 1", and looking only for digits found nothing,
+  so the whole book was narrated with no announcement at all. A heading that is a title
+  rather than a number still gets none — an epigraph shouldn't be introduced as "chapter
+  seven". The announcement lives in a chapter's first part, and the phrases used are recorded
+  with the chapter, so resuming a chapter that was interrupted before the wording changed
+  re-makes that one part instead of keeping an opening that no longer matches.
 - **Clear narration** in ⚙ throws away the audio and keeps the book, its text and its cover —
   useful after changing something that should be re-spoken.
 - **Covers** come from the EPUB, in the library grid, beside the title, and on the phone's
@@ -230,6 +250,14 @@ design would need whole chapters in single files.
 released between them, so a chat reply or a transcription slots in between rather than waiting
 out a chapter. One book renders at a time.
 
+**A killed render keeps what it made.** The workers live in the Flask process, so a restart —
+or shutting the PC down overnight mid-chapter — kills them, and anything still marked
+*rendering* on the way back up is a leftover. It goes back to *pending*, but the parts it had
+already finished stay listed as long as the files are on disk: they're real audio, they play,
+and re-rendering the chapter reuses them. Clearing the list instead made an interrupted
+chapter look untouched — nothing to play, and an export that said "nothing narrated yet" with
+the files sitting right there.
+
 **Listening away from this PC.** Two buttons under *Whole book*:
 
 - **Narrate the whole book** works through every un-narrated chapter in the background, with
@@ -241,7 +269,11 @@ out a chapter. One book renders at a time.
   cover art, title and author, AAC 48 kbps mono. On the phone, tap the download and Share →
   Books. Apple Books then gives you chapters, sleep timer and position with no PC involved.
   The full book is ~564 MB; 32 kbps would be ~380 MB but AAC is meaningfully worse than opus
-  at that rate, hence 48.
+  at that rate, hence 48. *Whatever is narrated* means every part on disk, not only the
+  chapters that finished — a chapter cut short still has real audio in it, and the count of
+  unfinished and un-narrated chapters is reported alongside the download. Progress and
+  failures appear directly under the buttons rather than in the status line at the foot of
+  the page, which on a 192-chapter book was several screens away from what you'd just tapped.
 
 Storage is `books.json` for the index and `books/<id>/` for the EPUB, extracted text and audio.
 At 32 kbps opus a 20-hour book is ~290 MB of parts, plus the export if you make one. All

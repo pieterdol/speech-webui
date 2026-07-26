@@ -91,12 +91,34 @@
   .clipacts .del { color:#ff9db0; border-color:#7a2f42; background:#2e2030; flex:0 0 44px; }
   .tr { font-size:12.5px; color:var(--muted); margin-top:7px; overflow:hidden;
         text-overflow:ellipsis; white-space:nowrap; }
+  /* a part's chapters, and a chapter's segments, folded away until asked for */
+  .segtoggle { margin-top:8px; padding:5px 9px; font-size:12px; border-radius:8px;
+               border:1px solid var(--line); background:#2a2640; color:var(--muted); }
+  .segtoggle.bare { margin:0; padding:0; width:18px; border:none; background:none;
+                    font-size:13px; flex:none; }
+  .segtoggle .caret { display:inline-block; width:9px; transition:transform .12s; }
+  .segtoggle.open .caret { transform:rotate(90deg); }
+  .clip.group > .cliphead { cursor:pointer; }
+  .clip.group > .cliphead .nm { font-weight:600; }
+  .grouplist { margin-top:10px; border-left:2px solid var(--line); padding-left:12px; }
+  .clip.now > .cliphead .nm { color:var(--accent); }
+  .seglist { margin-top:8px; border-left:2px solid var(--line); padding-left:10px; }
+  .seg { display:flex; align-items:baseline; gap:8px; padding:7px 0; font-size:13px;
+         border-top:1px solid var(--line); }
+  .seg:first-child { border-top:none; }
+  .seg .n { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .seg .d { flex:none; font-size:12px; color:var(--muted); }
+  .seg.can { cursor:pointer; }
+  .seg.can:hover .n { color:var(--accent); }
+  .seg.wait { color:var(--muted); }
+  .seg.on .n { color:var(--accent); font-weight:600; }
   #status, #chatStatus { margin-top:16px; padding:12px 14px; border-radius:10px; background:var(--card);
             border:1px solid var(--line); font-size:15px; display:none; }
   #status.err, #chatStatus.err { border-color:#b3455e; color:#ff9db0; }
   #chatStatus { margin-top:10px; padding:10px 12px; font-size:14px; }
   .out { background:var(--card); border:1px solid var(--line); border-radius:12px;
          padding:12px; margin-top:14px; }
+  .out.err { border-color:#b3455e; color:#ff9db0; }
   .outhead { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;
              margin-bottom:8px; display:flex; align-items:center; gap:8px; }
   .outhead .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -361,8 +383,9 @@
         <button id="bookVoicePlay" class="iconbtn" title="Hear this voice" aria-label="Hear this voice">▶</button>
       </div>
       <label class="check"><input type="checkbox" id="bookHeadings">
-        Announce the part and chapter number</label>
-      <div class="hint">“The Night Knocker” … “one” … then the text, with a pause after each.</div>
+        Announce the title, the part and the chapter number</label>
+      <div class="hint">“The Institute” … “by Stephen King” … “The Night Knocker” … “one” …
+        then the text, with a pause after each. The title and author open the book only.</div>
       <label for="bookCoverFile">Replace the cover</label>
       <input type="file" id="bookCoverFile" accept="image/*">
       <div class="hint">Taken from the EPUB when it declares one. Shows in the list and on
@@ -397,12 +420,14 @@
       </div>
       <div class="hint">An audiobook file plays offline in Apple Books — chapters, sleep timer
         and position, without needing this PC. It uses whatever has been narrated so far.</div>
-      <div id="exportOut"></div>
     </div>
 
-    <h2 id="partsHead" hidden>Parts</h2>
-    <div class="card" id="partList" hidden></div>
+    <!-- Right under the buttons that start it, rather than in the status line at the foot of
+         the page: on a long book that was several screens away from what you'd just tapped. -->
+    <div id="exportOut"></div>
 
+    <!-- One list. A book divided into parts shows them as the outer level, each folding open
+         to its chapters; a book without parts is the same list with the outer level missing. -->
     <h2>Chapters</h2>
     <div class="card" id="chapterList"></div>
   </div>
@@ -1240,14 +1265,14 @@ function previewVoice(sel, btn){
 $("#voicePlay").addEventListener("click", e => previewVoice($("#voice"), e.currentTarget));
 $("#chatVoicePlay").addEventListener("click", e => previewVoice($("#chatVoice"), e.currentTarget));
 
-function waitForJob(job, labels = GEN_LABELS){
+function waitForJob(job, labels = GEN_LABELS, report = setStatus){
   return new Promise((resolve, reject)=>{
     const tick = ()=> fetch("/api/status/" + job).then(r => r.json().then(d => ({ok:r.ok, d})))
       .then(({ok, d})=>{
         if(!ok || d.error) return reject(new Error(d.error || "the server restarted"));
         if(d.status === "error") return reject(new Error(d.error || "failed"));
         if(d.status === "done")  return resolve(d);
-        setStatus('<span class="spin"></span>' + (labels[d.status] || d.status));
+        report('<span class="spin"></span>' + (labels[d.status] || d.status));
         setTimeout(tick, 1200);
       }).catch(()=> setTimeout(tick, 2000));
     tick();
@@ -1361,6 +1386,17 @@ async function openBook(id){
   $("#bookHeadings").checked = BOOK.announce !== false;
   $("#bookSkipped").textContent = (BOOK.skipped || []).length
     ? `Left out ${BOOK.skipped.length} sections that look like front or back matter.` : "";
+  // Nothing folded open carries across books. What opens unasked: the part you're reading,
+  // and any chapter in motion or left half-done — the rest stay shut.
+  OPEN_PARTS.clear();
+  OPEN_GROUPS.clear();
+  const at = (BOOK.position || {}).chapter || 0;
+  (BOOK.chapters || []).forEach(c => {
+    if(c.state === "rendering" || (c.state !== "ready" && (c.segments || []).length))
+      OPEN_PARTS.add(c.i);
+    if(c.i === at || c.state === "rendering") OPEN_GROUPS.add(partOf(c));
+  });
+  $("#exportOut").innerHTML = "";
   renderChapterList();
   watchRenders();
 }
@@ -1381,6 +1417,8 @@ function renderWholeBook(){
   const chs = BOOK.chapters || [];
   const ready = chs.filter(c => c.state === "ready");
   const left  = chs.filter(c => c.state === "pending");
+  // a chapter cut short is neither narrated nor untouched, and is worth saying out loud
+  const part  = chs.filter(c => c.state !== "ready" && (c.segments || []).length).length;
   const leftMin = left.reduce((n, c) => n + c.words / 146, 0) / 2.4;
   const ra = BOOK.render_all || {};
   $("#renderStop").style.display = ra.running ? "block" : "none";
@@ -1390,87 +1428,184 @@ function renderWholeBook(){
       + ` chapters done, roughly ${Math.round(leftMin / 60)} h left. It keeps going if you`
       + ` close the page.`
     : `${ready.length} of ${chs.length} chapters narrated.`
+      + (part ? ` ${part} more ${part === 1 ? "is" : "are"} part-way through.` : "")
       + (left.length ? ` The rest is about ${Math.round(leftMin / 60)} h of work.` : " All done.");
 }
 
-// Books divided into parts — The Institute has four — can be narrated and downloaded a part
-// at a time, which is a far more useful unit than one 4-minute chapter or the whole 20 hours.
-function renderParts(){
-  // Derived from the chapters rather than tracked separately, so it can't fall out of step
-  // with them after a voice change or a rescan.
-  const by = new Map();
-  (BOOK.chapters || []).forEach(c => {
-    const name = (c.name || "");
-    const part = name.includes(" · ") ? name.split(" · ")[0] : "";
-    if(!by.has(part)) by.set(part, {part, chapters:0, ready:0, words:0});
-    const p = by.get(part);
-    p.chapters++; p.words += c.words || 0; p.ready += (c.state === "ready") ? 1 : 0;
-  });
-  const real = [...by.values()].filter(p => p.part);
-  const show = real.length > 1;
-  $("#partsHead").hidden = !show;
-  $("#partList").hidden  = !show;
-  if(!show) return;
-  const box = $("#partList");
-  box.innerHTML = "";
-  real.forEach(p => {
-    const el = document.createElement("div");
-    el.className = "clip";
-    const hrs = (p.words / 146 / 60).toFixed(1);
-    const all = p.ready === p.chapters;
-    el.innerHTML = `<div class="cliphead"><div class="nm">${esc(p.part)}</div>
-        <div class="dur">${hrs} h</div></div>
-      <div class="tr">${p.ready} of ${p.chapters} chapters narrated</div>
-      <div class="clipacts">
-        <button class="nar"${all ? " disabled" : ""}>${all ? "✓ narrated" : "📖 Narrate part"}</button>
-        <button class="exp"${p.ready ? "" : " disabled"}>⬇ Download part</button>
-      </div>`;
-    el.querySelector(".nar").addEventListener("click", async e => {
-      e.stopPropagation();
-      const mins = Math.round(p.words / 146 / 2.4);
-      if(!confirm(`Narrate the rest of “${p.part}”? Roughly ${mins} min of work.`)) return;
-      await fetch("/api/books/render_all", {method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({id: BOOK.id, part: p.part})});
-      setStatus(`Narrating “${p.part}” in the background.`);
-      watchRenders();
-    });
-    el.querySelector(".exp").addEventListener("click", e => {
-      e.stopPropagation();
-      exportBook(p.part, e.currentTarget);
-    });
-    box.appendChild(el);
-  });
-}
+// Which parts and which chapters are folded open. Kept outside the render so the 4-second
+// refresh while narrating doesn't snap a panel you're reading shut again.
+const OPEN_PARTS = new Set();     // chapter index -> its segments are showing
+const OPEN_GROUPS = new Set();    // part name -> its chapters are showing
 
+const PART_SEP = " · ";
+const partOf = c => (c.name || "").includes(PART_SEP) ? c.name.split(PART_SEP)[0] : "";
+// Inside "The Night Knocker" every row would otherwise begin "The Night Knocker · "
+const chapterLabel = (c, grouped) =>
+  grouped && (c.name || "").includes(PART_SEP) ? c.name.split(PART_SEP).slice(1).join(PART_SEP)
+                                               : (c.name || "");
+
+// One list for the whole book. Books divided into parts — The Institute has four — group
+// their chapters under the part, which is also the unit you'd narrate or download at a time;
+// books without parts are the same list with that level left out.
 function renderChapterList(){
   renderWholeBook();
-  renderParts();
   const box = $("#chapterList");
   box.innerHTML = "";
+  // Derived from the chapters rather than tracked separately, so it can't fall out of step
+  // with them after a voice change or a rescan.
+  const groups = [];
   (BOOK.chapters || []).forEach(c => {
-    const el = document.createElement("div");
-    el.className = "clip";
-    let note = `${c.words.toLocaleString()} words · ~${(c.words / 146).toFixed(0)} min`;
-    if(c.state === "rendering") note = `⏳ narrating… ${c.done || 0}/${c.total || "?"} parts`;
-    else if(c.state === "ready") note = `▶ ${fmt(c.seconds)} · ready`;
-    else if(c.state === "error") note = "❌ " + (c.error || "failed");
-    el.innerHTML = `<div class="cliphead"><div class="nm">${esc(c.name)}</div>
-        <div class="dur">${c.state === "ready" ? "✓" : ""}</div></div>
-      <div class="tr">${esc(note)}</div>`;
-    el.addEventListener("click", ()=> chapterTapped(c.i));
-    box.appendChild(el);
+    const part = partOf(c);
+    const last = groups[groups.length - 1];
+    if(last && last.part === part) last.chapters.push(c);
+    else groups.push({part, chapters: [c]});
   });
+  const grouped = groups.filter(g => g.part).length > 1;
+  groups.forEach(g => {
+    if(grouped && g.part) box.appendChild(partGroup(g));
+    else g.chapters.forEach(c => box.appendChild(chapterRow(c, false)));
+  });
+  markPlayingPart();
+}
+
+// A part: its own progress, its own narrate/download buttons, and its chapters underneath.
+function partGroup(g){
+  const words = g.chapters.reduce((n, c) => n + (c.words || 0), 0);
+  const ready = g.chapters.filter(c => c.state === "ready").length;
+  const all   = ready === g.chapters.length;
+  const open  = OPEN_GROUPS.has(g.part);
+  const el = document.createElement("div");
+  el.className = "clip group";
+  el.innerHTML = `<div class="cliphead">
+        <button class="segtoggle bare${open ? " open" : ""}"><span class="caret">▸</span></button>
+        <div class="nm">${esc(g.part)}</div>
+        <div class="dur">${(words / 146 / 60).toFixed(1)} h</div></div>
+      <div class="tr">${ready} of ${g.chapters.length} chapters narrated</div>
+      <div class="clipacts">
+        <button class="nar"${all ? " disabled" : ""}>${all ? "✓ narrated" : "📖 Narrate part"}</button>
+        <button class="exp"${ready ? "" : " disabled"}>⬇ Download part</button>
+      </div>`;
+  el.querySelector(".nar").addEventListener("click", async e => {
+    e.stopPropagation();
+    const mins = Math.round(words / 146 / 2.4);
+    if(!confirm(`Narrate the rest of “${g.part}”? Roughly ${mins} min of work.`)) return;
+    await fetch("/api/books/render_all", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({id: BOOK.id, part: g.part})});
+    setStatus(`Narrating “${g.part}” in the background.`);
+    watchRenders();
+  });
+  el.querySelector(".exp").addEventListener("click", e => {
+    e.stopPropagation();
+    exportBook(g.part, e.currentTarget);
+  });
+  const list = document.createElement("div");
+  list.className = "grouplist";
+  list.hidden = !open;
+  g.chapters.forEach(c => list.appendChild(chapterRow(c, true)));
+  const caret = el.querySelector(".segtoggle");
+  const toggle = ()=>{
+    list.hidden = !list.hidden;
+    caret.classList.toggle("open", !list.hidden);
+    if(list.hidden) OPEN_GROUPS.delete(g.part); else OPEN_GROUPS.add(g.part);
+  };
+  // the whole heading is the target — a 9×9 caret is not something you hit on a phone
+  el.querySelectorAll(".cliphead, .tr").forEach(t =>
+    t.addEventListener("click", e => { e.stopPropagation(); toggle(); }));
+  el.appendChild(list);
+  return el;
+}
+
+function chapterRow(c, grouped){
+  const segs = c.segments || [];
+  const el = document.createElement("div");
+  el.className = "clip";
+  el.dataset.ch = c.i;
+  // A chapter cut short — by a stopped render or a shutdown — is neither "pending" nor
+  // "ready", and saying "8,279 words" about one with half an hour of audio behind it
+  // would be hiding the useful part.
+  let note = `${c.words.toLocaleString()} words · ~${(c.words / 146).toFixed(0)} min`;
+  if(c.state === "rendering")
+    note = `⏳ narrating… ${segs.length}/${c.total || "?"} parts`;
+  else if(c.state === "ready") note = `▶ ${fmt(c.seconds)} · ready`;
+  else if(c.state === "error") note = "❌ " + (c.error || "failed");
+  else if(segs.length)
+    note = `▶ ${fmt(segsSeconds(segs))} narrated · ${segs.length} part(s), unfinished`;
+  el.innerHTML = `<div class="cliphead"><div class="nm">${esc(chapterLabel(c, grouped))}</div>
+      <div class="dur">${c.state === "ready" ? "✓" : ""}</div></div>
+    <div class="tr">${esc(note)}</div>`;
+  el.querySelector(".cliphead").addEventListener("click", ()=> chapterTapped(c.i));
+  el.querySelector(".tr").addEventListener("click", ()=> chapterTapped(c.i));
+  if(segs.length || c.state === "rendering") el.appendChild(partsPanel(c));
+  return el;
+}
+
+const segsSeconds = segs => segs.reduce((n, s) => n + (s.seconds || 0), 0);
+
+// Every chapter's parts, expandable — each is ~10 minutes of audio and playable the moment
+// it exists, so a chapter three parts into a six-part render is already worth listening to.
+function partsPanel(c){
+  const segs = c.segments || [];
+  // A finished chapter has exactly the parts it has; an unfinished one knows how many it is
+  // aiming for, and showing the ones still to come is half the point of the panel.
+  const total = c.state === "ready" ? segs.length
+                                    : Math.max(c.total || 0, segs.length);
+  const open = OPEN_PARTS.has(c.i);
+  const wrap = document.createElement("div");
+  const btn = document.createElement("button");
+  btn.className = "segtoggle" + (open ? " open" : "");
+  btn.innerHTML = `<span class="caret">▸</span> `
+    + (!total ? "starting…"
+       : segs.length === total ? `${total} part${total === 1 ? "" : "s"}`
+                               : `${segs.length} of ${total} parts ready`);
+  const list = document.createElement("div");
+  list.className = "seglist";
+  list.hidden = !open;
+  for(let si = 0; si < total; si++){
+    const s = segs[si];
+    const row = document.createElement("div");
+    row.className = "seg " + (s ? "can" : "wait");     // markPlayingPart adds the highlight
+    row.innerHTML = `<div class="n">${s ? "▶ " : "○ "}Part ${si + 1}</div>
+      <div class="d">${s ? fmt(s.seconds) : (c.state === "rendering" && si === segs.length
+                                             ? "narrating…" : "not yet")}</div>`;
+    if(s) row.addEventListener("click", e => { e.stopPropagation(); playChapter(c.i, si, 0); });
+    list.appendChild(row);
+  }
+  // A chapter that stopped part-way can't be resumed by tapping it any more — tapping now
+  // plays what's there — so it gets its own way to ask for the rest.
+  if(segs.length && (c.state === "pending" || c.state === "error")){
+    const go = document.createElement("button");
+    go.className = "segtoggle";
+    go.textContent = "📖 Finish narrating this chapter";
+    go.addEventListener("click", e => { e.stopPropagation(); narrateChapter(c.i); });
+    list.appendChild(go);
+  }
+  btn.addEventListener("click", e => {
+    e.stopPropagation();
+    list.hidden = !list.hidden;
+    btn.classList.toggle("open", !list.hidden);
+    if(list.hidden) OPEN_PARTS.delete(c.i); else OPEN_PARTS.add(c.i);
+  });
+  wrap.appendChild(btn);
+  wrap.appendChild(list);
+  return wrap;
 }
 
 async function chapterTapped(i){
   const c = BOOK.chapters[i];
-  if(c.state === "ready" || (c.state === "rendering" && (c.done || 0) > 0))
-    return playChapter(i, 0, 0);
+  // Anything with audio behind it plays, finished or not — an interrupted chapter is still
+  // half an hour of listening, and its unfinished parts are one tap away in the panel.
+  if(c.state === "ready" || (c.segments || []).length) return playChapter(i, 0, 0);
   if(c.state === "rendering"){ setStatus("Still narrating that one…"); return; }
+  narrateChapter(i);
+}
+
+async function narrateChapter(i){
+  const c = BOOK.chapters[i];
+  const left = c.words * (1 - (c.segments || []).length / Math.max(c.total || 1, 1));
   setStatus('<span class="spin"></span>Narrating — roughly '
-    + Math.max(1, Math.round(c.words / 146 / 2.4)) + ' min of work for '
-    + Math.round(c.words / 146) + ' min of audio.');
+    + Math.max(1, Math.round(left / 146 / 2.4)) + ' min of work for '
+    + Math.round(left / 146) + ' min of audio.');
   await fetch("/api/books/render", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({id: BOOK.id, chapter: i})});
   watchRenders();
@@ -1512,27 +1647,34 @@ $("#renderStop").addEventListener("click", async ()=>{
 
 const EXPORT_LABELS = {queued:"Queued…", collecting:"Gathering the chapters…",
                        encoding:"🎧 Building the audiobook…"};
+// Progress and failures land in the panel under the export buttons rather than in the page's
+// status line, which on a long book is several screens below whatever you just tapped.
+const exportSays = (html, err=false) =>
+  $("#exportOut").innerHTML = `<div class="out${err ? " err" : ""}">${html}</div>`;
+
 async function exportBook(part, btn){
   if(!BOOK) return;
   if(btn) btn.disabled = true;
-  $("#exportOut").innerHTML = "";
+  exportSays('<span class="spin"></span>Queued…');
   try{
     const r = await fetch("/api/books/export", {method:"POST",
       headers:{"Content-Type":"application/json"},
       body: JSON.stringify({id: BOOK.id, part: part || undefined})});
     const d = await r.json();
     if(!r.ok) throw new Error(d.error || r.status);
-    const done = await waitForJob(d.job_id, EXPORT_LABELS);
+    const done = await waitForJob(d.job_id, EXPORT_LABELS, exportSays);
     // A download link rather than an automatic download: on iOS you want to choose where
     // it goes, and it can be a few hundred MB.
-    $("#exportOut").innerHTML =
-      `<div class="out"><div class="outhead">${esc(part || BOOK.title)} · ${esc(done.text || "")}
+    exportSays(
+      `<div class="outhead">${esc(part || BOOK.title)} · ${esc(done.text || "")}
          · ${fmt(done.seconds)}</div>
        <div class="acts"><a href="${done.url}" download>⬇ Download the .m4b</a></div>
-       <div class="hint">On the phone: tap it, then Share → Books to add it to Apple Books.</div></div>`;
-    setStatus("✅ Audiobook ready.");
+       <div class="hint">On the phone: tap it, then Share → Books to add it to Apple Books.</div>`);
     $("#exportOut").scrollIntoView({behavior:"smooth", block:"nearest"});
-  }catch(e){ setStatus("❌ " + e.message, true); }
+  }catch(e){
+    exportSays("❌ " + esc(e.message), true);
+    $("#exportOut").scrollIntoView({behavior:"smooth", block:"nearest"});
+  }
   if(btn) btn.disabled = false;
 }
 $("#exportBook").addEventListener("click", e => exportBook(null, e.currentTarget));
@@ -1556,10 +1698,31 @@ function playChapter(ci, si, offset){
   au.play().then(()=>{ if(offset) au.currentTime = offset; })
            .catch(()=> setStatus("Tap ▶ on the player to start listening.", true));
   setMediaSession();
+  markPlayingPart();
   // stay a chapter ahead of the listener
   fetch("/api/books/render", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({id: BOOK.id, chapter: ci, ahead: true})}).then(watchRenders);
   savePosition(offset || 0);
+}
+
+// Move the highlight in the parts panels without rebuilding the list — on a 192-chapter book
+// that would also shut every panel and lose the scroll position.
+function markPlayingPart(){
+  document.querySelectorAll("#chapterList .seg.on, #chapterList .clip.now")
+    .forEach(el => el.classList.remove("on", "now"));
+  if($("#nowPlaying").style.display === "none") return;
+  const row = $(`#chapterList .clip[data-ch="${PLAY.chapter}"]`);
+  if(!row) return;
+  row.classList.add("now");
+  const segs = row.querySelectorAll(".seg");
+  if(segs[PLAY.segment]) segs[PLAY.segment].classList.add("on");
+  // Playing on into the next part shouldn't leave the marker hidden inside a shut panel.
+  const group = row.parentElement.closest(".clip.group");
+  if(group && group.querySelector(".grouplist").hidden){
+    group.querySelector(".grouplist").hidden = false;
+    group.querySelector(".segtoggle").classList.add("open");
+    OPEN_GROUPS.add(group.querySelector(".cliphead .nm").textContent);
+  }
 }
 
 function setMediaSession(){

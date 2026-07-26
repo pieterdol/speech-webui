@@ -590,10 +590,18 @@ def render_chapter(book_id, index):
         text = epub.strip_heading(text, chapter.get("name") or "")
         intro = chapter_intro(book, index)
 
+        # The lead-in lives in the chapter's first segment, and a resumed render keeps whatever
+        # files are already on disk — so a chapter left half-made before the announcement
+        # changed would keep an opening that no longer matches. Only the first one has to go.
+        spoken = [p for p, _ in intro]
         update_book(book_id, lambda b: b["chapters"][index].update(
-            state="rendering", error=None, done=0, segments=[]))
+            state="rendering", error=None, done=0, segments=[], intro=spoken))
         audio_dir = book_dir(book_id, "audio")
         os.makedirs(audio_dir, exist_ok=True)
+        if chapter.get("intro") != spoken:
+            stale = os.path.join(audio_dir, f"ch{index:03d}-s00.opus")
+            if os.path.exists(stale):
+                os.remove(stale)
         segments = split_segments(text)
         made = []
         try:
@@ -633,6 +641,9 @@ PART_SEP = " · "     # how epub.py joins a part name to its chapter label
 # which isn't enough to read as "a new chapter is starting".
 PART_PAUSE    = 1.2
 CHAPTER_PAUSE = 0.9
+# And the very top of the book gets its title and author, the way a published audiobook opens.
+TITLE_PAUSE   = 0.7
+AUTHOR_PAUSE  = 1.6
 # And a longer one at the end, so a chapter closes rather than running straight into the next
 # announcement — the moment you'd use to notice a chapter has ended.
 CHAPTER_END_PAUSE = 1.8
@@ -641,6 +652,44 @@ _ONES = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "ni
          "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
          "eighteen", "nineteen"]
 _TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
+
+# The reverse direction, for books that spell their chapter headings out. Dark Matter names
+# them "Chapter One" rather than "Chapter 1", and looking only for digits found nothing —
+# so the whole book was narrated with no announcement at all.
+_ONES_N = {w: i for i, w in enumerate(_ONES) if w}
+_TENS_N = {w: i * 10 for i, w in enumerate(_TENS) if w}
+
+def word_number(label):
+    """The chapter number written out in a heading, or None. Handles "One", "Twenty-One" and
+    "One Hundred Twelve"; anything longer or stranger falls through to no announcement."""
+    words = re.findall(r"[a-z]+", (label or "").lower())
+    total, seen = 0, False
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w == "hundred" and seen:
+            total *= 100
+        elif w in _TENS_N:
+            total += _TENS_N[w]
+            seen = True
+            # "twenty-one" arrives as two words either way, hyphen or space
+            if i + 1 < len(words) and words[i + 1] in _ONES_N and _ONES_N[words[i + 1]] < 10:
+                total += _ONES_N[words[i + 1]]
+                i += 1
+        elif w in _ONES_N:
+            total += _ONES_N[w]
+            seen = True
+        elif w in ("chapter", "part", "and", "the"):
+            pass                                  # the words a heading wraps its number in
+        else:
+            return None                           # a titled section, not a numbered one
+        i += 1
+    return total if seen and 0 < total <= 999 else None
+
+def label_number(label):
+    """The number of a chapter from its heading, in digits or in words."""
+    m = re.search(r"\d+", label or "")
+    return int(m.group(0)) if m else word_number(label)
 
 def number_word(n):
     """Chapter numbers as words. Kokoro reads a bare "21" acceptably, but "twenty-one" is
@@ -655,9 +704,10 @@ def number_word(n):
     return _ONES[n // 100] + " hundred" + (f" {number_word(rest)}" if rest else "")
 
 def chapter_intro(book, index):
-    """[(phrase, pause_after)] to speak before the chapter — the part's name when this chapter
-    opens a new part, then the chapter number. Empty when announcements are off, and for a
-    section that is neither numbered nor inside a part (an epigraph, say)."""
+    """[(phrase, pause_after)] to speak before the chapter — the book's title and author at
+    the very top, the part's name when this chapter opens a new part, then the chapter
+    number. Empty when announcements are off, and for a section that is neither numbered nor
+    inside a part (an epigraph, say)."""
     if not book.get("announce", True):
         return []
     chapters = book.get("chapters") or []
@@ -667,11 +717,17 @@ def chapter_intro(book, index):
     part  = part_of(name)
     label = name.split(PART_SEP, 1)[1] if PART_SEP in name else name
     pieces = []
+    if index == 0:
+        # How a published audiobook opens, and it's what the .m4b plays first as well
+        if book.get("title"):
+            pieces.append((book["title"], TITLE_PAUSE))
+        if book.get("author"):
+            pieces.append((f"by {book['author']}", AUTHOR_PAUSE))
     if part and not any(part_of(c.get("name")) == part for c in chapters[:index]):
         pieces.append((part, PART_PAUSE))          # only when the part actually starts
-    m = re.search(r"\d+", label)
-    if m:
-        pieces.append((number_word(int(m.group(0))), CHAPTER_PAUSE))
+    n = label_number(label)
+    if n is not None:
+        pieces.append((number_word(n), CHAPTER_PAUSE))
     return pieces
 
 def part_of(name):
@@ -735,12 +791,16 @@ def export_worker(jid, book_id, part=None):
         wanted = chapters_in(book, part)
         if not wanted:
             raise RuntimeError(f"no chapters in “{part}”")
-        parts, marks, clock, skipped = [], [], 0.0, 0
+        parts, marks, clock, skipped, partial = [], [], 0.0, 0, 0
         for c in wanted:
             segs = c.get("segments") or []
-            if c.get("state") != "ready" or not segs:
+            # Whatever has actually been narrated, not only the chapters that finished. A
+            # chapter interrupted half-way still has real audio on disk, and leaving it out
+            # made an export of a book-in-progress fail with "nothing narrated yet".
+            if not segs:
                 skipped += 1
                 continue
+            partial += int(c.get("state") != "ready")
             start = clock
             for s in segs:
                 p = os.path.join(audio_dir, s["file"])
@@ -795,7 +855,9 @@ def export_worker(jid, book_id, part=None):
         # The name keeps its spaces — it's what Apple Books will show — so the URL has to be
         # encoded rather than handed over raw.
         job.update(status="done", url=f"/export/{book_id}/{urllib.parse.quote(name)}", file=name,
-                   text=f"{len(marks)} chapters" + (f", {skipped} not narrated" if skipped else ""),
+                   text=f"{len(marks)} chapters"
+                        + (f", {partial} unfinished" if partial else "")
+                        + (f", {skipped} not narrated" if skipped else ""),
                    seconds=round(clock, 1))
     except Exception as e:
         job.update(status="error", error=str(e)[:300])
@@ -1784,7 +1846,12 @@ def index():
 
 def clear_stale_state():
     """The workers live in this process, so a restart kills them. Anything still marked as
-    running is a leftover, and would otherwise show a progress bar that never moves."""
+    running is a leftover, and would otherwise show a progress bar that never moves.
+
+    The segments a killed render had already finished are kept, though — they're real audio
+    on disk, they're playable, and re-rendering the chapter reuses them. Throwing the list
+    away made an interrupted chapter look untouched: nothing to play, and an export that
+    said "nothing narrated yet" with the files sitting right there."""
     items = load_books()
     changed = False
     for b in items:
@@ -1793,10 +1860,30 @@ def clear_stale_state():
             changed = True
         for c in b.get("chapters") or []:
             if c.get("state") == "rendering":
-                c.update(state="pending", segments=[], error=None)
+                kept = segments_on_disk(b["id"], c["i"])
+                c.update(state="pending", segments=kept, error=None, done=len(kept))
                 changed = True
     if changed:
         write_books(items)
+
+def segments_on_disk(book_id, index):
+    """What a chapter actually has, read from the audio directory rather than from the index.
+    A render empties the segment list before it starts rebuilding it, so a process killed
+    part-way leaves finished files that the index no longer mentions.
+
+    Stops at the first gap, because playback walks the list in order, and drops a final file
+    ffprobe can't read a duration out of — that one was being written when the process died."""
+    out = []
+    for si in range(1000):
+        path = book_dir(book_id, "audio", f"ch{index:03d}-s{si:02d}.opus")
+        if not os.path.exists(path):
+            break
+        seconds = audio_seconds(path)
+        if not seconds:
+            os.remove(path)
+            break
+        out.append({"file": os.path.basename(path), "seconds": seconds})
+    return out
 
 if __name__ == "__main__":
     clear_stale_state()
