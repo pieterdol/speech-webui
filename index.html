@@ -92,6 +92,11 @@
   .cliphead .dur { flex:none; font-size:12px; color:var(--muted); }
   .cliphead .narrow { padding:4px 8px; font-size:12px; border-radius:8px; white-space:nowrap;
                       border:1px solid var(--line); background:#2a2640; color:var(--text); }
+  .cliphead .skip { flex:none; padding:4px 7px; font-size:12px; border-radius:8px;
+                    border:1px solid var(--line); background:none; color:var(--muted); }
+  /* a chapter left out of the narration stays listed, dimmed: the list is where it says so
+     and where you put it back */
+  .clip.out > .cliphead .nm, .clip.out > .tr { opacity:.45; }
   .clip audio { width:100%; margin-top:8px; height:34px; }
   .clipacts { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
   .clipacts button { flex:1 1 30%; padding:9px; font-size:13px; border-radius:9px;
@@ -1578,7 +1583,9 @@ $("#bookResume").addEventListener("click", ()=>{
 
 // The whole-book panel: how much is narrated, and what's left to do.
 function renderWholeBook(){
-  const chs = BOOK.chapters || [];
+  // What will be narrated, which is what the server counts too — a chapter left out isn't
+  // work left to do, and counting it would leave the panel one short of done for good.
+  const chs = (BOOK.chapters || []).filter(c => !c.skip);
   const ready = chs.filter(c => c.state === "ready");
   const left  = chs.filter(c => c.state === "pending");
   // a chapter cut short is neither narrated nor untouched, and is worth saying out loud
@@ -1748,17 +1755,29 @@ function chapterRow(c, grouped){
     note = `${fmt(segsSeconds(segs))} narrated · ${segs.length} part(s), unfinished`;
     plays = true;
   }
+  // Left out: a mark on the chapter, not a deletion. Anything already narrated stays where it
+  // is and stays playable — what the mark decides is what gets narrated from here and what
+  // goes into a download.
+  if(c.skip){
+    el.classList.add("out");
+    note = plays ? `left out · ${note}` : "left out of the narration";
+  }
   // Every chapter carries its own narrate button. Tapping the row does it too, but that only
   // works while the chapter has nothing to play — once it has, tapping plays instead — and a
   // book with no parts has no "Narrate part" either, so there was nothing visible to press.
-  const todo = c.state === "pending" || c.state === "error";
+  const todo = !c.skip && (c.state === "pending" || c.state === "error");
   el.innerHTML = `<div class="cliphead"><div class="nm">${esc(chapterLabel(c, grouped))}</div>
-      <div class="dur">${c.state === "ready" ? "✓"
+      <button class="skip" title="${c.skip ? "Narrate this after all"
+                                           : "Leave this out of the narration"}"
+              >${c.skip ? "↩" : "⊘"}</button>
+      <div class="dur">${c.state === "ready" && !c.skip ? "✓"
                        : c.state === "rendering" ? '<span class="spin"></span>'
                        : todo ? '<button class="narrow">📖 Narrate</button>' : ""}</div></div>
     <div class="tr">${plays ? '<span class="play">▶</span> ' : ""}${esc(note)}</div>`;
   el.querySelector(".cliphead").addEventListener("click", ()=> chapterTapped(c.i));
   el.querySelector(".tr").addEventListener("click", ()=> chapterTapped(c.i));
+  el.querySelector(".skip").addEventListener("click",
+                                             e => { e.stopPropagation(); toggleSkip(c.i); });
   const nar = el.querySelector(".narrow");
   if(nar) nar.addEventListener("click", e => { e.stopPropagation(); narrateChapter(c.i); });
   if(segs.length || c.state === "rendering") el.appendChild(partsPanel(c));
@@ -1822,7 +1841,36 @@ async function chapterTapped(i){
   // half an hour of listening, and its unfinished parts are one tap away in the panel.
   if(c.state === "ready" || (c.segments || []).length) return playChapter(i, 0, 0);
   if(c.state === "rendering"){ setStatus("Still narrating that one…"); return; }
+  if(c.skip){ setStatus("That one is left out — ↩ puts it back."); return; }
   narrateChapter(i);
+}
+
+// Front matter a publisher put in the spine and epub.py couldn't tell from prose: a list of
+// the author's other titles, a page of praise long enough to read as a chapter. Marking it
+// here takes it out of a whole-book run, out of the queue and out of a download, and leaves
+// the numbering — and any audio it already has — exactly where it was.
+async function toggleSkip(i){
+  const c = BOOK.chapters[i];
+  const skip = !c.skip;
+  if(skip && (c.segments || []).length
+     && !confirm(`Leave “${c.name}” out of the narration? What's already narrated stays on`
+                 + ` disk and stays playable; it just won't be part of the book any more.`))
+    return;
+  const d = await (await fetch("/api/books/skip", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: BOOK.id, chapter: i, skip})})).json();
+  if(!d.ok) return setStatus("❌ " + (d.msg || "couldn't change that"), true);
+  BOOK = d.book;
+  if(NP && NP.id === BOOK.id) NP.chapters = BOOK.chapters;
+  renderChapterList();
+  // The book's title and author are spoken at the top of the first chapter it narrates, so
+  // leaving the front matter out hands the opening to the next one — which has to be re-made
+  // to say it. Only its first part: the rest of the chapter stays on disk.
+  if((d.reopened || []).length){
+    setStatus('<span class="spin"></span>Re-recording the opening — the title and author'
+              + ' move to the chapter that starts the book now.');
+    watchRenders();
+  } else setStatus(skip ? "Left out of the narration." : "Back in the narration.");
 }
 
 async function narrateChapter(i){
@@ -2069,6 +2117,16 @@ function setMediaSession(){
   img.src = src;
 }
 
+// A chapter left out of the narration is no longer part of the book, so playing on across a
+// chapter boundary steps over it — even if it has audio from before it was marked, which
+// tapping it still plays.
+const nextChapter = ci => { let n = ci + 1;
+                            while(NP.chapters[n] && NP.chapters[n].skip) n++;
+                            return n; };
+const prevChapter = ci => { let p = ci - 1;
+                            while(p >= 0 && (NP.chapters[p] || {}).skip) p--;
+                            return p; };
+
 // The next part, or the first part of the next chapter, from `offset` seconds in — which is
 // how a forward skip that runs off the end of one file continues inside the next.
 function advance(offset){
@@ -2076,7 +2134,7 @@ function advance(offset){
     playNow(PLAY.chapter, PLAY.segment + 1, offset || 0);
     return true;
   }
-  const next = PLAY.chapter + 1;
+  const next = nextChapter(PLAY.chapter);
   if(next < NP.chapters.length && segmentsOf(next).length){
     playNow(next, 0, offset || 0);
     return true;
@@ -2092,7 +2150,7 @@ function retreat(fromEnd){
     playNow(ci, si, Math.max(0, secs - fromEnd));
   };
   if(PLAY.segment > 0) return back(PLAY.chapter, PLAY.segment - 1);
-  const prev = PLAY.chapter - 1;
+  const prev = prevChapter(PLAY.chapter);
   if(prev >= 0 && segmentsOf(prev).length) return back(prev, segmentsOf(prev).length - 1);
   bookAudio().currentTime = 0;              // already at the beginning of what's narrated
 }

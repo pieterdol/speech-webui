@@ -20,6 +20,7 @@ EXPECTED = {
     ("/api/books/render_all", "POST"),
     ("/api/books/render_stop", "POST"),
     ("/api/books/rescan", "POST"),
+    ("/api/books/skip", "POST"),
     ("/api/books/update", "POST"),
     ("/api/chat", "POST"),
     ("/api/chats", "GET"),

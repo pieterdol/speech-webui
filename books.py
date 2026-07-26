@@ -52,8 +52,10 @@ def book_dir(book_id, *parts):
     return os.path.join(BOOKS_DIR, book_id, *parts)
 
 def book_summary(b):
-    """Enough for the library list without shipping every chapter."""
-    chapters = b.get("chapters") or []
+    """Enough for the library list without shipping every chapter. Counted over what will be
+    narrated, so a book left out of nothing reads the same as before and one with apparatus
+    marked off doesn't sit at "15 of 16" for good."""
+    chapters = chapters_in(b)
     ready = sum(1 for c in chapters if c.get("state") == "ready")
     return {k: b.get(k) for k in ("id", "title", "author", "language", "voice",
                                   "added", "position", "cover")} | \
@@ -272,7 +274,7 @@ def render_chapter(book_id, index):
         if not (0 <= index < len(chapters)):
             return
         chapter = chapters[index]
-        if chapter.get("state") == "ready":
+        if chapter.get("state") == "ready" or chapter.get("skip"):
             return
         voice = book.get("voice") or "af_heart"
         # Bumped whenever the narrator changes. A chapter that was already being rendered when
@@ -426,7 +428,7 @@ def chapter_intro(book, index):
     part  = part_of(name)
     label = name.split(PART_SEP, 1)[1] if PART_SEP in name else name
     pieces = []
-    if index == 0:
+    if index == first_chapter(book):
         # How a published audiobook opens, and it's what the .m4b plays first as well
         said = spoken_title(book)
         if said:
@@ -434,8 +436,11 @@ def chapter_intro(book, index):
         if book.get("author"):
             by = BY.get((book.get("language") or "")[:2], "by")
             pieces.append((f"{by} {book['author']}", AUTHOR_PAUSE))
-    if part and not any(part_of(c.get("name")) == part for c in chapters[:index]):
-        pieces.append((part, PART_PAUSE))          # only when the part actually starts
+    # Only when the part actually starts — and a chapter left out doesn't start it, or leaving
+    # out the first chapter of a part would take the part's name out of the book with it.
+    earlier = [c for c in chapters[:index] if not c.get("skip")]
+    if part and not any(part_of(c.get("name")) == part for c in earlier):
+        pieces.append((part, PART_PAUSE))
     n = label_number(label)
     if n is not None:
         # As digits, for the engine to say in whatever language it speaks: espeak reads "19" as
@@ -448,17 +453,30 @@ def part_of(name):
     return (name or "").split(PART_SEP)[0] if PART_SEP in (name or "") else ""
 
 def chapters_in(book, part=None):
-    """Chapters belonging to one part of the book, or all of them when part is None."""
-    chapters = book.get("chapters") or []
+    """Chapters to narrate — of one part of the book, or of all of it when part is None.
+
+    Chapters marked as left out are not among them, anywhere: not in a whole-book run, not in
+    the queue it reports, not in an export, and not in the counts any of those show. The
+    heuristics in epub.py catch most apparatus, but a section titled like a chapter and long
+    enough to be one — a publisher's list of their other titles, say — reads as prose to them,
+    and no pattern could tell it apart without silencing real chapters in some other book.
+    """
+    chapters = [c for c in book.get("chapters") or [] if not c.get("skip")]
     if not part:
         return chapters
     return [c for c in chapters if part_of(c.get("name")) == part]
+
+def first_chapter(book):
+    """Which chapter opens the book: the first one that isn't left out, or None if there's
+    nothing to narrate. The title and author are spoken at the top of it, so leaving the
+    publisher's front matter out moves the announcement onto whatever now comes first."""
+    return next((c["i"] for c in chapters_in(book)), None)
 
 def book_parts(book):
     """The book's top-level divisions, in order, with how much of each is narrated. Stand-alone
     sections that aren't inside a part (an epigraph, say) are reported under ''."""
     out, seen = [], {}
-    for c in book.get("chapters") or []:
+    for c in chapters_in(book):
         p = part_of(c.get("name"))
         if p not in seen:
             seen[p] = {"part": p, "chapters": 0, "ready": 0, "words": 0, "first": c["i"]}
@@ -720,12 +738,14 @@ def api_book_update():
         if d.get("title"): b["title"] = d["title"][:200]
         if "spoken_title" in d: b["spoken_title"] = (d["spoken_title"] or "").strip()[:200]
         return b
-    # The opening announcement lives inside chapter 0's first segment, so renaming the book
-    # leaves that one file saying the old name. Re-making it costs a few seconds and throws
-    # nothing away — the chapter's other segments stay on disk and the render skips them — so
-    # unlike a voice change this doesn't need confirming, it just happens.
+    # The opening announcement lives inside the first segment of whichever chapter opens the
+    # book, so renaming it leaves that one file saying the old name. Re-making it costs a few
+    # seconds and throws nothing away — the chapter's other segments stay on disk and the
+    # render skips them — so unlike a voice change this doesn't need confirming, it happens.
+    opens = first_chapter(book)
     renamed = bool(spoken_title(rename(dict(book))) != spoken_title(book)
-                   and not resets and chapters and chapters[0].get("state") == "ready")
+                   and not resets and opens is not None
+                   and chapters[opens].get("state") == "ready")
 
     def apply(b):
         rename(b)
@@ -740,7 +760,7 @@ def api_book_update():
         # Pending, but with its segments kept: render_chapter compares the intro it's about to
         # speak against the one on record and deletes only the file that has gone stale.
         if renamed:
-            b["chapters"][0].update(state="pending", error=None)
+            b["chapters"][opens].update(state="pending", error=None)
     update_book(book["id"], apply)
     if resets:
         shutil.rmtree(book_dir(book["id"], "audio"), ignore_errors=True)
@@ -748,7 +768,7 @@ def api_book_update():
         # without re-rendering everything you'd already been through.
         threading.Thread(target=render_chapter, args=(book["id"], resume), daemon=True).start()
     if renamed:
-        threading.Thread(target=render_chapter, args=(book["id"], 0), daemon=True).start()
+        threading.Thread(target=render_chapter, args=(book["id"], opens), daemon=True).start()
     return jsonify(ok=True, book=find_book(book["id"]), resume=resume, renamed=renamed)
 
 @app.post("/api/books/delete")
@@ -773,14 +793,61 @@ def api_book_render():
         index = int(d.get("chapter"))
     except (TypeError, ValueError):
         return jsonify(ok=False, msg="which chapter?"), 400
-    wanted = [index] + ([index + 1] if d.get("ahead") else [])
+    chapters = book.get("chapters") or []
+    wanted = [index]
+    if d.get("ahead"):
+        # staying a chapter ahead of the listener means the next chapter they'll actually
+        # hear, so anything left out of the narration isn't it
+        wanted += [c["i"] for c in chapters[index + 1:] if not c.get("skip")][:1]
     started = []
     for i in wanted:
-        chapters = book.get("chapters") or []
-        if 0 <= i < len(chapters) and chapters[i].get("state") in ("pending", "error"):
+        if 0 <= i < len(chapters) and not chapters[i].get("skip") \
+                and chapters[i].get("state") in ("pending", "error"):
             threading.Thread(target=render_chapter, args=(book["id"], i), daemon=True).start()
             started.append(i)
     return jsonify(ok=True, started=started)
+
+@app.post("/api/books/skip")
+def api_book_skip():
+    """Leave a chapter out of the narration, or put it back.
+
+    A mark, not a deletion: the chapter keeps its number, its text and any audio it already
+    has, so putting it back costs nothing and the numbering everything else is stored under —
+    text files, audio files, the saved position — doesn't move.
+    """
+    d = request.get_json(force=True, silent=True) or {}
+    book = find_book(d.get("id") or "")
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    try:
+        index = int(d.get("chapter"))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, msg="which chapter?"), 400
+    if not 0 <= index < len(book.get("chapters") or []):
+        return jsonify(ok=False, msg="no such chapter"), 404
+    skip = bool(d.get("skip", True))
+    was = first_chapter(book)
+    update_book(book["id"], lambda b: b["chapters"][index].update(skip=skip))
+    # Leaving the front matter out moves the title and author onto the chapter that now opens
+    # the book — which, if it was narrated already, doesn't say them. Both ends of the move are
+    # re-made: the new opening has an announcement to gain, the old one has one to lose. Their
+    # other segments stay on disk; render_chapter deletes only the part that has gone stale.
+    after = find_book(book["id"]) or {}
+    now = first_chapter(after)
+    chapters = after.get("chapters") or []
+    stale = [] if was == now else \
+        [i for i in sorted({was, now} - {None})
+         if not chapters[i].get("skip") and (chapters[i].get("segments") or [])]
+
+    def reopen(b):
+        for i in stale:
+            b["chapters"][i].update(state="pending", error=None)
+
+    if stale:
+        update_book(book["id"], reopen)
+        for i in stale:
+            threading.Thread(target=render_chapter, args=(book["id"], i), daemon=True).start()
+    return jsonify(ok=True, book=find_book(book["id"]), reopened=stale)
 
 @app.post("/api/books/clear")
 def api_book_clear():
@@ -838,6 +905,9 @@ def api_book_rescan():
                           "state": keep.get(i, {}).get("state", "pending"),
                           "segments": keep.get(i, {}).get("segments", []),
                           "seconds": keep.get(i, {}).get("seconds"),
+                          # the chapters have to line up for the audio to be kept, and they
+                          # line up for what was left out of the narration too
+                          "skip": keep.get(i, {}).get("skip", False),
                           "error": keep.get(i, {}).get("error")}
                          for i, c in enumerate(chapters)]
         if not same:

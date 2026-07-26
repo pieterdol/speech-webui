@@ -321,6 +321,18 @@ class TestRenderAllWorker:
         books.render_all_worker("b1", None)
         assert all(c["state"] == "pending" for c in books.find_book("b1")["chapters"])
 
+    def test_a_chapter_left_out_is_never_narrated(self, make_book, fake_tts):
+        """Front matter the heuristics couldn't tell from prose, marked by hand. A whole-book
+        run walks past it and the run still finishes."""
+        make_book(names=["Other titles by this author", "One"], texts=["word " * 40] * 2)
+        books.update_book("b1", lambda b: b["chapters"][0].update(skip=True))
+        books.update_book("b1", lambda b: b.update(render_all={
+            "running": True, "done": 0, "total": 1}))
+        books.render_all_worker("b1", None)
+        assert [c["state"] for c in books.find_book("b1")["chapters"]] \
+            == ["pending", "ready"]
+        assert books.find_book("b1")["render_all"]["running"] is False
+
     def test_an_errored_chapter_is_skipped_not_retried_forever(self, make_book, fake_tts):
         make_book(names=["One", "Two"], texts=["word " * 40] * 2)
         books.update_book("b1", lambda b: b["chapters"][0].update(state="error"))
@@ -401,3 +413,9 @@ class TestQueue:
         books.update_book("b1", lambda b: b.update(render_all={"running": True, "part": None}))
         st = books.render_status()
         assert [e["state"] for e in st["queue"]] == ["queued"] * 4
+
+    def test_and_not_what_has_been_left_out(self, make_book):
+        make_book(names=[f"Chapter {i}" for i in range(4)], texts=["word " * 40] * 4)
+        books.update_book("b1", lambda b: b["chapters"][2].update(skip=True))
+        books.update_book("b1", lambda b: b.update(render_all={"running": True, "part": None}))
+        assert [e["chapter"] for e in books.render_status()["queue"]] == [0, 1, 3]

@@ -181,6 +181,13 @@ it — a full book is hours of work.
   addresses each from its table of contents by anchor — `Section0001.xhtml#heading_id_3` — is cut
   at those anchors, so twenty chapters stay twenty chapters. A chapter the TOC names is kept
   however short it is; the length rule that drops part-title pages applies to untitled sections.
+- **⊘ leaves a chapter out** of the narration, and **↩** puts it back. For apparatus the rules
+  above can't tell from prose: a publisher's list of their own titles is named in the table of
+  contents and runs to a few hundred words, which is a chapter as far as any pattern can see.
+  A chapter left out is not narrated, not queued by a whole-book run, not counted in what's
+  left to do and not in a `.m4b`. It's a mark, not a deletion — the chapter keeps its number,
+  its text and any audio it already had, and putting it back costs nothing. A rescan keeps the
+  marks, on the same terms as it keeps the audio: only when the chapters still line up.
 - **Narrator** — the same picker as everywhere else, Kokoro English and Piper Dutch. A book
   declaring `nl` gets a Dutch voice by default. Changing it after rendering discards that
   book's audio, so it asks first.
@@ -250,6 +257,10 @@ it — a full book is hours of work.
   first part, and what it says is recorded with the chapter as the engine hears it, so renaming
   the book, changing the narrator or changing how a word is pronounced re-makes that one part
   rather than leaving an opening that no longer matches.
+
+  The book's own opening belongs to the first chapter it *narrates*, not to chapter 1 — leaving
+  the front matter out moves the title and author onto whatever comes first now, and the chapter
+  gaining or losing them has its first part re-made on the spot.
 - **Clear narration** in ⚙ throws away the audio and keeps the book, its text and its cover —
   useful after changing something that should be re-spoken.
 - **Covers** come from the EPUB, in the library grid, beside the title, in the player, and on
@@ -415,12 +426,12 @@ uv pip install --python .venv/bin/python pytest    # once
 
 Also on every push and pull request, via `.github/workflows/tests.yml`.
 
-**What's covered.** Every module, ~370 tests. The books state machine, which is where the bugs
+**What's covered.** Every module, ~390 tests. The books state machine, which is where the bugs
 actually live: a render cancelled under itself, what survives a restart, which chapters an export
-takes, how a part run scopes its progress, the queue. The pure functions — reading a chapter
-number out of a heading, cutting text into segments, chunks, sentences and phoneme batches, what
-gets announced before the prose. The stores behind clips, presets and chats. And the HTTP contracts, including
-the cache headers on narration audio.
+takes, how a part run scopes its progress, the queue, what leaving a chapter out takes it out of.
+The pure functions — reading a chapter number out of a heading, cutting text into segments,
+chunks, sentences and phoneme batches, what gets announced before the prose. The stores behind
+clips, presets and chats. And the HTTP contracts, including the cache headers on narration audio.
 
 Two things get more attention than their size suggests: `safe_path`, the app's only security
 boundary, against climbing out, absolute paths, outward symlinks and shared-prefix siblings; and

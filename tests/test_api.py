@@ -184,6 +184,114 @@ class TestClearNarration:
         assert os.path.exists(books.book_dir("b1", "text", "ch000.txt"))
 
 
+class TestLeavingChaptersOut:
+    """Apparatus the heuristics can't tell from prose — a publisher's list of their own titles
+    is long enough and titled enough to read as a chapter — marked by hand instead."""
+
+    def test_marked_and_unmarked_again(self, client, make_book):
+        make_book(names=["Other titles", "One"], texts=["word " * 10] * 2)
+        assert client.post("/api/books/skip", json={"id": "b1", "chapter": 0}).get_json()["ok"]
+        assert books.find_book("b1")["chapters"][0]["skip"] is True
+        assert books.find_book("b1")["chapters"][1].get("skip") is not True
+        client.post("/api/books/skip", json={"id": "b1", "chapter": 0, "skip": False})
+        assert books.find_book("b1")["chapters"][0]["skip"] is False
+
+    def test_the_chapter_keeps_its_number_and_its_text(self, client, make_book):
+        """A mark, not a deletion: the text files, the audio files and the saved position are
+        all stored under the chapter's index, and renumbering would strand every one of them."""
+        make_book(names=["Other titles", "One"], texts=["word " * 10] * 2)
+        client.post("/api/books/skip", json={"id": "b1", "chapter": 0})
+        chapters = books.find_book("b1")["chapters"]
+        assert [c["i"] for c in chapters] == [0, 1]
+        assert os.path.exists(books.book_dir("b1", "text", "ch000.txt"))
+
+    def test_which_chapter_is_required(self, client, make_book):
+        make_book()
+        assert client.post("/api/books/skip", json={"id": "b1"}).status_code == 400
+
+    def test_a_chapter_that_is_not_there(self, client, make_book):
+        make_book()
+        assert client.post("/api/books/skip", json={"id": "b1", "chapter": 9}).status_code == 404
+
+    def test_unknown_book(self, client):
+        assert client.post("/api/books/skip", json={"id": "nope", "chapter": 0}
+                           ).status_code == 404
+
+    def test_the_library_counts_only_what_will_be_narrated(self, client, make_book):
+        make_book(names=["Other titles", "One", "Two"], texts=["word " * 10] * 3)
+        client.post("/api/books/skip", json={"id": "b1", "chapter": 0})
+        got = client.get("/api/books").get_json()["books"][0]
+        assert got["chapters"] == 2
+        assert got["words"] == 20
+
+    def test_it_is_not_narrated_when_asked_for_directly(self, client, make_book,
+                                                        no_background_work):
+        make_book(names=["Other titles", "One"], texts=["word " * 10] * 2)
+        client.post("/api/books/skip", json={"id": "b1", "chapter": 0})
+        assert client.post("/api/books/render", json={"id": "b1", "chapter": 0}
+                           ).get_json()["started"] == []
+        assert no_background_work["chapters"] == []
+
+    def test_rendering_ahead_reaches_past_it(self, client, make_book, no_background_work):
+        """Staying a chapter ahead of the listener means the next chapter they'll hear."""
+        make_book(names=["One", "Advertisement", "Two"], texts=["word " * 10] * 3)
+        client.post("/api/books/skip", json={"id": "b1", "chapter": 1})
+        assert client.post("/api/books/render", json={"id": "b1", "chapter": 0, "ahead": True}
+                           ).get_json()["started"] == [0, 2]
+
+    def narrated(self, book_id, index):
+        books.update_book(book_id, lambda b: b["chapters"][index].update(
+            state="ready", seconds=9.0,
+            segments=[{"file": f"ch{index:03d}-s00.opus", "seconds": 9.0}]))
+
+    def test_leaving_the_opening_out_moves_the_announcement(self, client, make_book,
+                                                            no_background_work):
+        """The title and author are spoken at the top of the first chapter that gets narrated.
+        The chapter that now opens the book was made without them, so it comes back — with its
+        other parts kept, since only the first one has gone stale."""
+        make_book(names=["Other titles", "One"], texts=["word " * 10] * 2)
+        self.narrated("b1", 1)
+        assert client.post("/api/books/skip", json={"id": "b1", "chapter": 0}
+                           ).get_json()["reopened"] == [1]
+        c = books.find_book("b1")["chapters"][1]
+        assert c["state"] == "pending" and c["segments"]
+        assert no_background_work["chapters"] == [("b1", 1)]
+
+    def test_putting_it_back_moves_the_announcement_off_again(self, client, make_book,
+                                                              no_background_work):
+        make_book(names=["Other titles", "One"], texts=["word " * 10] * 2)
+        client.post("/api/books/skip", json={"id": "b1", "chapter": 0})
+        self.narrated("b1", 1)
+        assert client.post("/api/books/skip", json={"id": "b1", "chapter": 0, "skip": False}
+                           ).get_json()["reopened"] == [1]
+        assert books.find_book("b1")["chapters"][1]["state"] == "pending"
+
+    def test_nothing_is_re_made_when_the_opening_chapter_stays_put(self, client, make_book,
+                                                                   no_background_work):
+        make_book(names=["One", "Advertisement", "Two"], texts=["word " * 10] * 3)
+        self.narrated("b1", 0)
+        assert client.post("/api/books/skip", json={"id": "b1", "chapter": 1}
+                           ).get_json()["reopened"] == []
+        assert books.find_book("b1")["chapters"][0]["state"] == "ready"
+        assert no_background_work["chapters"] == []
+
+    def test_a_rescan_that_keeps_the_audio_keeps_the_marks(self, client, make_book,
+                                                           monkeypatch):
+        """The chapters have to line up exactly for a rescan to keep the narration, and they
+        line up for this too — losing the marks would put the apparatus back in."""
+        make_book(names=["Other titles", "One"], texts=["word " * 10] * 2)
+        client.post("/api/books/skip", json={"id": "b1", "chapter": 0})
+        with open(books.book_dir("b1", "book.epub"), "wb") as f:
+            f.write(b"not read: extract is stubbed")
+        chapters = [{"name": "Other titles", "words": 10, "text": "word " * 10},
+                    {"name": "One", "words": 10, "text": "word " * 10}]
+        meta = {"title": "A Book", "author": "An Author", "language": "en"}
+        monkeypatch.setattr(books.epub, "extract", lambda path: (meta, chapters, []))
+        r = client.post("/api/books/rescan", json={"id": "b1"})
+        assert r.get_json()["kept_audio"] is True
+        assert [c.get("skip") for c in books.find_book("b1")["chapters"]] == [True, False]
+
+
 class TestAudioHeaders:
     """A part keeps its filename when it's re-rendered, so the response has to let the browser
     find out. Caching it outright played yesterday's audio for a day."""

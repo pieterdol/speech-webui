@@ -115,6 +115,19 @@ class TestChapterIntro:
         assert self.said(books.chapter_intro(b, 1)) == ["2"]
         assert self.said(books.chapter_intro(b, 2)) == ["B", "1"]
 
+    def test_the_book_opens_at_the_first_chapter_it_narrates(self):
+        """Leaving the publisher's front matter out moves the title and author onto whatever
+        comes first now — otherwise the book would never announce itself at all."""
+        b = self.book(["Other titles by this author", "Chapter One"], title="T", author="A")
+        b["chapters"][0]["skip"] = True
+        assert self.said(books.chapter_intro(b, 0)) == []
+        assert self.said(books.chapter_intro(b, 1)) == ["T", "by A", "1"]
+
+    def test_a_part_is_named_at_the_first_chapter_of_it_that_is_kept(self):
+        b = self.book(["A · Chapter 1", "A · Chapter 2"], title="T", author="")
+        b["chapters"][0]["skip"] = True
+        assert self.said(books.chapter_intro(b, 1)) == ["T", "A", "2"]
+
     def test_unnumbered_section_says_nothing_of_its_own(self):
         b = self.book(["An epigraph", "Chapter One"], title="T", author="")
         assert self.said(books.chapter_intro(b, 0)) == ["T"]      # only the book's own opening

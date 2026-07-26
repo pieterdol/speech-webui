@@ -83,6 +83,21 @@ class TestWhatGetsIncluded:
         assert "1 unfinished" in job["text"]
         assert "1 not narrated" in job["text"]
 
+    def test_a_chapter_left_out_stays_out_of_the_file(self, make_book, silence):
+        """Its audio is still on disk — leaving a chapter out is a mark, not a delete — but a
+        download is the book, and it isn't part of the book any more."""
+        make_book(names=["Other titles by this author", "One", "Two"],
+                  texts=["word " * 10] * 3)
+        narrate("b1", 0, silence, 1.0)
+        narrate("b1", 1, silence, 1.0)
+        narrate("b1", 2, silence, 1.0)
+        books.update_book("b1", lambda b: b["chapters"][0].update(skip=True))
+        job = run_export("b1")
+        assert job["status"] == "done", job.get("error")
+        assert [m[2] for m in marks(books.book_dir("b1", "export", job["file"]))] \
+            == ["One", "Two"]
+        assert os.path.exists(books.book_dir("b1", "audio", "ch000-s00.opus"))
+
     def test_nothing_narrated_at_all_is_an_error(self, make_book):
         make_book(names=["One"], texts=["word " * 10])
         job = run_export("b1")
