@@ -183,6 +183,33 @@
               padding:8px 0 4px; }
   .composer textarea { flex:1; min-height:48px; max-height:35vh; resize:none; }
   .composer .btn.primary { flex:none; padding:14px 16px; }
+  /* The floating player. Fixed to the viewport rather than placed in a view, so switching
+     mode or leaving the reader can't take it away while the audio is still going. */
+  #miniPlayer { position:fixed; left:0; right:0; bottom:0; z-index:20; background:var(--bg);
+                border-top:1px solid var(--line); }
+  .mpbar { max-width:760px; margin:0 auto;
+           padding:8px calc(12px + env(safe-area-inset-right,0px))
+                   calc(8px + env(safe-area-inset-bottom,0px)) calc(12px + env(safe-area-inset-left,0px)); }
+  .mprow { display:flex; align-items:center; gap:10px; }
+  #mpCover { flex:none; width:38px; height:38px; object-fit:cover; border-radius:6px;
+             background:var(--card); }
+  .mptext { flex:1; min-width:0; text-align:left; padding:0; border:none; background:none;
+            color:var(--text); font:inherit; cursor:pointer; }
+  .mpchap { font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis;
+            white-space:nowrap; }
+  .mpbook { font-size:11.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis;
+            white-space:nowrap; margin-top:1px; }
+  .mpspeed { flex:none; display:flex; align-items:center; gap:6px; margin:0; }
+  .mpspeed input { width:72px; }
+  #bookSpeedVal { font-size:11.5px; color:var(--muted); width:34px; flex:none; }
+  #mpClose { flex:none; width:34px; height:34px; font-size:19px; line-height:1; }
+  #miniPlayer audio { width:100%; height:32px; margin-top:6px; display:block; }
+  /* Nothing should end up underneath it. main already carries the safe-area inset, so this
+     is the bar's own height on top of whatever padding the view had. */
+  body.playing main { padding-bottom:calc(112px + env(safe-area-inset-bottom,0px)); }
+  @media (max-width:420px){
+    .mpspeed input { width:52px; }
+  }
   .spin { display:inline-block; width:15px; height:15px; border:2px solid var(--muted);
     border-top-color:var(--accent); border-radius:50%; animation:s .8s linear infinite; vertical-align:-2px; margin-right:7px; }
   @keyframes s { to { transform:rotate(360deg); } }
@@ -400,16 +427,6 @@
         is kept as long as the chapters still line up.</div>
     </div>
 
-    <div class="card" id="nowPlaying" style="margin-top:12px;display:none">
-      <div class="outhead"><span class="nm" id="npChapter"></span></div>
-      <audio id="bookAudio" controls preload="none" style="width:100%"></audio>
-      <div class="row" style="margin-top:10px;align-items:center">
-        <div style="flex:0 0 auto"><label for="bookSpeed" style="margin:0">Speed <span id="bookSpeedVal" class="dim">1.0×</span></label></div>
-        <div><input type="range" id="bookSpeed" min="0.75" max="2" step="0.05" value="1"></div>
-      </div>
-      <div class="hint" id="npHint"></div>
-    </div>
-
     <!-- What the narrator is on right now. Hidden entirely when nothing is rendering, so it
          only ever appears when it has something to say. -->
     <div class="card" id="narrating" style="margin-top:12px;display:none">
@@ -442,6 +459,28 @@
   </div>
   <div id="bookStatus"></div>
 </main>
+
+<!-- Outside every view on purpose. The audio keeps playing when you go back to the library,
+     open a different book, or switch to Studio or Chat, so its controls have to survive that
+     too — and it has to say which book it belongs to, which is no longer the one on screen. -->
+<div id="miniPlayer" hidden>
+  <div class="mpbar">
+    <div class="mprow">
+      <img id="mpCover" alt="">
+      <button class="mptext" id="mpOpen" title="Go to this book">
+        <div class="mpchap" id="mpChapter"></div>
+        <div class="mpbook" id="mpBook"></div>
+      </button>
+      <label class="mpspeed" for="bookSpeed">
+        <input type="range" id="bookSpeed" min="0.75" max="2" step="0.05" value="1">
+        <span id="bookSpeedVal">1.0×</span>
+      </label>
+      <button id="mpClose" class="iconbtn" title="Stop and close the player"
+              aria-label="Stop and close the player">×</button>
+    </div>
+    <audio id="bookAudio" controls preload="none"></audio>
+  </div>
+</div>
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => (s||"").replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -1381,6 +1420,7 @@ async function openBook(id){
   if(!r.ok) return loadBooks();
   const d = await r.json();
   BOOK = d.book;
+  if(NP && NP.id === BOOK.id) NP.chapters = BOOK.chapters;
   NARRATING = d.narrating || {current: null, queue: []};
   $("#library").hidden = true;
   $("#reader").hidden  = false;
@@ -1675,6 +1715,9 @@ function watchRenders(){
     if(!r.ok) return stopWatching();
     const d = await r.json();
     BOOK = d.book;
+    // Parts finishing while you listen are how the player reaches the next one, so the
+    // playing book's list follows the refresh when it happens to be the open one.
+    if(NP && NP.id === BOOK.id) NP.chapters = BOOK.chapters;
     NARRATING = d.narrating || {current: null, queue: []};
     // Also while the queue has anything in it: a chapter of this book waiting behind another
     // book's render leaves nothing here marked "rendering", and the poll used to stop dead.
@@ -1741,19 +1784,29 @@ $("#exportBook").addEventListener("click", e => exportBook(null, e.currentTarget
 function stopWatching(){ if(bookPoll){ clearInterval(bookPoll); bookPoll = null; } }
 
 // ---- the player ----
+// What is playing, kept apart from what's on screen. BOOK is whichever book the reader has
+// open — it's nulled when you go back to the library and replaced when you open another one
+// — while the audio carries on regardless. Reading BOOK here would save one book's position
+// onto another the moment you opened a second book mid-chapter.
+let NP = null;      // {id, title, author, chapters}
 let PLAY = {chapter: 0, segment: 0};
 const bookAudio = () => $("#bookAudio");
-function segmentsOf(i){ return ((BOOK.chapters[i] || {}).segments) || []; }
+function segmentsOf(i){ return NP ? ((NP.chapters[i] || {}).segments) || [] : []; }
 
+// Start from the book the reader has open; everything after that comes from NP.
 function playChapter(ci, si, offset){
+  if(!BOOK) return;
+  NP = {id: BOOK.id, title: BOOK.title, author: BOOK.author, chapters: BOOK.chapters};
+  playNow(ci, si, offset);
+}
+
+function playNow(ci, si, offset){
   const segs = segmentsOf(ci);
   if(!segs[si]){ setStatus("That part hasn't been narrated yet.", true); return; }
   PLAY = {chapter: ci, segment: si};
   const au = bookAudio();
-  $("#nowPlaying").style.display = "block";
-  $("#npChapter").textContent = BOOK.chapters[ci].name
-    + (segs.length > 1 ? ` · part ${si + 1} of ${segs.length}` : "");
-  au.src = `/book/${BOOK.id}/${segs[si].file}`;
+  showPlayer();
+  au.src = `/book/${NP.id}/${segs[si].file}`;
   au.playbackRate = parseFloat($("#bookSpeed").value) || 1;
   au.play().then(()=>{ if(offset) au.currentTime = offset; })
            .catch(()=> setStatus("Tap ▶ on the player to start listening.", true));
@@ -1761,16 +1814,61 @@ function playChapter(ci, si, offset){
   markPlayingPart();
   // stay a chapter ahead of the listener
   fetch("/api/books/render", {method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({id: BOOK.id, chapter: ci, ahead: true})}).then(watchRenders);
+    body: JSON.stringify({id: NP.id, chapter: ci, ahead: true})})
+    .then(()=> { if(BOOK && BOOK.id === NP.id) watchRenders(); });
   savePosition(offset || 0);
 }
+
+function showPlayer(){
+  const segs = segmentsOf(PLAY.chapter);
+  const name = (NP.chapters[PLAY.chapter] || {}).name || `Chapter ${PLAY.chapter + 1}`;
+  $("#miniPlayer").hidden = false;
+  document.body.classList.add("playing");
+  $("#mpChapter").textContent = name
+    + (segs.length > 1 ? ` · part ${PLAY.segment + 1} of ${segs.length}` : "");
+  $("#mpBook").textContent = NP.title + (NP.author ? ` · ${NP.author}` : "");
+  const cov = $("#mpCover");
+  cov.style.visibility = "visible";
+  cov.onerror = ()=> { cov.style.visibility = "hidden"; };
+  cov.src = `/cover/${NP.id}/thumb.jpg`;
+}
+
+// `keep` is where you'd carry on from. Closing the player by hand records it; being stopped
+// because the audio was thrown away does not, or clearing a book's narration would take the
+// position the server just reset and put the old one straight back.
+function hidePlayer(keep){
+  if(keep) savePosition(bookAudio().currentTime);   // pause fires too late: NP is gone by then
+  bookAudio().pause();
+  bookAudio().removeAttribute("src");
+  bookAudio().load();
+  $("#miniPlayer").hidden = true;
+  document.body.classList.remove("playing");
+  NP = null;
+  markPlayingPart();
+}
+$("#mpClose").addEventListener("click", ()=> hidePlayer(true));
+
+// Changing the narrator, clearing the narration or deleting a book throws away the audio the
+// player is holding — but only stop it when it's that book's audio, not whichever book you
+// happen to have open.
+function stopIfPlaying(bookId){
+  if(NP && NP.id === bookId) hidePlayer(false);
+}
+
+// The player names a book that may not be the one on screen, so it's also the way back to it.
+$("#mpOpen").addEventListener("click", ()=>{
+  if(!NP) return;
+  setMode("books");
+  openBook(NP.id);
+});
 
 // Move the highlight in the parts panels without rebuilding the list — on a 192-chapter book
 // that would also shut every panel and lose the scroll position.
 function markPlayingPart(){
   document.querySelectorAll("#chapterList .seg.on, #chapterList .clip.now")
     .forEach(el => el.classList.remove("on", "now"));
-  if($("#nowPlaying").style.display === "none") return;
+  // The list on screen only shows the playing chapter when it's the playing book's list.
+  if(!NP || !BOOK || NP.id !== BOOK.id) return;
   const row = $(`#chapterList .clip[data-ch="${PLAY.chapter}"]`);
   if(!row) return;
   row.classList.add("now");
@@ -1786,23 +1884,44 @@ function markPlayingPart(){
 }
 
 function setMediaSession(){
-  if(!("mediaSession" in navigator) || !BOOK) return;
+  if(!("mediaSession" in navigator) || !NP) return;
   // The 512×512 padded cover: iOS crops a tall book cover awkwardly on the lock screen, so
   // the server pads it square rather than letting the phone cut it.
   navigator.mediaSession.metadata = new MediaMetadata({
-    title: BOOK.chapters[PLAY.chapter].name,
-    artist: BOOK.author || "",
-    album: BOOK.title,
-    artwork: [{src: `/cover/${BOOK.id}/lock.jpg`, sizes: "512x512", type: "image/jpeg"}]});
+    title: (NP.chapters[PLAY.chapter] || {}).name || "",
+    artist: NP.author || "",
+    album: NP.title,
+    artwork: [{src: `/cover/${NP.id}/lock.jpg`, sizes: "512x512", type: "image/jpeg"}]});
 }
 
-bookAudio().addEventListener("ended", ()=>{
-  if(!BOOK) return;
-  const segs = segmentsOf(PLAY.chapter);
-  if(PLAY.segment + 1 < segs.length) return playChapter(PLAY.chapter, PLAY.segment + 1, 0);
+// The next part, or the first part of the next chapter.
+function advance(){
+  if(PLAY.segment + 1 < segmentsOf(PLAY.chapter).length){
+    playNow(PLAY.chapter, PLAY.segment + 1, 0);
+    return true;
+  }
   const next = PLAY.chapter + 1;
-  if(next < (BOOK.chapters || []).length && segmentsOf(next).length)
-    return playChapter(next, 0, 0);
+  if(next < NP.chapters.length && segmentsOf(next).length){
+    playNow(next, 0, 0);
+    return true;
+  }
+  return false;
+}
+
+bookAudio().addEventListener("ended", async ()=>{
+  if(!NP) return;
+  if(advance()) return;
+  // Running out is exactly when a render may have just finished one — and the reader's poll
+  // isn't running at all unless this book is the one open. Re-read it once before giving up.
+  try{
+    const r = await fetch("/api/books/" + NP.id);
+    if(r.ok){
+      const b = (await r.json()).book;
+      NP.chapters = b.chapters || NP.chapters;
+      if(BOOK && BOOK.id === NP.id){ BOOK = b; renderChapterList(); }
+      if(advance()) return;
+    }
+  }catch(e){}
   setStatus("That's the end of what has been narrated so far.");
 });
 
@@ -1815,11 +1934,13 @@ bookAudio().addEventListener("timeupdate", ()=>{
 });
 bookAudio().addEventListener("pause", ()=> savePosition(bookAudio().currentTime));
 function savePosition(offset){
-  if(!BOOK) return;
+  if(!NP) return;
   const position = {chapter: PLAY.chapter, segment: PLAY.segment, offset: Math.floor(offset || 0)};
-  BOOK.position = position;
+  // NP, never BOOK: with a second book open while the first one plays, this is what would
+  // write the playing book's position onto the one you happen to be looking at.
+  if(BOOK && BOOK.id === NP.id) BOOK.position = position;
   fetch("/api/books/update", {method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({id: BOOK.id, position})}).catch(()=>{});
+    body: JSON.stringify({id: NP.id, position})}).catch(()=>{});
 }
 
 $("#bookSpeed").addEventListener("input", ()=>{
@@ -1850,7 +1971,7 @@ async function changeBook(patch){
   }
   if(!d.ok){ setStatus("❌ " + (d.msg || "couldn't change that"), true); return; }
   BOOK = d.book;
-  $("#nowPlaying").style.display = "none";
+  stopIfPlaying(BOOK.id);
   renderChapterList();
   if(d.resume !== undefined && BOOK.chapters[d.resume]){
     setStatus(`Re-narrating “${esc(BOOK.chapters[d.resume].name)}” in the new voice — the rest`
@@ -1904,7 +2025,7 @@ $("#bookClear").addEventListener("click", async ()=>{
     headers:{"Content-Type":"application/json"}, body: JSON.stringify({id: BOOK.id})})).json();
   if(!d.ok){ setStatus("❌ " + (d.msg || "couldn't clear it"), true); return; }
   BOOK = d.book;
-  $("#nowPlaying").style.display = "none";
+  stopIfPlaying(BOOK.id);
   renderChapterList();
   setStatus("Narration cleared.");
 });
@@ -1912,6 +2033,7 @@ $("#bookDel").addEventListener("click", async ()=>{
   if(!BOOK || !confirm(`Delete “${BOOK.title}” and everything narrated from it?`)) return;
   await fetch("/api/books/delete", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({id: BOOK.id})});
+  stopIfPlaying(BOOK.id);
   $("#bookBack").click();
 });
 

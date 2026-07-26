@@ -196,6 +196,19 @@ nothing is narrated until you ask for it — a full book is hours of work.
 - **Playing** — parts are ordinary opus files played by an `<audio>` element, chaining into
   the next part and then the next chapter. Position is saved server-side every 5 seconds, so
   the phone resumes where the PC left off. Speed is adjustable 0.75–2×.
+- **The player floats at the bottom** and lives outside every view, so going back to the
+  library, opening a different book or switching to Studio or Chat leaves it where it is —
+  the audio was never interrupted by any of those, and now the controls aren't either. It
+  carries the cover, the chapter and part, the speed, and a way back to the book it belongs
+  to, which is not necessarily the one on screen. `×` stops it and records where you were.
+
+  Which means what's playing is tracked separately from what's open: the book the reader has
+  loaded is nulled when you leave it and replaced when you open another, while the player
+  needs its own book for the whole time it's sounding — for the position it saves, the
+  chapter it advances to, and what it puts on the lock screen. Only the narration of the book
+  actually playing stops the player, so changing another book's narrator leaves it alone.
+  When it reaches the end of what exists it re-reads the book once before giving up, since
+  running out is exactly when a render may have just finished the next part.
 - **One list, folded.** *Chapters* is a single list at two levels. A book divided into parts —
   The Institute has four — shows them as the outer level, each folding open to its chapters
   and carrying its own **Narrate part** and **Download part**, which is a far more useful unit
