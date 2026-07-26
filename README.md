@@ -218,9 +218,9 @@ nothing is narrated until you ask for it — a full book is hours of work.
   on the same chapter — you tapped it and the bulk run reached it too — and that's one line,
   since the second finds it already made and returns.
 
-  The panel needs a chapter's part count before its first part exists, so the split now
-  happens before the state is published rather than after. It's pure text work, and it's the
-  difference between "part 1 of 8" and half an hour of "starting…".
+  A chapter is split into parts before its state is published, not while it renders, so the
+  count is known before the first part exists and the panel can say "part 1 of 8" from the
+  start. Splitting is pure text work, so there's nothing to wait for.
 - **The book announces itself.** It opens with the title and author — *"Dark Matter" … "by
   Blake Crouch" …* — the way a published audiobook does, and that's also the first thing the
   exported `.m4b` plays. Then before each chapter's prose you hear the part's name and the
@@ -234,13 +234,13 @@ nothing is narrated until you ask for it — a full book is hours of work.
   chapter closes with 1.8 s of silence so it doesn't run straight into the next announcement.
   Off via ⚙, which re-renders the book.
 
-  The number is read out of the heading in **digits or in words**: Dark Matter names its
-  chapters "Chapter One" rather than "Chapter 1", and looking only for digits found nothing,
-  so the whole book was narrated with no announcement at all. A heading that is a title
-  rather than a number still gets none — an epigraph shouldn't be introduced as "chapter
-  seven". The announcement lives in a chapter's first part, and the phrases used are recorded
-  with the chapter, so resuming a chapter that was interrupted before the wording changed
-  re-makes that one part instead of keeping an opening that no longer matches.
+  The number is read out of the heading in **digits or in words**, since a book may name its
+  chapters "Chapter 1" or "Chapter One" — Dark Matter spells them out, The Institute doesn't.
+  A heading that is a title rather than a number gets none: an epigraph shouldn't be
+  introduced as "chapter seven". The announcement lives in a chapter's first part, and the
+  phrases used are recorded with the chapter, so resuming a chapter that was interrupted
+  before the wording changed re-makes that one part instead of keeping an opening that no
+  longer matches.
 - **Clear narration** in ⚙ throws away the audio and keeps the book, its text and its cover —
   useful after changing something that should be re-spoken.
 - **Covers** come from the EPUB, in the library grid, beside the title, and on the phone's
@@ -266,24 +266,23 @@ design would need whole chapters in single files.
 released between them, so a chat reply or a transcription slots in between rather than waiting
 out a chapter. One book renders at a time.
 
-**Deleting a book stops its render.** It didn't. The guard was
-`(find_book(book_id) or {}).get("gen", 0) != gen`, which for a deleted book compares 0 against
-the 0 a fresh book starts on and concludes nothing has changed — so the render carried on into
-a directory the delete had already removed, recreating it segment by segment, while every
-books.json update it made was a silent no-op. What was left was orphaned audio belonging to a
-book that no longer existed. The check now asks whether the book is still there at all, it runs
-between segments rather than only at the end (deleting during a long chapter used to mean
-waiting out the rest of it), and a cancelled render takes the whole directory with it when the
-book is gone rather than putting the chapter back to pending. ffmpeg failing with "No such
-file or directory" in that window is the delete working, not a fault worth reporting.
+**A render can be cancelled under itself.** Between every segment it checks whether its book
+still exists and whether the narrator has changed, so deleting a book or switching its voice
+takes effect within one segment rather than at the end of the chapter. A cancelled render
+throws away what it made: a narrator change puts the chapter back to *pending*, and a deleted
+book takes the whole directory, since a render in flight keeps recreating the directory the
+delete removed. ffmpeg failing with "No such file or directory" in that window is the delete
+working, so it isn't recorded as a chapter error.
 
 **A killed render keeps what it made.** The workers live in the Flask process, so a restart —
 or shutting the PC down overnight mid-chapter — kills them, and anything still marked
 *rendering* on the way back up is a leftover. It goes back to *pending*, but the parts it had
 already finished stay listed as long as the files are on disk: they're real audio, they play,
-and re-rendering the chapter reuses them. Clearing the list instead made an interrupted
-chapter look untouched — nothing to play, and an export that said "nothing narrated yet" with
-the files sitting right there.
+they can be exported, and re-rendering the chapter reuses them. The list is rebuilt by reading
+the audio directory rather than trusting the index, because a render empties it before it
+starts refilling it. It stops at the first gap, since playback walks the parts in order, and
+drops a trailing file ffprobe can't read a duration out of — that one was being written when
+the process died.
 
 **Listening away from this PC.** Two buttons under *Whole book*:
 
@@ -294,17 +293,14 @@ the files sitting right there.
   in flight finish rather than leaving half of one behind.
 - **Export as audiobook (.m4b)** builds one file from whatever is narrated: chapter markers,
   cover art, title and author, AAC 48 kbps mono. On the phone, tap the download and share it
-  into **BookPlayer** — that's the player in use, and it gives you chapters, sleep timer and
-  position with no PC involved. Apple Books was the original target and reads the same file,
-  but importing one onto the phone wasn't straightforward and looked like it wanted the PC
-  after all, which defeats the point. Nothing in the export is player-specific: it's a plain
-  .m4b with ffmetadata chapter marks.
+  into **BookPlayer**, which gives you chapters, sleep timer and position with no PC involved.
+  Nothing in the export is player-specific: it's a plain .m4b with ffmetadata chapter marks.
   The full book is ~564 MB; 32 kbps would be ~380 MB but AAC is meaningfully worse than opus
   at that rate, hence 48. *Whatever is narrated* means every part on disk, not only the
   chapters that finished — a chapter cut short still has real audio in it, and the count of
   unfinished and un-narrated chapters is reported alongside the download. Progress and
-  failures appear directly under the buttons rather than in the status line at the foot of
-  the page, which on a 192-chapter book was several screens away from what you'd just tapped.
+  failures appear directly under the buttons that start them: on a 192-chapter book the page's
+  status line is several screens away from what you'd just tapped.
 
 Storage is `books.json` for the index and `books/<id>/` for the EPUB, extracted text and audio.
 At 32 kbps opus a 20-hour book is ~290 MB of parts, plus the export if you make one. All
@@ -421,9 +417,9 @@ chats.json    chat transcripts, per-chat model and system prompt (gitignored)
   the two variables above; install it with the three commands in its header comment.
 - **Ollama's context is 8192 tokens** here (`num_ctx`). A very long conversation silently loses
   its oldest turns — start a new chat rather than growing one forever.
-- **Spoken replies leave wavs in `outputs/`**, now one per sentence-chunk rather than one per
-  reply, so a talkative session accumulates faster than it used to (~190 KB per chunk). They're
-  gitignored and safe to delete wholesale.
+- **Spoken replies leave wavs in `outputs/`**, one per sentence-chunk rather than one per
+  reply, so a talkative session accumulates quickly (~190 KB per chunk). They're gitignored
+  and safe to delete wholesale.
 - **Kokoro has no Dutch voice** — its 54 cover nine languages and Dutch isn't one. That's why
   Piper is here. Kokoro *can* be forced at Dutch (`kokoro-tts -l nl` phonemizes through
   espeak-ng, which knows Dutch) but it's an American accent reading Dutch spelling: on "Het is
