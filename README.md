@@ -266,6 +266,17 @@ design would need whole chapters in single files.
 released between them, so a chat reply or a transcription slots in between rather than waiting
 out a chapter. One book renders at a time.
 
+**Deleting a book stops its render.** It didn't. The guard was
+`(find_book(book_id) or {}).get("gen", 0) != gen`, which for a deleted book compares 0 against
+the 0 a fresh book starts on and concludes nothing has changed — so the render carried on into
+a directory the delete had already removed, recreating it segment by segment, while every
+books.json update it made was a silent no-op. What was left was orphaned audio belonging to a
+book that no longer existed. The check now asks whether the book is still there at all, it runs
+between segments rather than only at the end (deleting during a long chapter used to mean
+waiting out the rest of it), and a cancelled render takes the whole directory with it when the
+book is gone rather than putting the chapter back to pending. ffmpeg failing with "No such
+file or directory" in that window is the delete working, not a fault worth reporting.
+
 **A killed render keeps what it made.** The workers live in the Flask process, so a restart —
 or shutting the PC down overnight mid-chapter — kills them, and anything still marked
 *rendering* on the way back up is a leftover. It goes back to *pending*, but the parts it had

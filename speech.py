@@ -590,6 +590,32 @@ def render_slot(book_id, index):
             if render_state["current"] == job:
                 render_state["current"] = None
 
+def render_cancelled(book_id, gen):
+    """Whether this render should stop and throw away what it made — the narrator changed
+    under it, or the book was deleted while it ran.
+
+    Deleting used to slip through: the check was `(find_book(book_id) or {}).get("gen", 0)
+    != gen`, which for a gone book compares 0 against the 0 a fresh book starts on and
+    decides nothing has changed. The render carried on writing into a directory the delete
+    had already removed, recreating it segment by segment, and every books.json update it
+    made was a silent no-op — so it left orphaned audio for a book that no longer existed."""
+    b = find_book(book_id)
+    return b is None or b.get("gen", 0) != gen
+
+def discard_render(book_id, index, audio_dir, made):
+    """Throw away what a cancelled render produced. A narrator change puts the chapter back
+    to pending; a deleted book takes the whole directory, since the render kept recreating it
+    underneath the delete and there's nothing left to belong to."""
+    for m in made:
+        p = os.path.join(audio_dir, m["file"])
+        if os.path.exists(p):
+            os.remove(p)
+    if find_book(book_id) is None:
+        shutil.rmtree(book_dir(book_id), ignore_errors=True)
+    else:
+        update_book(book_id, lambda b: b["chapters"][index].update(
+            state="pending", segments=[], error=None))
+
 def render_status():
     """What the narrator is on and what is behind it. Composed from books.json each time
     rather than kept in step with it, so it can't drift from the chapters it describes."""
@@ -677,6 +703,11 @@ def render_chapter(book_id, index):
         made = []
         try:
             for si, seg_text in enumerate(segments):
+                # Between segments, not only at the end: deleting a book or changing the
+                # narrator used to leave the whole rest of the chapter still to render before
+                # anything noticed, which on a long chapter is most of an hour.
+                if render_cancelled(book_id, gen):
+                    break
                 name = f"ch{index:03d}-s{si:02d}.opus"
                 out  = os.path.join(audio_dir, name)
                 if not os.path.exists(out):
@@ -689,21 +720,20 @@ def render_chapter(book_id, index):
                 # segment 2 is still being made
                 update_book(book_id, lambda b, m=list(made), n=len(segments):
                             b["chapters"][index].update(segments=m, done=len(m), total=n))
-            if (find_book(book_id) or {}).get("gen", 0) != gen:
-                # the narrator changed while this was rendering — throw it away rather than
-                # leaving one chapter spoken by the previous voice
-                for m in made:
-                    p = os.path.join(audio_dir, m["file"])
-                    if os.path.exists(p): os.remove(p)
+            if not render_cancelled(book_id, gen):
                 update_book(book_id, lambda b: b["chapters"][index].update(
-                    state="pending", segments=[], error=None))
+                    state="ready", error=None,
+                    seconds=round(sum(s["seconds"] for s in made), 1)))
                 return
-            update_book(book_id, lambda b: b["chapters"][index].update(
-                state="ready", error=None,
-                seconds=round(sum(s["seconds"] for s in made), 1)))
         except Exception as e:
-            update_book(book_id, lambda b: b["chapters"][index].update(
-                state="error", error=str(e)[:200]))
+            # A book deleted mid-render takes its directory with it, so ffmpeg failing with
+            # "No such file or directory" is the delete working, not a fault to report.
+            if not render_cancelled(book_id, gen):
+                update_book(book_id, lambda b: b["chapters"][index].update(
+                    state="error", error=str(e)[:200]))
+                return
+        # Cancelled, however we got here: finished, broke out of the loop, or threw.
+        discard_render(book_id, index, audio_dir, made)
 
 PART_SEP = " · "     # how epub.py joins a part name to its chapter label
 
