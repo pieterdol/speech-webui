@@ -39,8 +39,8 @@ def _abbrev_re(abbr):
 
     Case is not ignored, and the all-caps form has to carry its full stop. Both rules are
     there because a two-letter capital without a stop is almost always an initialism for
-    something else: in these three books alone, "the DR" is the Dominican Republic, "MS-13"
-    is a gang, and "SR 92" is a state route — five occurrences of that last one. An all-caps
+    something else: across three real books, "the DR" was the Dominican Republic, "MS-13" a
+    gang, and "SR 92" a state route — five occurrences of that last one. An all-caps
     heading like "MR. HALLOWAY" does have the stop, so it still expands. Lowercase "ms" isn't
     accepted at all: it's milliseconds far more often than it's an honorific.
     """

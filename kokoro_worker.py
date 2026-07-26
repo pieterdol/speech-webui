@@ -26,7 +26,9 @@ import os
 import sys
 from pathlib import Path
 
-MODEL_DIR = Path(sys.argv[1] if len(sys.argv) > 1 else "/home/USER/.local/share/kokoro-tts")
+# speech.py always passes the directory; the fallback is for running this by hand.
+MODEL_DIR = Path(sys.argv[1] if len(sys.argv) > 1
+                 else Path.home() / ".local/share/kokoro-tts")
 
 # Keep the protocol channel clean: onnxruntime and friends write banners and warnings to
 # stdout, which would be parsed as responses. Dup the real stdout aside for our own use and

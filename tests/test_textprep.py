@@ -66,9 +66,9 @@ class TestSpokenAbbreviations:
     @pytest.mark.parametrize("written,spoken", [
         ("Mr. Halloway looked up.", "Mister Halloway looked up."),
         ("Mrs. Ashgrove arrived.", "Missus Ashgrove arrived."),
-        ("Dr. Evans agreed.", "Doctor Evans agreed."),
-        ("Ms. Brown spoke.", "Miz Brown spoke."),
-        ("Prof. Hall nodded.", "Professor Hall nodded."),
+        ("Dr. Everly agreed.", "Doctor Everly agreed."),
+        ("Ms. Brand spoke.", "Miz Brand spoke."),
+        ("Prof. Linden nodded.", "Professor Linden nodded."),
         ("MR. HALLOWAY", "Mister HALLOWAY"),
     ])
     def test_titles_always_lose_the_full_stop(self, written, spoken):
@@ -110,25 +110,26 @@ class TestSpokenAbbreviations:
         assert textprep.respell(text) == text
 
     @pytest.mark.parametrize("text", [
-        "my contacts in the DR, and elsewhere",            # the Dominican Republic
-        "like some MS-13 lookout",                          # a gang
-        "the intersection of SR 92 and the old highway",   # a state route
+        "my contacts in the DR, and elsewhere",                 # the Dominican Republic
+        "like some MS-13 lookout",                              # a gang
+        "the intersection of SR 92 and the old highway",         # a state route
         "where the road reverted to SR 92 again",
         "a phone booth on SR 109, half a mile along",
     ])
     def test_an_all_caps_initialism_is_not_a_title(self, text):
-        """All five are real sentences out of these books, and all five were being expanded —
-        "the Doctor", "Miz-13", "Senior 92" — until the all-caps form was made to carry its
-        full stop. Two capitals without one is an initialism far more often than a title."""
+        """Every one of these forms turned up in a real book and every one was being expanded
+        — "the Doctor", "Miz-13", "Senior 92" — until the all-caps spelling was made to carry
+        its full stop. Two capitals without one is an initialism far more often than a
+        title."""
         assert textprep.respell(text) == text
 
     @pytest.mark.parametrize("text,spoken", [
-        ("and Mrs Ashgrove steering", "and Missus Ashgrove controlling it"),
+        ("and Mrs Ashgrove steering", "and Missus Ashgrove steering"),
         ("the old Spy vs Spy cartoons", "the old Spy versus Spy cartoons"),
     ])
     def test_but_the_stop_is_not_required_otherwise(self, text, spoken):
-        """Also real sentences from the same books. British style drops the stop after a
-        title, and "Spy vs Spy" wants reading out in full."""
+        """Both forms also occur in real books. British style drops the stop after a title,
+        and "vs" between two nouns wants reading out in full."""
         assert textprep.respell(text) == spoken
 
     def test_an_all_caps_heading_still_expands(self):

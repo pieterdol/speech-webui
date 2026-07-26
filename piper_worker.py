@@ -21,8 +21,9 @@ import sys
 import wave
 from pathlib import Path
 
+# speech.py always passes the directory; the fallback is for running this by hand.
 VOICES_DIR = Path(sys.argv[1] if len(sys.argv) > 1
-                  else "/home/USER/.local/share/piper-tts/voices")
+                  else Path.home() / ".local/share/piper-tts/voices")
 
 # Same trick as the Kokoro worker: keep the protocol channel clear of library chatter.
 _proto = os.fdopen(os.dup(1), "w", buffering=1)
