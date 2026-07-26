@@ -1669,8 +1669,14 @@ def book_audio(book_id, filename):
         return jsonify(error="not found"), 404
     # Cacheable on purpose: during the lock-screen test no-store made Safari re-fetch the
     # same file several times. send_from_directory handles range requests, so seeking works.
+    #
+    # Cached but revalidated, not cached blind. A re-rendered part keeps its filename, so a
+    # day-long max-age served the copy the browser already had — re-narrating a chapter to
+    # change how it opens played back exactly as before, and the audio on disk was right the
+    # whole time. must-revalidate costs one conditional request per part and answers 304 when
+    # nothing changed, which is what no-store failed to do.
     r = send_from_directory(book_dir(book_id, "audio"), filename, conditional=True)
-    r.headers["Cache-Control"] = "private, max-age=86400"
+    r.headers["Cache-Control"] = "private, max-age=0, must-revalidate"
     return r
 
 @app.get("/api/models")
