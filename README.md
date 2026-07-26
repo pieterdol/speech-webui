@@ -1,13 +1,19 @@
 # Local Speech Studio
 
-A phone-friendly web front-end for the local speech tools on this PC. Record (or upload) a
-clip, get the text out of it, and turn text back into speech — either with Kokoro's built-in
-voices or by cloning a reference clip with F5-TTS. There's also a **Chat** mode: talk to a
-local Qwen model through Ollama and have its replies read back to you in a Kokoro voice.
-Everything runs locally — speech on the CPU, the language model on the Radeon; nothing is
-sent to a cloud service.
+A phone-friendly web front-end for the local speech tools on this PC. Everything runs
+locally — speech on the CPU, the language model on the Radeon; nothing is sent to a cloud
+service. The header switches between three modes.
 
-The header has three modes: **Studio** (the three speech panels), **Chat**, and **Books**.
+**Studio** — the three speech panels. Record or upload a clip, get the text out of it with
+Whisper, and turn text back into speech: Kokoro's built-in voices for English, Piper for Dutch,
+or F5-TTS to clone a voice from a reference clip.
+
+**Chat** — talk to a local Qwen model through Ollama, by typing or by voice, and have its reply
+read back to you sentence by sentence as it's written.
+
+**Books** — add an EPUB, pick a narrator, and listen on your phone. Chapters are narrated in
+~10-minute parts, your position follows you between PC and phone, and what's narrated can be
+exported as an `.m4b` audiobook.
 
 ## URLs
 
@@ -49,7 +55,7 @@ covered — that's `ollama.service`.
 
 Port 8443 is used because `443` on this tailnet is already taken by another service.
 
-## What it does
+## Studio (record, transcribe, speak)
 
 **1 · Record or add a clip.** One button records from the mic (Chrome does webm/opus, iOS does
 mp4/aac — both are accepted). Everything is normalized through ffmpeg into 24 kHz mono wav in
@@ -97,7 +103,7 @@ Note that a saved voice does **not** make generation faster. F5-TTS is a zero-sh
 re-derives the voice from the reference on every run, and the minutes go into generating the
 output waveform, not learning the voice. Presets save setup effort; the quality dial saves time.
 
-## 4 · Chat (Qwen via Ollama, spoken by Kokoro)
+## Chat (Qwen via Ollama, spoken by Kokoro)
 
 **Ollama must be running** — the app talks to `http://127.0.0.1:11434` and does not start it:
 
@@ -174,10 +180,10 @@ which of the two is happening. Note that the per-request `keep_alive` in `speech
 the server's `OLLAMA_KEEP_ALIVE` — change it there, not in the unit file, to affect this app.
 It's kept short on purpose: a resident 8B model holds ~5.2 GB of the card's 16 GB.
 
-## 5 · Books (EPUB narration)
+## Books (EPUB narration)
 
-Add an EPUB, pick a narrator, and listen on your phone. Chapters are extracted on upload but
-nothing is narrated until you ask for it — a full book is hours of work.
+Chapters are extracted the moment an EPUB is added, but nothing is narrated until you ask for
+it — a full book is hours of work.
 
 - **Adding** — `epub.py` reads the spine for reading order and the `.ncx` for chapter names,
   then drops covers, colophons, adverts, dedications and part-title pages. The Institute comes
@@ -193,7 +199,7 @@ nothing is narrated until you ask for it — a full book is hours of work.
   the phone resumes where the PC left off. Speed is adjustable 0.75–2×.
 - **The player floats at the bottom** and lives outside every view, so going back to the
   library, opening a different book or switching to Studio or Chat leaves it where it is —
-  the audio was never interrupted by any of those, and now the controls aren't either. It
+  none of those interrupt the audio, and none of them take the controls away either. It
   carries the cover, the chapter and part, the speed, and a way back to the book it belongs
   to, which is not necessarily the one on screen. `×` stops it and records where you were.
 
@@ -269,17 +275,38 @@ nothing is narrated until you ask for it — a full book is hours of work.
   screen and the `.m4b`'s artwork, where iOS draws it around 1050 px across.
 
   Both cap rather than resize, `min(400,iw)` and `min(1000,iw)`, so a book whose own cover is
-  smaller is left alone instead of being blown up. Both keep the book's proportions: a phone lays
-  cover art out at whatever shape it's handed, so a tall cover fills the lock screen the way it
-  does in BookPlayer, and squaring one off only adds bars. The dimensions
-  are measured in the browser and go out with the artwork, since `sizes` is the shape the OS
-  lays it out by and has to match the file — a 600×906 cover announced as 512×512 gets bars.
-  ⚙ has a **Replace the cover** upload for books that declare none.
+  smaller is left alone instead of being blown up. Both keep the book's proportions: a phone
+  lays cover art out at whatever shape it's handed, so a tall cover fills the lock screen the
+  way it does in BookPlayer, and squaring one off only adds bars. The dimensions are measured in
+  the browser and go out with the artwork, since `sizes` is the shape the OS lays it out by and
+  has to match the file — a 600×906 cover announced as 512×512 gets bars. ⚙ has a **Replace the
+  cover** upload for books that declare none.
 
   The cover is whichever image the book *declares* — EPUB 3 `properties="cover-image"`, then
   the EPUB 2 `<meta name="cover">` id, then the guide reference. Never the first or biggest
   image: a book's back matter can carry the covers of other novels advertised in it. A book
   whose covers haven't been derived yet gets them made on demand from the stored EPUB.
+
+**Listening away from this PC.** Two buttons under *Whole book*:
+
+- **Narrate the whole book** works through every un-narrated chapter in the background, with
+  progress and a stop button. It's hours — 8.4 h for The Institute — so it's meant to run
+  overnight. It renders one chapter per turn rather than holding the render lock for the whole
+  job, so tapping a single chapter still gets served in between, and stopping lets the chapter
+  in flight finish rather than leaving half of one behind. *Narrate part* starts the same run
+  scoped to one part, and reports itself that way — it's named in the panel and its progress
+  and hours-left are counted over the part, not the book, so four chapters don't show up as
+  "3 of 192".
+- **Export as audiobook (.m4b)** builds one file from whatever is narrated: chapter markers,
+  cover art, title and author, AAC 48 kbps mono. On the phone, tap the download and share it
+  into **BookPlayer**, which gives you chapters, sleep timer and position with no PC involved.
+  Nothing in the export is player-specific: it's a plain .m4b with ffmetadata chapter marks.
+  The full book is ~564 MB; 32 kbps would be ~380 MB but AAC is meaningfully worse than opus
+  at that rate, hence 48. *Whatever is narrated* means every part on disk, not only the
+  chapters that finished — a chapter cut short still has real audio in it, and the count of
+  unfinished and un-narrated chapters is reported alongside the download. Progress and
+  failures appear directly under the buttons that start them: on a 192-chapter book the page's
+  status line is several screens away from what you'd just tapped.
 
 **Why files rather than streaming.** iOS suspends a page's timers when the screen locks, so
 the sentence-at-a-time approach Chat uses would stall the moment the phone goes in a pocket.
@@ -308,54 +335,9 @@ starts refilling it. It stops at the first gap, since playback walks the parts i
 drops a trailing file ffprobe can't read a duration out of — that one was being written when
 the process died.
 
-**Listening away from this PC.** Two buttons under *Whole book*:
-
-- **Narrate the whole book** works through every un-narrated chapter in the background, with
-  progress and a stop button. It's hours — 8.4 h for The Institute — so it's meant to run
-  overnight. It renders one chapter per turn rather than holding the render lock for the whole
-  job, so tapping a single chapter still gets served in between, and stopping lets the chapter
-  in flight finish rather than leaving half of one behind. *Narrate part* starts the same run
-  scoped to one part, and reports itself that way — it's named in the panel and its progress
-  and hours-left are counted over the part, not the book, so four chapters don't show up as
-  "3 of 192".
-- **Export as audiobook (.m4b)** builds one file from whatever is narrated: chapter markers,
-  cover art, title and author, AAC 48 kbps mono. On the phone, tap the download and share it
-  into **BookPlayer**, which gives you chapters, sleep timer and position with no PC involved.
-  Nothing in the export is player-specific: it's a plain .m4b with ffmetadata chapter marks.
-  The full book is ~564 MB; 32 kbps would be ~380 MB but AAC is meaningfully worse than opus
-  at that rate, hence 48. *Whatever is narrated* means every part on disk, not only the
-  chapters that finished — a chapter cut short still has real audio in it, and the count of
-  unfinished and un-narrated chapters is reported alongside the download. Progress and
-  failures appear directly under the buttons that start them: on a 192-chapter book the page's
-  status line is several screens away from what you'd just tapped.
-
 Storage is `books.json` for the index and `books/<id>/` for the EPUB, extracted text and audio.
 At 32 kbps opus a 20-hour book is ~290 MB of parts, plus the export if you make one. All
 gitignored, as is `*.epub`.
-
-Every index (`clips.json`, `presets.json`, `chats.json`, `books.json`) is written to a temp
-file and renamed, so a read that lands mid-write gets a whole file rather than half of one —
-a whole-book render rewrites the book index after every chapter while the page is polling it.
-
-## Modules
-
-One file per feature, plus a thin `core.py` holding what they share: the Flask app, the job
-table, the locks that keep one model on the GPU at a time, and two file helpers. It exists so
-`books.py` and `chat.py` can both reach the app without importing each other.
-
-Routes are registered by importing the modules for their side effect — `speech.py` imports
-all five and each decorates the shared `app`. That's the one fragile part: a module that stops
-being imported takes its endpoints with it and nothing else notices, so `tests/test_routes.py`
-writes the whole URL table out and fails on any difference.
-
-Each module owns the storage it's responsible for — `books.py` holds `BOOKS_DIR` and
-`BOOKS_FILE` rather than taking them from core. That's what lets a test point the whole book
-layer at a tmpdir by patching two names on one module.
-
-The import order is `core` → `textprep`/`media` → `clips` → `tts` → `stt`/`chat`/`books`, and
-nothing imports upwards. Functions are grouped by feature rather than wrapped in classes:
-this is functions over a JSON document and a few locks, and there's no object model in it
-straining to get out.
 
 ## How it fits together
 
@@ -394,10 +376,35 @@ Both TTS engines have their own venvs (`~/.local/share/kokoro-tts`, `~/.local/sh
 the app borrows their interpreters rather than duplicating their dependencies — F5-TTS via its
 CLI per render, Kokoro via the resident worker above. Whisper is the exception: it's the
 most-used path, so `faster-whisper` lives in this app's venv and the model stays resident
-between requests. All three model paths are now warm between calls.
+between requests. All three model paths are warm between calls.
 
 Long jobs are threads writing into a `jobs` dict that the page polls at `/api/status/<id>`, the
 same pattern as `~/Code/comfy-webui`.
+
+## Modules
+
+One file per feature, plus a thin `core.py` holding what they share: the Flask app, the job
+table, the locks that keep one model on the GPU at a time, and two file helpers. It exists so
+`books.py` and `chat.py` can both reach the app without importing each other.
+
+`write_json`, one of those two helpers, writes every index (`clips.json`, `presets.json`,
+`chats.json`, `books.json`) to a temp file and renames it, so a read that lands mid-write gets a
+whole file rather than half of one — a whole-book render rewrites the book index after every
+chapter while the page is polling it.
+
+Routes are registered by importing the modules for their side effect — `speech.py` imports
+all five and each decorates the shared `app`. That's the one fragile part: a module that stops
+being imported takes its endpoints with it and nothing else notices, so `tests/test_routes.py`
+writes the whole URL table out and fails on any difference.
+
+Each module owns the storage it's responsible for — `books.py` holds `BOOKS_DIR` and
+`BOOKS_FILE` rather than taking them from core. That's what lets a test point the whole book
+layer at a tmpdir by patching two names on one module.
+
+The import order is `core` → `textprep`/`media` → `clips` → `tts` → `stt`/`chat`/`books`, and
+nothing imports upwards. Functions are grouped by feature rather than wrapped in classes:
+this is functions over a JSON document and a few locks, and there's no object model in it
+straining to get out.
 
 ## Layout
 
@@ -423,6 +430,8 @@ tests/        pytest suite; see Tests below
 pytest.ini    test config (rootdir on the import path)
 requirements-test.txt   what CI installs — flask, bs4, lxml, pytest, and nothing heavier
 .github/workflows/tests.yml   runs the suite on push and pull request
+CLAUDE.md     house rules: tests come with the change, what belongs in this README,
+              no copyrighted text in the repo
 clips/        normalized input clips (gitignored)
 presets/      saved voices — own copy of the reference audio (gitignored)
 samples/      cached one-line voice previews, one wav per voice (gitignored)
