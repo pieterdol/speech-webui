@@ -193,8 +193,10 @@ it — a full book is hours of work.
   back ten seconds or forward thirty — asymmetric because going back is for a sentence you
   missed and going forward is for skipping something. A skip crosses into the next part or the
   previous one rather than stopping at the edge of the file that happens to be loaded, using the
-  durations in the index to know where a part ends. The lock screen's own skip buttons do the
-  same, so a missed sentence doesn't need the phone unlocked.
+  durations in the index to know where a part ends. The lock screen's own skip buttons move by
+  the same amounts, so a missed sentence doesn't need the phone unlocked — iOS may still draw
+  "10" on its forward button, since the icon is the platform's to choose and only the distance
+  is ours.
 - **▶ Resume** sits at the top of a book you've started and names where it goes back to — the
   chapter, the part, and how far in. One tap and it plays from there. It's absent while that book
   is the one playing, since the player is the control then, and absent when the position points

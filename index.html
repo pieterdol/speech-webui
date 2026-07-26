@@ -2034,11 +2034,11 @@ function setMediaSession(){
     // lock screen gets its artwork immediately, and the shape follows a moment later.
     artwork: [Object.assign({src, type: "image/jpeg"}, known ? {sizes: known} : {})]});
   // The lock screen's own skip buttons, so a missed sentence doesn't need the phone unlocked.
-  // A platform may name its own amount; ours is the fallback.
-  navigator.mediaSession.setActionHandler("seekbackward",
-    d => skip(-((d && d.seekOffset) || BACK_SECONDS)));
-  navigator.mediaSession.setActionHandler("seekforward",
-    d => skip((d && d.seekOffset) || FORWARD_SECONDS));
+  // The offset the platform passes is ignored: iOS says 10 seconds in both directions, which
+  // makes its forward button disagree with the one in the page. What the buttons look like is
+  // the platform's to decide, but how far they move is ours.
+  navigator.mediaSession.setActionHandler("seekbackward", ()=> skip(-BACK_SECONDS));
+  navigator.mediaSession.setActionHandler("seekforward",  ()=> skip(FORWARD_SECONDS));
   if(known !== undefined) return;
   const done = s => { ARTWORK[id] = s; if(NP && NP.id === id) setMediaSession(); };
   const img = new Image();
