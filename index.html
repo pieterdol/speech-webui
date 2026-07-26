@@ -64,7 +64,11 @@
   .row { display:flex; gap:10px; } .row > div { flex:1; }
   .check { display:flex; align-items:center; gap:9px; margin-top:12px; font-size:15px; }
   .check input { width:20px; height:20px; accent-color:var(--accent); flex:none; }
-  button { font-family:inherit; }
+  /* Every button, so the icon ones and the bare-text ones are covered too. Disabled goes back
+     to the default arrow: the dimming says it can't be pressed and the pointer shouldn't
+     disagree. */
+  button { font-family:inherit; cursor:pointer; }
+  button:disabled { cursor:default; }
   .btn { padding:12px 14px; font-size:15px; border-radius:10px; border:1px solid var(--line);
          background:#2a2640; color:var(--text); }
   .btn.primary { background:var(--accent); color:#fff; border:none; font-weight:700; }
