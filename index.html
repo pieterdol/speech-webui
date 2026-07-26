@@ -106,7 +106,13 @@
                     font-size:13px; flex:none; }
   .segtoggle .caret { display:inline-block; width:9px; transition:transform .12s; }
   .segtoggle.open .caret { transform:rotate(90deg); }
-  .clip.group > .cliphead { cursor:pointer; }
+  /* every row in the chapter list is pressable: a chapter's heading and the note under it play
+     it or narrate it, a part's heading folds it open. Scoped to the list because the Studio's
+     clip rows share these classes and are not clickable. */
+  #chapterList .cliphead, #chapterList .tr { cursor:pointer; }
+  /* ▶ means "this plays", ▸ means "this folds open", and next to each other in a muted grey the
+     two were the same arrow. Only the play one is coloured. */
+  .play { color:var(--accent); }
   .clip.group > .cliphead .nm { font-weight:600; }
   .grouplist { margin-top:10px; border-left:2px solid var(--line); padding-left:12px; }
   .clip.now > .cliphead .nm { color:var(--accent); }
@@ -149,7 +155,12 @@
   .bookcard { cursor:pointer; min-width:0; }
   .bookcard .art { width:100%; aspect-ratio:2/3; border-radius:9px; overflow:hidden;
                    background:#2a2640; border:1px solid var(--line); display:flex;
-                   align-items:center; justify-content:center; }
+                   align-items:center; justify-content:center; position:relative; }
+  /* on the cover rather than under it: the grid cell is 104 px wide and the title needs the room */
+  .bookcard .go { position:absolute; right:6px; bottom:6px; width:34px; height:34px;
+                  display:flex; align-items:center; justify-content:center; padding:0;
+                  border:none; border-radius:50%; font-size:13px; line-height:1; color:#fff;
+                  background:rgba(18,16,28,.8); box-shadow:0 1px 4px rgba(0,0,0,.4); }
   .bookcard .art img { width:100%; height:100%; object-fit:cover; display:block; }
   .bookcard .art .noart { font-size:26px; opacity:.5; }
   .bookcard .bt { font-size:13px; margin-top:6px; line-height:1.3; overflow:hidden;
@@ -1414,6 +1425,18 @@ async function loadBooks(){
       img.remove();
       el.querySelector(".noart").hidden = false;
     });
+    // Somewhere to carry on from, and something narrated to carry on with. Cleared narration
+    // leaves the position behind, which is why it takes both.
+    const pos = b.position || {};
+    if((pos.chapter || pos.segment || pos.offset) && b.ready){
+      const go = document.createElement("button");
+      go.className = "go";
+      go.textContent = "▶";
+      go.title = "Resume where you left off";
+      go.setAttribute("aria-label", "Resume where you left off");
+      go.addEventListener("click", e => { e.stopPropagation(); resumeBook(b.id); });
+      el.querySelector(".art").appendChild(go);
+    }
     el.addEventListener("click", ()=> openBook(b.id));
     box.appendChild(el);
   });
@@ -1687,12 +1710,15 @@ function chapterRow(c, grouped){
   // "ready", and saying "8,279 words" about one with half an hour of audio behind it
   // would be hiding the useful part.
   let note = `${c.words.toLocaleString()} words · ~${(c.words / 146).toFixed(0)} min`;
+  let plays = false;                       // …and so gets the ▶ in front of it
   if(c.state === "rendering")
     note = `⏳ narrating… ${segs.length}/${c.total || "?"} parts`;
-  else if(c.state === "ready") note = `▶ ${fmt(c.seconds)} · ready`;
+  else if(c.state === "ready"){ note = `${fmt(c.seconds)} · ready`; plays = true; }
   else if(c.state === "error") note = "❌ " + (c.error || "failed");
-  else if(segs.length)
-    note = `▶ ${fmt(segsSeconds(segs))} narrated · ${segs.length} part(s), unfinished`;
+  else if(segs.length){
+    note = `${fmt(segsSeconds(segs))} narrated · ${segs.length} part(s), unfinished`;
+    plays = true;
+  }
   // Every chapter carries its own narrate button. Tapping the row does it too, but that only
   // works while the chapter has nothing to play — once it has, tapping plays instead — and a
   // book with no parts has no "Narrate part" either, so there was nothing visible to press.
@@ -1701,7 +1727,7 @@ function chapterRow(c, grouped){
       <div class="dur">${c.state === "ready" ? "✓"
                        : c.state === "rendering" ? '<span class="spin"></span>'
                        : todo ? '<button class="narrow">📖 Narrate</button>' : ""}</div></div>
-    <div class="tr">${esc(note)}</div>`;
+    <div class="tr">${plays ? '<span class="play">▶</span> ' : ""}${esc(note)}</div>`;
   el.querySelector(".cliphead").addEventListener("click", ()=> chapterTapped(c.i));
   el.querySelector(".tr").addEventListener("click", ()=> chapterTapped(c.i));
   const nar = el.querySelector(".narrow");
@@ -1735,7 +1761,7 @@ function partsPanel(c){
     const s = segs[si];
     const row = document.createElement("div");
     row.className = "seg " + (s ? "can" : "wait");     // markPlayingPart adds the highlight
-    row.innerHTML = `<div class="n">${s ? "▶ " : "○ "}Part ${si + 1}</div>
+    row.innerHTML = `<div class="n">${s ? '<span class="play">▶</span> ' : "○ "}Part ${si + 1}</div>
       <div class="d">${s ? fmt(s.seconds) : (c.state === "rendering" && si === segs.length
                                              ? "narrating…" : "not yet")}</div>`;
     if(s) row.addEventListener("click", e => { e.stopPropagation(); playChapter(c.i, si, 0); });
@@ -1872,6 +1898,21 @@ let NP = null;      // {id, title, author, chapters}
 let PLAY = {chapter: 0, segment: 0};
 const bookAudio = () => $("#bookAudio");
 function segmentsOf(i){ return NP ? ((NP.chapters[i] || {}).segments) || [] : []; }
+
+// Resume from the library grid, without opening the book. The player lives outside every view,
+// so nothing has to be on screen for it to play — and NP is what playback reads, not BOOK. The
+// chapters aren't in the library listing, so the book is fetched for the parts it has on disk.
+async function resumeBook(id){
+  const r = await fetch("/api/books/" + id);
+  if(!r.ok) return setStatus("❌ couldn't load that book", true);
+  const b = (await r.json()).book;
+  const p = b.position || {};
+  const ci = p.chapter || 0, si = p.segment || 0;
+  const segs = (((b.chapters || [])[ci]) || {}).segments || [];
+  if(!segs[si]) return setStatus("That part hasn't been narrated yet.", true);
+  NP = {id: b.id, title: b.title, author: b.author, chapters: b.chapters};
+  playNow(ci, si, p.offset || 0);
+}
 
 // Start from the book the reader has open; everything after that comes from NP.
 function playChapter(ci, si, offset){

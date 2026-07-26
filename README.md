@@ -194,7 +194,9 @@ it — a full book is hours of work.
   chapter, the part, and how far in. One tap and it plays from there. It's absent while that book
   is the one playing, since the player is the control then, and absent when the position points
   at audio that no longer exists, which is what clearing a narration or changing narrator leaves
-  behind.
+  behind. The same **▶** sits on the cover in the library, so a book can be resumed without
+  opening it — the player lives outside every view, so nothing needs to be on screen for it to
+  play.
 - **The player floats at the bottom** and lives outside every view, so going back to the
   library, opening a different book or switching to Studio or Chat interrupts neither the audio
   nor the controls. It carries the cover, the chapter and part, the speed, and a way back to the
