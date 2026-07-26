@@ -543,12 +543,15 @@ def split_segments(text, limit=SEGMENT_CHARS):
         if len(buf) + len(para) + 1 > limit and buf:
             out.append(buf.strip())
             buf = ""
-        if len(para) > limit:                 # a single huge paragraph: cut it at sentences
-            pending = para
-            while len(pending) > limit:
-                pieces, pending = cut_sentences(pending[:limit], 0, flush=True)[0], pending[limit:]
-                out.append(" ".join(pieces))
-            buf = (buf + " " + pending).strip()
+        if len(para) > limit:
+            # A single paragraph bigger than a whole segment: pack its sentences the way the
+            # chunker does. Slicing it at the character limit first would cut whatever word
+            # straddles the boundary in half and leave the halves in different segments.
+            for sentence in cut_sentences(para, 0, flush=True)[0]:
+                if len(buf) + len(sentence) + 1 > limit and buf:
+                    out.append(buf.strip())
+                    buf = ""
+                buf = (buf + " " + sentence).strip()
         else:
             buf = (buf + "\n" + para).strip()
     if buf.strip():

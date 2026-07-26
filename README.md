@@ -400,6 +400,10 @@ speech.py     Flask app (port 8600). Named speech.py, not app.py, so restart.sh 
 kokoro_worker.py  resident Kokoro process (English), run with Kokoro's venv interpreter
 piper_worker.py   resident Piper process (Dutch), run with Piper's venv interpreter
 index.html    the whole UI — one file, no build step
+tests/        pytest suite; see Tests below
+pytest.ini    test config (rootdir on the import path)
+requirements-test.txt   what CI installs — flask, bs4, lxml, pytest, and nothing heavier
+.github/workflows/tests.yml   runs the suite on push and pull request
 clips/        normalized input clips (gitignored)
 presets/      saved voices — own copy of the reference audio (gitignored)
 samples/      cached one-line voice previews, one wav per voice (gitignored)
@@ -410,6 +414,44 @@ clips.json    clip index + cached transcripts (gitignored)
 presets.json  saved voices: name, reference transcript, source clip (gitignored)
 chats.json    chat transcripts, per-chat model and system prompt (gitignored)
 ```
+
+## Tests
+
+```bash
+uv pip install --python .venv/bin/python pytest    # once
+.venv/bin/python -m pytest                         # ~15 s
+```
+
+Also on every push and pull request, via `.github/workflows/tests.yml`.
+
+**What's covered.** The books state machine, which is where the bugs actually live: a render
+being cancelled under itself, what survives a restart, which chapters an export takes, how a
+part run scopes its progress, the queue. Then the pure functions — reading a chapter number
+out of a heading in digits or words, cutting a chapter into segments and chunks, what gets
+announced before the prose — and the HTTP contracts, including the cache headers on narration
+audio, which are as much a part of the response as the body.
+
+**What isn't.** Anything you have to hear. Whether a pause is long enough, whether a voice
+reads a name right, whether the lock screen looks right — no assertion tells you that, and
+writing one would only fix the wrong answer in place. Rendering is stubbed at
+`_render_segment`, the one function that costs GPU time; everything above it is real.
+
+`tests/test_export.py` is the exception and runs ffmpeg for real, building actual opus parts
+and reading the chapter marks back out of the finished `.m4b` — the only way to know the
+markers line up with the audio rather than merely being written. It skips without ffmpeg;
+CI asserts ffmpeg is present so a green run can't mean it quietly skipped.
+
+`tests/test_frontend.py` is structural, not behavioural: every `$("#id")` resolves to an
+element that exists, no element is left unreferenced, tags balance, ids are unique, and the
+inline script parses under `node --check`. One file with no build step means nothing else
+catches a dangling reference before the phone does.
+
+**Isolation.** `speech.py` keeps its paths in module globals, so tests point `BOOKS_DIR` and
+`BOOKS_FILE` at a tmpdir — autouse, so no test can reach the real library by forgetting to
+ask. Don't call `monkeypatch.undo()` in a test: it reverts every patch on the shared
+function-scoped `monkeypatch`, that redirect included, and the rest of the test then runs
+against your own books. A second autouse fixture snapshots the real library around every test
+and fails if it changed, because that mistake is otherwise completely silent.
 
 ## Gotchas
 

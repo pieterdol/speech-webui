@@ -1,0 +1,10 @@
+# What the test suite needs, which is far less than the app.
+#
+# speech.py imports flask and epub (bs4 + lxml for the "xml" parser) at module level, and
+# faster-whisper only inside run_stt — so CI never pulls the ~2 GB of model runtime that the
+# real app's venv carries. The TTS engines are separate venvs invoked as subprocesses and
+# are stubbed out in the tests entirely.
+flask
+beautifulsoup4
+lxml
+pytest
