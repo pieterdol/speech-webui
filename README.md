@@ -222,8 +222,9 @@ it — a full book is hours of work.
   A title is written to be read, not heard — *11/22/63: A Novel* has a subtitle no narrator says
   out loud — so ⚙ has a **Say the title as** field that only the announcement uses; the library,
   the chapter marks and the `.m4b` keep the written one. The announcement lives in a chapter's
-  first part and the wording is recorded with it, so renaming the book or changing the narrator
-  re-makes that one part rather than leaving an opening that no longer matches.
+  first part, and what it says is recorded with the chapter as the engine hears it, so renaming
+  the book, changing the narrator or changing how a word is pronounced re-makes that one part
+  rather than leaving an opening that no longer matches.
 - **Clear narration** in ⚙ throws away the audio and keeps the book, its text and its cover —
   useful after changing something that should be re-spoken.
 - **Covers** come from the EPUB, in the library grid, beside the title, in the player, and on

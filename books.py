@@ -281,7 +281,12 @@ def render_chapter(book_id, index):
         # The lead-in lives in the chapter's first segment, and a resumed render keeps whatever
         # files are already on disk — so a chapter left half-made before the announcement
         # changed would keep an opening that no longer matches. Only the first one has to go.
-        spoken = [p for p, _ in intro]
+        #
+        # Recorded respelled, because respelled is what the engine is given: "11/22/63: A Novel"
+        # is spoken "eleven, twenty-two, sixty-three: A Novel", and a change to how a phrase is
+        # pronounced leaves the written form identical. Comparing what's written would call that
+        # opening current when it no longer is.
+        spoken = [respell(p) for p, _ in intro]
         # Split before publishing the state, not after: how many parts a chapter comes to is
         # pure text work, and knowing it up front is the difference between "part 1 of 2" and
         # ten minutes of "starting…" in the queue panel.

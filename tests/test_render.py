@@ -125,6 +125,32 @@ class TestAnnouncementInvalidation:
         books.render_chapter("b1", 0)
         assert fake_tts == []
 
+    def test_the_wording_recorded_is_the_spoken_one(self, make_book, fake_tts):
+        """Not the written one. "11/22/63" and "eleven, twenty-two, sixty-three" are the same
+        title and different audio."""
+        make_book(names=["Chapter One"], texts=[LONG], title="11/22/63", author="",
+                  announce=True)
+        books.render_chapter("b1", 0)
+        assert chapter("b1")["intro"] == ["eleven, twenty-two, sixty-three", "one"]
+
+    def test_a_pronunciation_change_makes_the_opening_stale(self, make_book, fake_tts):
+        """The case a written-form record can't see: the title is untouched, only how it's said
+        has changed, and the audio on disk is of the old pronunciation."""
+        make_book(names=["Chapter One"], texts=[LONG], title="11/22/63", author="",
+                  announce=True)
+        books.render_chapter("b1", 0)
+        first = books.book_dir("b1", "audio", "ch000-s00.opus")
+        before = os.path.getmtime(first)
+
+        time.sleep(0.01)
+        books.update_book("b1", lambda b: b["chapters"][0].update(
+            state="pending", intro=["11/22/63", "one"]))     # what a rule ago would have said
+        fake_tts.clear()
+        books.render_chapter("b1", 0)
+
+        assert os.path.getmtime(first) > before
+        assert len(fake_tts) == 1                            # only the opening
+
 
 class TestCancellation:
     def slow_tts(self, monkeypatch, delay=0.15):
