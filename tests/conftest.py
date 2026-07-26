@@ -21,6 +21,23 @@ import speech        # noqa: E402
 HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 needs_ffmpeg = pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg/ffprobe not installed")
 
+# Tests that need something beyond python skip when it isn't there, which is right on a
+# machine that hasn't got it and wrong in CI, where skipping is how a suite passes without
+# having run. STRICT_TESTS=1 refuses the run instead.
+STRICT_TOOLS = {"ffmpeg": "the export tests", "ffprobe": "the export tests",
+                "node": "the page script parse check"}
+
+
+def pytest_configure(config):
+    if os.environ.get("STRICT_TESTS") != "1":
+        return
+    missing = {t: why for t, why in STRICT_TOOLS.items() if not shutil.which(t)}
+    if missing:
+        raise pytest.UsageError(
+            "STRICT_TESTS=1 and these are not installed: "
+            + ", ".join(f"{t} ({why})" for t, why in missing.items())
+            + " — the suite would skip those tests and still pass.")
+
 # Captured before anything redirects them: the developer's own library, which no test may
 # touch. Recorded at import so it survives every monkeypatch in every test.
 REAL_BOOKS_DIR = speech.BOOKS_DIR

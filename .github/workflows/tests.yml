@@ -9,6 +9,11 @@ on:
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    env:
+      # Turns "skip the tests that need a tool" into "fail because the tool is missing".
+      # A green run that quietly tested neither the export nor the page script is worse than
+      # a red one, and a shell check is too easy to write in a way that can't fail.
+      STRICT_TESTS: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -18,15 +23,13 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-test.txt
 
-      - run: pip install -r requirements-test.txt
-
-      # The export tests skip themselves without ffmpeg, and the frontend parse check skips
-      # without node — a green run that quietly tested neither is worse than a red one, so
-      # both are asserted present rather than left to a skip nobody reads.
-      - name: Tools the suite needs
+      # ubuntu-latest doesn't carry ffmpeg, and the export tests build real opus and read the
+      # chapter marks back out of a real .m4b.
+      - name: Install ffmpeg
         run: |
-          ffmpeg -version | head -1
-          ffprobe -version | head -1
-          node --version
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - run: pip install -r requirements-test.txt
 
       - run: pytest

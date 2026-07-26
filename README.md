@@ -438,8 +438,14 @@ writing one would only fix the wrong answer in place. Rendering is stubbed at
 
 `tests/test_export.py` is the exception and runs ffmpeg for real, building actual opus parts
 and reading the chapter marks back out of the finished `.m4b` — the only way to know the
-markers line up with the audio rather than merely being written. It skips without ffmpeg;
-CI asserts ffmpeg is present so a green run can't mean it quietly skipped.
+markers line up with the audio rather than merely being written.
+
+Tests needing a tool beyond python skip when it isn't installed, which is right on a machine
+that hasn't got it and wrong in CI, where skipping is how a suite passes without having run.
+`STRICT_TESTS=1` refuses the run instead, naming what's missing and what it would have
+skipped; CI sets it. The check lives in `pytest_configure` rather than a shell step on
+purpose — `ffmpeg -version | head -1` exits 0 whether or not ffmpeg exists, which is how the
+first version of this passed while testing neither.
 
 `tests/test_frontend.py` is structural, not behavioural: every `$("#id")` resolves to an
 element that exists, no element is left unreferenced, tags balance, ids are unique, and the
