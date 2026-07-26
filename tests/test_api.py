@@ -1,5 +1,6 @@
 """The HTTP surface the page actually talks to. Contracts, not plumbing — the headers a
 response carries are as much a part of it as the body."""
+import io
 import os
 
 import pytest
@@ -240,3 +241,47 @@ class TestCoverRoute:
         r = client.get("/cover/b1/thumb.jpg")
         assert r.status_code == 200
         assert "max-age" in r.headers["Cache-Control"]
+
+
+class TestCoverVersion:
+    """The cover is cached for a day under a name that never changes, so every response that
+    names a book carries the version the page hangs off the URL. Without it a replaced cover
+    stays yesterday's image in the library grid."""
+
+    def write_cover(self, mtime=None):
+        p = books.cover_path("b1", "thumb")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(b"\xff\xd8\xff\xdb" + b"\0" * 64)
+        if mtime:
+            os.utime(p, (mtime, mtime))
+        return p
+
+    def test_zero_when_there_is_no_cover(self, client, make_book):
+        make_book()
+        assert client.get("/api/books").get_json()["books"][0]["cover_v"] == 0
+
+    def test_the_library_listing_carries_it(self, client, make_book):
+        make_book()
+        self.write_cover(mtime=1_700_000_000)
+        assert client.get("/api/books").get_json()["books"][0]["cover_v"] == \
+            1_700_000_000_000
+
+    def test_one_book_carries_it_too(self, client, make_book):
+        """The reader draws its header from this response, not from the listing."""
+        make_book()
+        self.write_cover(mtime=1_700_000_000)
+        assert client.get("/api/books/b1").get_json()["book"]["cover_v"] == \
+            1_700_000_000_000
+
+    def test_a_new_image_is_a_new_version(self, client, make_book, monkeypatch):
+        make_book()
+        self.write_cover(mtime=1_700_000_000)
+        before = client.get("/api/books").get_json()["books"][0]["cover_v"]
+        monkeypatch.setattr(books, "make_covers",
+                            lambda bid, raw: bool(self.write_cover(mtime=1_700_000_060)))
+        r = client.post("/api/books/cover",
+                        data={"id": "b1", "file": (io.BytesIO(b"jpeg"), "new.jpg")},
+                        content_type="multipart/form-data")
+        assert r.get_json()["cover_v"] > before
+        assert client.get("/api/books").get_json()["books"][0]["cover_v"] == \
+            r.get_json()["cover_v"]

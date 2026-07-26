@@ -262,7 +262,10 @@ it — a full book is hours of work.
   The cover is whichever image the book *declares* — EPUB 3 `properties="cover-image"`, then the
   EPUB 2 `<meta name="cover">` id, then the guide reference — never the first or biggest image,
   since a book's back matter can carry the covers of other novels advertised in it. ⚙ has a
-  **Replace the cover** upload for books that declare none.
+  **Replace the cover** upload, for books that declare none and for when the publisher's is
+  not the one you want. The files are cached for a day and keep their names, so every place
+  that shows a cover asks for it with `?v=`, a version taken from the image on disk — a
+  replacement appears in the grid, the header, the player and the lock screen at once.
 
 **Listening away from this PC.** Two buttons under *Whole book*:
 

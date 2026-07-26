@@ -1425,6 +1425,11 @@ async function dictate(blob, name){
 // lock-screen test confirmed the page can still advance to the next file when it ends.
 let BOOKS = [], BOOK = null, bookPoll = null;
 
+// Covers are cached for a day and the file name never changes, so every URL carries the
+// version the server derives from the image itself. Anywhere that leaves this out keeps
+// showing the old cover after a replacement.
+const coverUrl = (b, size) => `/cover/${b.id}/${size}.jpg?v=${b.cover_v || 0}`;
+
 async function loadBooks(){
   const d = await (await fetch("/api/books")).json();
   BOOKS = d.books || [];
@@ -1439,7 +1444,7 @@ async function loadBooks(){
     const at  = (b.position && b.position.chapter) || 0;
     // Always try the cover: books added before covers existed have one made on demand, so
     // the stored flag isn't the authority — whether the image loads is.
-    el.innerHTML = `<div class="art"><img src="/cover/${b.id}/thumb.jpg" alt="" loading="lazy">
+    el.innerHTML = `<div class="art"><img src="${coverUrl(b, "thumb")}" alt="" loading="lazy">
         <span class="noart" hidden>📖</span></div>
       <div class="bt">${esc(b.title)}</div>
       <div class="ba">${esc(b.author || "")}</div>
@@ -1499,7 +1504,7 @@ async function openBook(id){
   const cov = $("#bookCover");
   cov.hidden = false;
   cov.onerror = ()=> { cov.hidden = true; };
-  cov.src = `/cover/${BOOK.id}/thumb.jpg?v=${BOOK.updated || 0}`;
+  cov.src = coverUrl(BOOK, "thumb");
   pickOption($("#bookVoice"), BOOK.voice);
   $("#bookHeadings").checked = BOOK.announce !== false;
   $("#bookSayTitle").value = BOOK.spoken_title || "";
@@ -1918,7 +1923,7 @@ function stopWatching(){ if(bookPoll){ clearInterval(bookPoll); bookPoll = null;
 // open — it's nulled when you go back to the library and replaced when you open another one
 // — while the audio carries on regardless. Reading BOOK here would save one book's position
 // onto another the moment you opened a second book mid-chapter.
-let NP = null;      // {id, title, author, chapters}
+let NP = null;      // {id, title, author, cover_v, chapters}
 let PLAY = {chapter: 0, segment: 0};
 const bookAudio = () => $("#bookAudio");
 function segmentsOf(i){ return NP ? ((NP.chapters[i] || {}).segments) || [] : []; }
@@ -1934,14 +1939,16 @@ async function resumeBook(id){
   const ci = p.chapter || 0, si = p.segment || 0;
   const segs = (((b.chapters || [])[ci]) || {}).segments || [];
   if(!segs[si]) return setStatus("That part hasn't been narrated yet.", true);
-  NP = {id: b.id, title: b.title, author: b.author, chapters: b.chapters};
+  NP = {id: b.id, title: b.title, author: b.author, cover_v: b.cover_v,
+        chapters: b.chapters};
   playNow(ci, si, p.offset || 0);
 }
 
 // Start from the book the reader has open; everything after that comes from NP.
 function playChapter(ci, si, offset){
   if(!BOOK) return;
-  NP = {id: BOOK.id, title: BOOK.title, author: BOOK.author, chapters: BOOK.chapters};
+  NP = {id: BOOK.id, title: BOOK.title, author: BOOK.author, cover_v: BOOK.cover_v,
+        chapters: BOOK.chapters};
   playNow(ci, si, offset);
 }
 
@@ -1975,7 +1982,7 @@ function showPlayer(){
   const cov = $("#mpCover");
   cov.style.visibility = "visible";
   cov.onerror = ()=> { cov.style.visibility = "hidden"; };
-  cov.src = `/cover/${NP.id}/thumb.jpg`;
+  cov.src = coverUrl(NP, "thumb");
 }
 
 // `keep` is where you'd carry on from. Closing the player by hand records it; being stopped
@@ -2031,15 +2038,16 @@ function markPlayingPart(){
   }
 }
 
-// Measured once per book. `sizes` is the shape the OS lays the artwork out by, so it has to
+// Measured once per cover. `sizes` is the shape the OS lays the artwork out by, so it has to
 // match the file: a tall cover announced as square gets bars along the top and bottom. The
-// cover keeps the book's own proportions, and its real dimensions go out with it.
-const ARTWORK = {};      // book id -> "600x906", or null when it has no cover
+// cover keeps the book's own proportions, and its real dimensions go out with it. Keyed by
+// the versioned URL, so a replaced cover of a different shape is measured again.
+const ARTWORK = {};      // cover URL -> "600x906", or null when it has no cover
 
 function setMediaSession(){
   if(!("mediaSession" in navigator) || !NP) return;
-  const id = NP.id, src = `/cover/${id}/full.jpg`;
-  const known = ARTWORK[id];
+  const id = NP.id, src = coverUrl(NP, "full");
+  const known = ARTWORK[src];
   navigator.mediaSession.metadata = new MediaMetadata({
     title: (NP.chapters[PLAY.chapter] || {}).name || "",
     artist: NP.author || "",
@@ -2054,7 +2062,7 @@ function setMediaSession(){
   navigator.mediaSession.setActionHandler("seekbackward", ()=> skip(-BACK_SECONDS));
   navigator.mediaSession.setActionHandler("seekforward",  ()=> skip(FORWARD_SECONDS));
   if(known !== undefined) return;
-  const done = s => { ARTWORK[id] = s; if(NP && NP.id === id) setMediaSession(); };
+  const done = s => { ARTWORK[src] = s; if(NP && NP.id === id) setMediaSession(); };
   const img = new Image();
   img.onload  = ()=> done(`${img.naturalWidth}x${img.naturalHeight}`);
   img.onerror = ()=> done(null);
@@ -2218,11 +2226,17 @@ $("#bookCoverFile").addEventListener("change", async e => {
   try{
     const d = await (await fetch("/api/books/cover", {method:"POST", body:fd})).json();
     if(!d.ok){ setStatus("❌ " + (d.msg || "couldn't use that image"), true); return; }
-    // cache-bust: the file name is unchanged, so the browser would keep the old one
-    const v = Date.now();
+    // The new version goes on the book itself, not just this <img>: the library grid, the
+    // player and the lock screen all build their URL from it, and the grid is drawn from
+    // BOOKS without another fetch when the reader is opened again.
+    BOOK.cover_v = d.cover_v;
+    const listed = BOOKS.find(b => b.id === BOOK.id);
+    if(listed) listed.cover_v = d.cover_v;
+    if(NP && NP.id === BOOK.id) NP.cover_v = d.cover_v;
     const cov = $("#bookCover");
     cov.hidden = false;
-    cov.src = `/cover/${BOOK.id}/thumb.jpg?v=${v}`;
+    cov.src = coverUrl(BOOK, "thumb");
+    if(NP && NP.id === BOOK.id){ showPlayer(); setMediaSession(); }
     setStatus("✅ Cover updated.");
   }catch(err){ setStatus("❌ " + err, true); }
   e.target.value = "";

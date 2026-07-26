@@ -58,6 +58,7 @@ def book_summary(b):
     return {k: b.get(k) for k in ("id", "title", "author", "language", "voice",
                                   "added", "position", "cover")} | \
            {"chapters": len(chapters), "ready": ready,
+            "cover_v": cover_version(b.get("id")),
             "words": sum(c.get("words", 0) for c in chapters)}
 
 def update_book(book_id, fn):
@@ -88,6 +89,19 @@ COVER_SIZES = {
 
 def cover_path(book_id, size):
     return book_dir(book_id, f"cover-{size}.jpg")
+
+def cover_version(book_id):
+    """What every /cover URL carries as ?v=, so replacing a cover shows up at once.
+
+    The files are cached for a day and keep their names, so without this the library grid
+    would go on drawing yesterday's image. Taken from the thumbnail's mtime rather than
+    stored on the book: a cover can appear without the index changing at all, which is what
+    ensure_cover does. Milliseconds because two replacements can land inside one second.
+    """
+    try:
+        return int(os.path.getmtime(cover_path(book_id, "thumb")) * 1000)
+    except OSError:
+        return 0
 
 def make_covers(book_id, raw):
     """raw = the original image bytes. Returns True if at least the thumbnail came out."""
@@ -666,7 +680,8 @@ def api_book(book_id):
     # The reader polls this every 4 s while anything is rendering, so the queue rides along
     # rather than needing a second request. It's global: renders are serialized across books,
     # so this book can be waiting on another one's chapter.
-    return jsonify(book=b, parts=book_parts(b), narrating=render_status())
+    return jsonify(book=b | {"cover_v": cover_version(book_id)},
+                   parts=book_parts(b), narrating=render_status())
 
 @app.post("/api/books/update")
 def api_book_update():
@@ -892,7 +907,7 @@ def api_book_cover():
     if not make_covers(bid, f.read()):
         return jsonify(ok=False, msg="couldn't read that image"), 400
     update_book(bid, lambda b: b.update(cover=True))
-    return jsonify(ok=True)
+    return jsonify(ok=True, cover_v=cover_version(bid))
 
 @app.get("/cover/<book_id>/<size>.jpg")
 def book_cover(book_id, size):
