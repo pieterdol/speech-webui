@@ -156,51 +156,41 @@ class TestSpokenAbbreviations:
 
 
 class TestNumberWords:
-    """Digits a voice would otherwise guess at."""
-
-    @pytest.mark.parametrize("n,said", [
-        (1, "one"), (13, "thirteen"), (21, "twenty-one"), (112, "one hundred twelve"),
-    ])
-    def test_numbers(self, n, said):
-        assert textprep.number_word(n) == said
-
-    @pytest.mark.parametrize("n,said", [
-        (1963, "nineteen sixty-three"),
-        (1958, "nineteen fifty-eight"),
-        (2010, "twenty ten"),
-        (1900, "nineteen hundred"),
-        (2000, "two thousand"),
-        (2005, "two thousand five"),
-        (63, "sixty-three"),                 # two digits are already a year
-    ])
-    def test_years_go_in_pairs(self, n, said):
-        """espeak reads 1963 as "one thousand nine hundred and sixty-three", which nobody says
-        about a year."""
-        assert textprep.year_word(n) == said
+    """Only words-to-digits is needed: a chapter heading can spell its number out, but digits
+    handed to an engine are read in whatever language it speaks."""
 
     def test_the_reverse_lookup_can_be_built_from_the_tables(self):
-        """books.py reads chapter numbers written out in words, and builds that from these."""
+        """books.py reads "Chapter Twenty-One", and builds that from these."""
         assert textprep.ONES[11] == "eleven" and textprep.TENS[6] == "sixty"
 
 
 class TestSlashNumbers:
     """A slash between numbers is a writing convention, not a sound: "11/22/63" read as written
-    comes out "eleven slash twenty-two slash sixty-three"."""
+    comes out "eleven slash twenty-two slash sixty-three". Only the slash is dealt with here —
+    the digits go to the engine, which reads them in its own language."""
 
     @pytest.mark.parametrize("written,spoken", [
-        ("11/22/63", "eleven, twenty-two, sixty-three"),
-        ("11/22/63: A Novel", "eleven, twenty-two, sixty-three: A Novel"),
-        ("10/7/58", "ten, seven, fifty-eight"),
-        ("9/30/1958", "nine, thirty, nineteen fifty-eight"),
-        ("9/11", "nine, eleven"),
-        ("20/20", "twenty, twenty"),
-        ("24/7", "twenty-four, seven"),
+        ("11/22/63", "11, 22, 63"),
+        ("11/22/63: A Novel", "11, 22, 63: A Novel"),
+        ("10/7/58", "10, 7, 58"),
+        ("9/30/1958", "9, 30, 1958"),
+        ("9/11", "9, 11"),
+        ("20/20", "20, 20"),
+        ("24/7", "24, 7"),
         ("The card was dated 11/22/63, in pencil.",
-         "The card was dated eleven, twenty-two, sixty-three, in pencil."),
-        ("11/21/63 and 11/22/63", "eleven, twenty-one, sixty-three and "
-                                  "eleven, twenty-two, sixty-three"),
+         "The card was dated 11, 22, 63, in pencil."),
+        ("11/21/63 and 11/22/63", "11, 21, 63 and 11, 22, 63"),
     ])
-    def test_each_group_is_spoken_as_a_number(self, written, spoken):
+    def test_the_slash_becomes_the_beat_between_the_groups(self, written, spoken):
+        assert textprep.respell(written) == spoken
+
+    @pytest.mark.parametrize("written,spoken", [
+        ("10/02/1986", "10, 2, 1986"),
+        ("01/02/03", "1, 2, 3"),
+        ("09/11", "9, 11"),
+    ])
+    def test_a_leading_zero_comes_off(self, written, spoken):
+        """It's the one thing an engine gets wrong by itself: "02" is read "zero two"."""
         assert textprep.respell(written) == spoken
 
     @pytest.mark.parametrize("text", [
@@ -214,10 +204,32 @@ class TestSlashNumbers:
     def test_left_alone(self, text):
         assert textprep.respell(text) == text
 
-    def test_the_comma_is_the_beat_between_the_groups(self):
-        """Joined by a space they run together into one long number, which is the other way to
-        get this wrong."""
-        assert textprep.respell("11/22/63").count(",") == 2
+    @pytest.mark.parametrize("written,spoken", [
+        ("10-02-1986", "10, 2, 1986"),          # day first, as written here
+        ("1986-02-10", "1986, 2, 10"),          # and ISO
+        ("2/10/1986", "2, 10, 1986"),
+    ])
+    def test_a_hyphen_carries_a_date_too(self, written, spoken):
+        assert textprep.respell(written) == spoken
+
+    @pytest.mark.parametrize("text", [
+        "the 1914-1918 war",              # a range, not a date
+        "see pages 10-20 for that",
+        "it took 10-15 minutes",
+        "the 2020-21 season",
+        "like some MS-13 lookout",
+        "ISBN 978-0-7432-7356-5",
+        "a 3-2-1 countdown",              # three groups, but no year in it
+    ])
+    def test_a_hyphen_between_numbers_is_usually_a_range(self, text):
+        """Which is why only the two forms carrying a four-digit year are read as a date."""
+        assert textprep.respell(text) == text
+
+    def test_the_digits_are_left_for_the_engine(self):
+        """Spelling them out here would mean spelling them out in one language: espeak says
+        "elf, tweeentwintig" for a Dutch voice and "eleven, twenty-two" for an English one, and
+        reads a four-digit group as a year in both."""
+        assert textprep.respell("1/2/1986") == "1, 2, 1986"
 
 
 class TestCutSentences:

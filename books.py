@@ -11,7 +11,7 @@ from flask import jsonify, request, send_from_directory
 import epub
 from core import app, index_lock, jobs, new_job, run_lock, safe_path, write_json, HERE
 from media import audio_seconds, pad_with_silence
-from textprep import ONES, TENS, cut_sentences, number_word, respell
+from textprep import ONES, TENS, cut_sentences, respell
 from tts import piper_voice_ids, tts_engine_of, tts_say
 
 BOOKS_DIR  = os.path.join(HERE, "books")
@@ -283,9 +283,9 @@ def render_chapter(book_id, index):
         # changed would keep an opening that no longer matches. Only the first one has to go.
         #
         # Recorded respelled, because respelled is what the engine is given: "11/22/63: A Novel"
-        # is spoken "eleven, twenty-two, sixty-three: A Novel", and a change to how a phrase is
-        # pronounced leaves the written form identical. Comparing what's written would call that
-        # opening current when it no longer is.
+        # goes in as "11, 22, 63: A Novel", and a change to how a phrase is pronounced leaves the
+        # written form identical. Comparing what's written would call that opening current when
+        # it no longer is.
         spoken = [respell(p) for p, _ in intro]
         # Split before publishing the state, not after: how many parts a chapter comes to is
         # pure text work, and knowing it up front is the difference between "part 1 of 2" and
@@ -345,6 +345,9 @@ CHAPTER_PAUSE = 0.9
 # And the very top of the book gets its title and author, the way a published audiobook opens.
 TITLE_PAUSE   = 0.7
 AUTHOR_PAUSE  = 1.6
+# "by" in the book's own language. Everything else in the announcement is the book's own words;
+# this one is ours, and read out by a Dutch voice the English word comes out as "bie".
+BY = {"nl": "van"}
 # And a longer one at the end, so a chapter closes rather than running straight into the next
 # announcement — the moment you'd use to notice a chapter has ended.
 CHAPTER_END_PAUSE = 1.8
@@ -415,12 +418,16 @@ def chapter_intro(book, index):
         if said:
             pieces.append((said, TITLE_PAUSE))
         if book.get("author"):
-            pieces.append((f"by {book['author']}", AUTHOR_PAUSE))
+            by = BY.get((book.get("language") or "")[:2], "by")
+            pieces.append((f"{by} {book['author']}", AUTHOR_PAUSE))
     if part and not any(part_of(c.get("name")) == part for c in chapters[:index]):
         pieces.append((part, PART_PAUSE))          # only when the part actually starts
     n = label_number(label)
     if n is not None:
-        pieces.append((number_word(n), CHAPTER_PAUSE))
+        # As digits, for the engine to say in whatever language it speaks: espeak reads "19" as
+        # "nineteen" for an English voice and "negentien" for a Dutch one. Spelling it out here
+        # would mean spelling it out in one language — a Dutch book was announcing "oo-nuh".
+        pieces.append((str(n), CHAPTER_PAUSE))
     return pieces
 
 def part_of(name):

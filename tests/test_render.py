@@ -113,7 +113,7 @@ class TestAnnouncementInvalidation:
         fake_tts.clear()
         books.render_chapter("b1", 0)
 
-        assert chapter("b1")["intro"] == ["A Book", "by An Author", "one"]
+        assert chapter("b1")["intro"] == ["A Book", "by An Author", "1"]
         assert os.path.getmtime(first) > before          # s00 remade
         assert len(fake_tts) == 1                        # and only s00
 
@@ -131,7 +131,7 @@ class TestAnnouncementInvalidation:
         make_book(names=["Chapter One"], texts=[LONG], title="11/22/63", author="",
                   announce=True)
         books.render_chapter("b1", 0)
-        assert chapter("b1")["intro"] == ["eleven, twenty-two, sixty-three", "one"]
+        assert chapter("b1")["intro"] == ["11, 22, 63", "1"]
 
     def test_a_pronunciation_change_makes_the_opening_stale(self, make_book, fake_tts):
         """The case a written-form record can't see: the title is untouched, only how it's said
@@ -144,7 +144,7 @@ class TestAnnouncementInvalidation:
 
         time.sleep(0.01)
         books.update_book("b1", lambda b: b["chapters"][0].update(
-            state="pending", intro=["11/22/63", "one"]))     # what a rule ago would have said
+            state="pending", intro=["11/22/63", "1"]))       # what a rule ago would have said
         fake_tts.clear()
         books.render_chapter("b1", 0)
 

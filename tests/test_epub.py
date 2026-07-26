@@ -95,6 +95,55 @@ class TestNestedToc:
         assert meta["author"] == "A Writer"
 
 
+class TestSeveralChaptersPerFile:
+    """A book can pack twenty chapters into one spine document and address each from the TOC by
+    fragment. Keying names by file alone made that one chapter of 20,000 words under the last
+    label in the file."""
+
+    def packed(self, tmp_path, chapters):
+        """One document holding several anchored chapters, the way calibre exports them."""
+        body = "".join(
+            f'<h4 id="heading_id_{n}">{label}</h4><p>{" ".join(f"word{i}" for i in range(words))}</p>'
+            for n, (label, words) in enumerate(chapters, start=2))
+        docs = [("packed.html", f"<html><body>{body}</body></html>")]
+        nav = [(chapters[0][0], "packed.html", [])] + [
+            (label, f"packed.html#heading_id_{n}", [])
+            for n, (label, _w) in enumerate(chapters[1:], start=3)]
+        return build(tmp_path, docs, [(l, h, k) for l, h, k in nav])
+
+    def test_each_anchor_becomes_its_own_chapter(self, tmp_path):
+        book = self.packed(tmp_path, [("PROLOOG", 200), ("1", 300), ("2", 400)])
+        _meta, chapters, _skipped = epub.extract(book)
+        assert [c["name"] for c in chapters] == ["PROLOOG", "1", "2"]
+        assert [c["words"] for c in chapters] == [200, 300, 400]
+
+    def test_the_text_is_partitioned_not_copied(self, tmp_path):
+        """Every word lands in exactly one chapter — the file's own total."""
+        book = self.packed(tmp_path, [("PROLOOG", 200), ("1", 300), ("2", 400)])
+        _meta, chapters, _skipped = epub.extract(book)
+        assert sum(c["words"] for c in chapters) == 900
+        assert "word299" in chapters[1]["text"] and "word299" not in chapters[0]["text"]
+
+    def test_a_short_chapter_the_toc_names_is_kept(self, tmp_path):
+        """The length rule drops part-title pages and stray lines, which is a question about
+        untitled sections. Some real chapters are 90 words."""
+        book = self.packed(tmp_path, [("PROLOOG", 200), ("1", 90), ("2", 300)])
+        _meta, chapters, _skipped = epub.extract(book)
+        assert [c["name"] for c in chapters] == ["PROLOOG", "1", "2"]
+
+    def test_a_missing_anchor_does_not_lose_the_text(self, tmp_path):
+        """A TOC pointing at an id the document doesn't have makes no cut, so its text stays
+        with the chapter before it rather than vanishing."""
+        docs = [("packed.html",
+                 "<html><body><h4 id=\"heading_id_2\">1</h4><p>one two three</p>"
+                 "<h4>2</h4><p>four five six</p></body></html>")]
+        book = build(tmp_path, docs, [("1", "packed.html", []),
+                                     ("2", "packed.html#nope", [])])
+        _meta, chapters, _skipped = epub.extract(book)
+        assert len(chapters) == 1
+        assert "four five six" in chapters[0]["text"]
+
+
 class TestFlatToc:
     """1984's shape: three entries, no children. There are no parts to find, and saying so is
     correct rather than a failure."""

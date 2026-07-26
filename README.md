@@ -174,7 +174,10 @@ it — a full book is hours of work.
 
 - **Adding** — `epub.py` reads the spine for reading order and the `.ncx` for chapter names,
   then drops covers, colophons, adverts, dedications and part-title pages. The Institute comes
-  out as 192 chapters and 20.2 h of audio.
+  out as 192 chapters and 20.2 h of audio. A book that packs several chapters into one file and
+  addresses each from its table of contents by anchor — `Section0001.xhtml#heading_id_3` — is cut
+  at those anchors, so twenty chapters stay twenty chapters. A chapter the TOC names is kept
+  however short it is; the length rule that drops part-title pages applies to untitled sections.
 - **Narrator** — the same picker as everywhere else, Kokoro English and Piper Dutch. A book
   declaring `nl` gets a Dutch voice by default. Changing it after rendering discards that
   book's audio, so it asks first.
@@ -215,9 +218,12 @@ it — a full book is hours of work.
   longer one so it doesn't run into the next announcement. Off via ⚙, which re-renders the book.
 
   The number is read out of the heading in **digits or in words**, since a book may name its
-  chapters "Chapter 1" or "Chapter One", and is spoken as a word so "21" can't come out as a
-  year. A heading that is a title rather than a number gets none: an epigraph shouldn't be
-  introduced as "chapter seven".
+  chapters "Chapter 1" or "Chapter One", and goes to the engine as digits so that it comes out in
+  whatever language the voice speaks — *"nineteen"* from an English one, *"negentien"* from a
+  Dutch one. Same reason the *"by"* in front of the author is the book's own word: *"van"* for a
+  Dutch book, since the English one read by a Dutch voice comes out as "bie". A heading that is a
+  title rather than a number gets no number: an epigraph shouldn't be introduced as "chapter
+  seven".
 
   A title is written to be read, not heard — *11/22/63: A Novel* has a subtitle no narrator says
   out loud — so ⚙ has a **Say the title as** field that only the announcement uses; the library,
@@ -449,12 +455,19 @@ redirects along with everything else, and the rest of the test then runs against
   not to `kokoro_onnx`, which reads the markup itself out loud, so respelling is the whole
   toolkit.
 - **A slash between numbers isn't a sound.** `11/22/63` read as written comes out *"eleven slash
-  twenty-two slash sixty-three"*, so each group is spoken as a number with a comma for the beat
-  between them: *"eleven, twenty-two, sixty-three"*, and *"nine, eleven"*, *"twenty, twenty"*.
-  Which group is the month is never guessed at — `10/7` is October 7th in an American book and
-  July 10th in a Dutch one. Two single digits are left alone, since `1/2` is a fraction far more
-  often than a date, and a four-digit year goes in pairs: *"nineteen sixty-three"*. Prose as much
-  as titles.
+  twenty-two slash sixty-three"*, so the slash becomes the comma that is the beat between the
+  groups — `11, 22, 63` — and a leading zero comes off, `02` being read *"zero two"*. The digits
+  themselves are left to the engine, which says *"elf, tweeëntwintig"* for a Dutch voice and
+  *"eleven, twenty-two"* for an English one, and reads a four-digit group as a year in both;
+  spelling them out here would mean spelling them out in one language. Which group is the month
+  is never guessed at — `10/7` is October 7th in an American book and July 10th in a Dutch one —
+  and two single digits are left alone, `1/2` being a fraction far more often than a date. Prose
+  as much as titles.
+
+  A hyphenated date gets the same treatment but needs a narrower rule, since between numbers a
+  hyphen is usually a range: `1914-1918`, `pages 10-20`, `the 2020-21 season`. Only the two forms
+  carrying a four-digit year are read as a date — `10-02-1986` and `1986-02-10` — and every other
+  hyphen is left where it is.
 - **Titles are written out before they're spoken.** `Mr.` reaches the engine as `Mister`, since
   the full stop otherwise reads as a sentence break and drops a pause between the title and the
   name. Same for `Mrs.`, `Ms.`, `Dr.`, `Prof.`, and for `Jr.`, `Sr.`, `vs.`, `etc.`, `e.g.`,

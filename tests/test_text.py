@@ -5,21 +5,6 @@ import pytest
 import books
 
 
-class TestNumberWord:
-    """Numbers are spoken as words so a voice can't read "21" as a year."""
-
-    @pytest.mark.parametrize("n,said", [
-        (1, "one"), (9, "nine"), (13, "thirteen"), (20, "twenty"), (21, "twenty-one"),
-        (30, "thirty"), (99, "ninety-nine"), (100, "one hundred"), (112, "one hundred twelve"),
-        (999, "nine hundred ninety-nine"),
-    ])
-    def test_spoken(self, n, said):
-        assert books.number_word(n) == said
-
-    def test_out_of_range_stays_digits(self):
-        assert books.number_word(1000) == "1000"
-
-
 class TestLabelNumber:
     """A book may write its chapter numbers either way — Dark Matter spells them out, The
     Institute doesn't — and a section that is a title rather than a number gets no number."""
@@ -100,28 +85,40 @@ class TestChapterIntro:
 
     def test_book_opens_with_title_and_author(self):
         b = self.book(["Chapter One", "Chapter Two"])
-        assert self.said(books.chapter_intro(b, 0)) == ["Dark Matter", "by Blake Crouch", "one"]
+        assert self.said(books.chapter_intro(b, 0)) == ["Dark Matter", "by Blake Crouch", "1"]
 
     def test_the_spoken_title_is_what_opens_the_book(self):
-        b = self.book(["Chapter One"], title="11/22/63: A Novel",
-                      spoken_title="eleven, twenty-two, sixty-three")
+        b = self.book(["Chapter One"], title="11/22/63: A Novel", author="Stephen King",
+                      spoken_title="11, 22, 63")
         assert self.said(books.chapter_intro(b, 0)) \
-            == ["eleven, twenty-two, sixty-three", "by Blake Crouch", "one"]
+            == ["11, 22, 63", "by Stephen King", "1"]
 
     def test_later_chapters_get_only_their_number(self):
         b = self.book(["Chapter One", "Chapter Two"])
-        assert self.said(books.chapter_intro(b, 1)) == ["two"]
+        assert self.said(books.chapter_intro(b, 1)) == ["2"]
+
+    def test_the_number_goes_in_as_digits(self):
+        """So the engine says it in the language it speaks: espeak reads "19" as "nineteen" for
+        an English voice and "negentien" for a Dutch one."""
+        b = self.book(["Hoofdstuk 19"], title="T", author="")
+        assert self.said(books.chapter_intro(b, 0)) == ["T", "19"]
+
+    def test_by_is_in_the_books_language(self):
+        """Read out by a Dutch voice, the English word comes out as "bie"."""
+        b = self.book(["1"], title="Het Juvenalis dilemma", author="Dan Brown", language="nl")
+        assert self.said(books.chapter_intro(b, 0)) == [
+            "Het Juvenalis dilemma", "van Dan Brown", "1"]
 
     def test_part_named_only_where_it_begins(self):
         b = self.book(["A · Chapter 1", "A · Chapter 2", "B · Chapter 1"], title="T", author="")
-        assert self.said(books.chapter_intro(b, 0)) == ["T", "A", "one"]
-        assert self.said(books.chapter_intro(b, 1)) == ["two"]
-        assert self.said(books.chapter_intro(b, 2)) == ["B", "one"]
+        assert self.said(books.chapter_intro(b, 0)) == ["T", "A", "1"]
+        assert self.said(books.chapter_intro(b, 1)) == ["2"]
+        assert self.said(books.chapter_intro(b, 2)) == ["B", "1"]
 
     def test_unnumbered_section_says_nothing_of_its_own(self):
         b = self.book(["An epigraph", "Chapter One"], title="T", author="")
         assert self.said(books.chapter_intro(b, 0)) == ["T"]      # only the book's own opening
-        assert self.said(books.chapter_intro(b, 1)) == ["one"]
+        assert self.said(books.chapter_intro(b, 1)) == ["1"]
 
     def test_announcements_off(self):
         b = self.book(["Chapter One"], announce=False)

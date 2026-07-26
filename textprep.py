@@ -33,60 +33,49 @@ SPOKEN_ABBREV = {"Jr": "Junior", "Sr": "Senior", "vs": "versus", "etc": "et cete
 # sentence — they're just spoken as written.
 
 
+# The number words, for reading a chapter heading that spells its number out — "Chapter
+# Twenty-One". Only that direction is needed: digits handed to an engine are read in whatever
+# language it speaks, so nothing here turns a number into words.
 ONES = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
         "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
         "eighteen", "nineteen"]
 TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
 
-def number_word(n):
-    """A number as words. Kokoro reads a bare "21" acceptably, but "twenty-one" is unambiguous
-    and doesn't risk being read as a year or a list item."""
-    if n < 0 or n > 999:
-        return str(n)
-    if n < 20:
-        return ONES[n] or "zero"
-    if n < 100:
-        return TENS[n // 10] + (f"-{ONES[n % 10]}" if n % 10 else "")
-    rest = n % 100
-    return ONES[n // 100] + " hundred" + (f" {number_word(rest)}" if rest else "")
-
-def year_word(n):
-    """A four-digit year the way it's said — "nineteen sixty-three", not "one thousand nine
-    hundred and sixty-three", which is what espeak makes of the digits. Years mostly go in
-    pairs; the round thousand, the noughties and the round hundreds are the three that don't."""
-    if not 1000 <= n <= 9999:
-        return number_word(n)
-    if n % 1000 == 0:
-        return f"{number_word(n // 1000)} thousand"                     # 2000
-    if n % 1000 < 10:
-        return f"{number_word(n // 1000)} thousand {number_word(n % 1000)}"   # 2005
-    if n % 100 == 0:
-        return f"{number_word(n // 100)} hundred"                       # 1900
-    return f"{number_word(n // 100)} {number_word(n % 100)}"            # 1963, 2010
-
 
 # Dates and pairs written with a slash. Read as written, "11/22/63" comes out as "eleven slash
-# twenty-two slash sixty-three": the slash is a writing convention, not a sound. Saying each
-# group as a number is what a person does with these — "eleven, twenty-two, sixty-three",
-# "nine, eleven", "twenty, twenty" — and it needs no guess about which group is the month,
-# which a spoken-out date would ("10/7" is October 7th in the American books here and July 10th
-# in a Dutch one).
+# twenty-two slash sixty-three": the slash is a writing convention, not a sound. Dropping it for
+# a comma is all this does — the digits are left to the engine, which says "elf, tweeëntwintig"
+# for a Dutch voice and "eleven, twenty-two" for an English one, and reads a four-digit group as
+# a year in both. Spelling the numbers out here would mean spelling them out in one language.
 #
-# The comma in place of the slash is doing real work: it's the beat between the groups. Joined
-# by a space they run together into one long number, which is the other way to get this wrong.
+# The comma is the beat between the groups; without it they run together into one long number.
+# A leading zero is the one thing the engine gets wrong on its own — "02" is read "zero two" —
+# so it comes off.
 #
-# Groups are numbers only, so "and/or" and "Jake/George" are never touched, and a slash on
-# either side rules out a URL or a path.
+# Which group is the month is never guessed at, which a spoken-out date would have to: "10/7" is
+# October 7th in an American book and July 10th in a Dutch one.
+#
+# Groups are digits only, so "and/or" and "Jake/George" are never touched, and a slash on either
+# side rules out a URL or a path.
 _SLASH_NUMBERS = re.compile(r"(?<![\w/.])(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?(?![\w/])")
 
-def _spoken_slash(match):
-    groups = [g for g in match.groups() if g]
+# The same date written with hyphens — "10-02-1986". A hyphen needs a much narrower rule than a
+# slash, because between numbers it is usually a range and not a separator: "1914-1918", "pages
+# 10-20", "the 2020-21 season", "MS-13". So only the two forms carrying a four-digit year count
+# as a date, day-first or ISO, and everything else keeps its hyphen. A hyphen on either side
+# rules out a longer chain of digits like an ISBN.
+_HYPHEN_DATE = re.compile(r"(?<![\w-])(?:(\d{1,2})-(\d{1,2})-(\d{4})"
+                          r"|(\d{4})-(\d{1,2})-(\d{1,2}))(?![\w-])")
+
+def _spoken_groups(match):
+    """The groups as digits, slash or hyphen gone. "0" is a group like any other, so this tests
+    for None rather than for falsiness — the alternation above leaves half its groups unset."""
+    groups = [g for g in match.groups() if g is not None]
     # Two single digits are a fraction far more often than a date, and "one two" is worse than
     # the slash. Three groups are a date whatever their sizes.
     if len(groups) == 2 and all(len(g) == 1 for g in groups):
         return match.group(0)
-    say = year_word if len(groups[-1]) == 4 else number_word
-    return ", ".join([number_word(int(g)) for g in groups[:-1]] + [say(int(groups[-1]))])
+    return ", ".join(g.lstrip("0") or "0" for g in groups)
 
 
 def _abbrev_re(abbr):
@@ -129,7 +118,8 @@ def respell(text):
     for pattern, full in _SPOKEN:
         text = pattern.sub(lambda m, f=full: _expand(m, f), text)
     text = _NUMBER_OF.sub("number", text)
-    text = _SLASH_NUMBERS.sub(_spoken_slash, text)
+    text = _SLASH_NUMBERS.sub(_spoken_groups, text)
+    text = _HYPHEN_DATE.sub(_spoken_groups, text)
     for src, dst in RESPELL.items():
         text = re.sub(rf"\b{re.escape(src)}\b", dst, text, flags=re.IGNORECASE)
     return text
