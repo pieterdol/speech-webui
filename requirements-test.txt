@@ -8,3 +8,6 @@ flask
 beautifulsoup4
 lxml
 pytest
+# Parses the page's inline script when node isn't installed — see test_the_script_parses. CI has
+# node and never reaches it; this is for the machine the page is edited on.
+esprima

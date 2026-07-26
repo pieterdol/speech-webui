@@ -403,7 +403,7 @@ uv pip install --python .venv/bin/python pytest    # once
 
 Also on every push and pull request, via `.github/workflows/tests.yml`.
 
-**What's covered.** Every module, ~340 tests. The books state machine, which is where the bugs
+**What's covered.** Every module, ~370 tests. The books state machine, which is where the bugs
 actually live: a render cancelled under itself, what survives a restart, which chapters an export
 takes, how a part run scopes its progress, the queue. The pure functions — reading a chapter
 number out of a heading, cutting text into segments, chunks and sentences, what gets announced
@@ -424,8 +424,12 @@ ffmpeg for real, reading the chapter marks back out of a finished `.m4b` — the
 they line up with the audio rather than merely being written.
 
 `tests/test_frontend.py` is structural, not behavioural: every `$("#id")` resolves, no element is
-left unreferenced, tags balance, ids are unique, and the inline script parses under `node --check`.
-One file with no build step means nothing else catches a dangling reference before the phone does.
+left unreferenced, tags balance, ids are unique, and the inline script parses. One file with no
+build step means nothing else catches a dangling reference before the phone does. The parse check
+uses `node --check` where node exists, which is what CI runs, and falls back to esprima where it
+doesn't — a desktop is not a build box, and the check is worth most on the machine the page is
+edited on. A second test feeds both of them a script that doesn't parse, since a checker that
+passes everything is worse than none.
 
 Tests needing a tool beyond python skip when it isn't installed, which is right on a laptop and
 wrong in CI, where skipping is how a suite passes without having run. `STRICT_TESTS=1`, which CI
