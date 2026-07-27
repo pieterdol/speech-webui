@@ -1280,6 +1280,40 @@ def api_book_render():
             started.append(i)
     return jsonify(ok=True, started=started, ahead=ahead)
 
+@app.post("/api/books/retry")
+def api_book_retry():
+    """Narrate every chapter that failed, again.
+
+    A bulk run steps past an `error` chapter rather than retrying it, which is right — a chapter
+    whose text has gone would otherwise hold the run up all night — but it means failures
+    accumulate quietly: the run reports itself finished and the book is three chapters short with
+    nothing saying so out loud.
+
+    Whatever a failure kept, it keeps: a chapter that fell over on part five of eight has four
+    real parts on disk, and the render resumes from them exactly as it does after a restart.
+    """
+    d = request.get_json(force=True, silent=True) or {}
+    book = find_book(d.get("id") or "")
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    # Left out of the narration *and* failed is not a failure to fix: render_chapter returns
+    # early on a skipped chapter, so it would sit in the queue saying "queued" for ever.
+    failed = [c["i"] for c in book.get("chapters") or []
+              if c.get("state") == "error" and not c.get("skip")]
+    # Read before the threads go, for the same reason api_book_render reads it: what the page
+    # tells you is whether this starts now or joins a queue, and we'd be counting ourselves.
+    ahead = render_depth()
+
+    def reopen(b):
+        for i in failed:
+            b["chapters"][i].update(state="pending", error=None)
+
+    if failed:
+        update_book(book["id"], reopen)
+        for i in failed:
+            threading.Thread(target=render_chapter, args=(book["id"], i), daemon=True).start()
+    return jsonify(ok=True, started=failed, ahead=ahead, book=find_book(book["id"]))
+
 @app.post("/api/books/skip")
 def api_book_skip():
     """Leave a chapter out of the narration, or put it back.

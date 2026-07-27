@@ -21,6 +21,7 @@ EXPECTED = {
     ("/api/books/export/delete", "POST"),
     ("/api/books/render", "POST"),
     ("/api/books/respell", "POST"),
+    ("/api/books/retry", "POST"),
     ("/api/books/render_all", "POST"),
     ("/api/books/render_stop", "POST"),
     ("/api/books/rescan", "POST"),

@@ -254,6 +254,13 @@ it — a full book is hours of work.
   the depth it reports is what's actually holding the lock — not the whole-book run's remaining
   chapters, which would say 190 for a chapter that is in fact next. Anything you need to keep
   reading stays in a panel; the toast fades, or a tap dismisses it.
+- **Didn't get narrated** appears above *Whole book* when a chapter has failed, names each one
+  and what went wrong, and retries the lot with one button. A bulk run steps past an `error`
+  chapter rather than trying it again — a chapter whose text has gone would otherwise hold the
+  run up all night — so failures accumulate quietly, and the run reports itself finished with the
+  book three chapters short. A retry keeps whatever each one managed: four parts on disk are four
+  parts the render resumes from. A failed chapter that's also left out isn't retried, since a
+  render returns early on one and it would sit in the queue for ever.
 - **Narrating now**, above *Whole book*, says which chapter the engine is on and which of its
   parts — "part 1 of 8" from the start, since splitting happens before any audio is made — and
   folds open to what's waiting behind it with a rough total of the work left. It appears only

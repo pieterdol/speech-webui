@@ -131,6 +131,12 @@
   .seg.can:hover .n { color:var(--accent); }
   .seg.wait { color:var(--muted); }
   .seg.on .n { color:var(--accent); font-weight:600; }
+  /* One chapter that failed. What the engine or ffmpeg said is a sentence rather than a word,
+     so unlike a .seg row it goes under the name and is allowed to wrap. */
+  .fail { padding:7px 0; border-top:1px solid var(--line); font-size:13px; }
+  .fail:first-child { border-top:none; }
+  .fail .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fail .why { color:#ff9db0; font-size:12px; margin-top:3px; word-break:break-word; }
   #status, #chatStatus { margin-top:16px; padding:12px 14px; border-radius:10px; background:var(--card);
             border:1px solid var(--line); font-size:15px; display:none; }
   #status.err, #chatStatus.err { border-color:#b3455e; color:#ff9db0; }
@@ -561,6 +567,20 @@
       <div id="narratingNow"></div>
       <button id="queueToggle" class="segtoggle" style="display:none"></button>
       <div id="queueList" class="seglist" hidden></div>
+    </div>
+
+    <!-- Chapters that fell over. A bulk run steps past one rather than retrying it, so they
+         pile up quietly — this is the only place that says how many and why. Hidden when
+         there are none, which is nearly always. -->
+    <div class="card" id="failed" style="margin-top:12px;display:none">
+      <div class="outhead"><span class="nm">Didn't get narrated</span></div>
+      <div id="failedList"></div>
+      <div class="acts" style="margin-top:10px">
+        <button id="retryFailed" class="btn">↻ Retry these</button>
+      </div>
+      <div class="hint">A whole-book run leaves a failed chapter where it is rather than trying
+        it all night, so nothing else would have told you. Each keeps the parts it did manage,
+        and a retry carries on from them.</div>
     </div>
 
     <h2>Whole book</h2>
@@ -1804,6 +1824,35 @@ function renderWholeBook(){
       + (left.length ? ` The rest is about ${hoursLeft(leftMin)} of work.` : " All done.");
 }
 
+// Chapters that failed, with what went wrong on each. A bulk run steps past an errored chapter
+// rather than retrying it — so a book can report itself narrated and be three chapters short,
+// and the only trace was a red line in a 192-row list you'd have to scroll to find.
+function renderFailed(){
+  const bad = (BOOK.chapters || []).filter(c => c.state === "error" && !c.skip);
+  $("#failed").style.display = bad.length ? "block" : "none";
+  if(!bad.length) return;
+  $("#failedList").innerHTML = bad.map(c =>
+    `<div class="fail"><div class="nm">${esc(c.name || "Chapter " + (c.i + 1))}</div>
+       <div class="why">❌ ${esc(c.error || "failed")}</div></div>`).join("");
+  $("#retryFailed").textContent = bad.length === 1 ? "↻ Retry it"
+                                                  : `↻ Retry all ${bad.length}`;
+}
+$("#retryFailed").addEventListener("click", async ()=>{
+  if(!BOOK) return;
+  const d = await (await fetch("/api/books/retry", {method:"POST",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify({id: BOOK.id})})).json();
+  if(!d.ok) return toast("❌ " + (d.msg || "couldn't start them"));
+  BOOK = d.book;
+  const n = (d.started || []).length;
+  if(!n) toast("Nothing failed — nothing to retry.");
+  else toast(d.ahead ? `⏳ Queued ${n} chapter${n === 1 ? "" : "s"} again — ${d.ahead} to `
+                       + `narrate first.`
+                     : `<span class="spin"></span>Narrating ${n} chapter`
+                       + `${n === 1 ? "" : "s"} again.`);
+  renderChapterList();
+  watchRenders();
+});
+
 // What the narrator is on, and what is stacked up behind it. The whole-book hint says how
 // far through a bulk run is, which is not the same question as "what is it doing right now"
 // — a single chapter you tapped, or one queued behind another book's, showed nothing at all.
@@ -1879,6 +1928,7 @@ function readQueue(){
 function renderChapterList(){
   readQueue();
   renderWholeBook();
+  renderFailed();
   renderNarrating();
   renderResume();
   const box = $("#chapterList");

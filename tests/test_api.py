@@ -198,6 +198,59 @@ class TestClearNarration:
         assert os.path.exists(books.book_dir("b1", "text", "ch000.txt"))
 
 
+class TestRetryingFailures:
+    """A bulk run steps past a chapter that errored, so failures accumulate without anything
+    saying so. One button asks for all of them again."""
+
+    def test_only_the_failed_ones_are_asked_for(self, client, make_book, no_background_work):
+        make_book(names=["One", "Two", "Three"], texts=["word " * 10] * 3)
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        books.update_book("b1", lambda b: b["chapters"][2].update(state="error",
+                                                                  error="ffmpeg failed"))
+        assert client.post("/api/books/retry", json={"id": "b1"}).get_json()["started"] == [2]
+        assert no_background_work["chapters"] == [("b1", 2)]
+        states = [c["state"] for c in books.find_book("b1")["chapters"]]
+        assert states == ["ready", "pending", "pending"]
+
+    def test_the_reason_is_cleared_and_the_parts_are_kept(self, client, make_book,
+                                                          no_background_work):
+        """A chapter that fell over on part five has four real parts on disk; the render
+        resumes from them, so emptying the list would throw away an hour of audio."""
+        make_book(texts=["word " * 10])
+        segs = [{"file": "ch000-s00.opus", "seconds": 12.5}]
+        books.update_book("b1", lambda b: b["chapters"][0].update(
+            state="error", error="ffmpeg failed", segments=segs))
+        client.post("/api/books/retry", json={"id": "b1"})
+        c = books.find_book("b1")["chapters"][0]
+        assert c["state"] == "pending" and c["error"] is None
+        assert c["segments"] == segs
+
+    def test_a_chapter_left_out_is_not_retried(self, client, make_book, no_background_work):
+        """render_chapter returns early on one, so it would sit in the queue for ever."""
+        make_book(names=["Other titles", "One"], texts=["word " * 10] * 2)
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="error", skip=True))
+        assert client.post("/api/books/retry", json={"id": "b1"}).get_json()["started"] == []
+        assert no_background_work["chapters"] == []
+        assert books.find_book("b1")["chapters"][0]["state"] == "error"
+
+    def test_nothing_failed_starts_nothing(self, client, make_book, no_background_work):
+        make_book()
+        assert client.post("/api/books/retry", json={"id": "b1"}).get_json()["started"] == []
+        assert no_background_work["chapters"] == []
+
+    def test_it_says_what_is_already_in_the_engine(self, client, make_book, monkeypatch,
+                                                   no_background_work):
+        """Renders are serialized across every book, so a retry can be a twenty-minute wait
+        with nothing on screen to show it started."""
+        make_book()
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="error"))
+        monkeypatch.setattr(books, "render_depth", lambda: 3)
+        assert client.post("/api/books/retry", json={"id": "b1"}).get_json()["ahead"] == 3
+
+    def test_unknown_book(self, client):
+        assert client.post("/api/books/retry", json={"id": "nope"}).status_code == 404
+
+
 class TestLeavingChaptersOut:
     """Apparatus the heuristics can't tell from prose — a publisher's list of their own titles
     is long enough and titled enough to read as a chapter — marked by hand instead."""
