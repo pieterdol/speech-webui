@@ -112,7 +112,8 @@ class TestSpokenTitle:
 
     def test_a_narrated_opening_is_remade(self, client, make_book, no_background_work):
         make_book(announce=True)                     # or there's no announcement to re-make
-        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        books.update_book("b1", lambda b: b["chapters"][0].update(
+            state="ready", segments=[{"file": "ch000-s00.opus", "seconds": 9.0}]))
         r = client.post("/api/books/update", json={"id": "b1", "spoken_title": "Said aloud"})
         assert r.get_json()["renamed"] is True
         # pending, but keeping its segments: the render deletes only the part that went stale
@@ -122,7 +123,8 @@ class TestSpokenTitle:
     def test_renaming_the_written_title_counts_too(self, client, make_book, no_background_work):
         """With no spoken form set, the written title is what gets said."""
         make_book(announce=True)
-        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        books.update_book("b1", lambda b: b["chapters"][0].update(
+            state="ready", segments=[{"file": "ch000-s00.opus", "seconds": 9.0}]))
         r = client.post("/api/books/update", json={"id": "b1", "title": "Another Book"})
         assert r.get_json()["renamed"] is True
         assert no_background_work["chapters"] == [("b1", 0)]
@@ -1138,13 +1140,15 @@ class TestSettingTheOpeningNote:
 
     def test_a_narrated_opening_is_remade(self, client, make_book, no_background_work):
         make_book(announce=True)
-        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        books.update_book("b1", lambda b: b["chapters"][0].update(
+            state="ready", segments=[{"file": "ch000-s00.opus", "seconds": 9.0}]))
         r = client.post("/api/books/update",
                         json={"id": "b1", "opening": "According to a notice at the front."})
         assert r.get_json()["renamed"] is True
         c = books.find_book("b1")["chapters"][0]
         assert c["state"] == "pending"
-        assert c["segments"] == []      # this fixture has none; the point is they're not cleared
+        # kept, not cleared: the render deletes only the part the announcement lives in
+        assert [s["file"] for s in c["segments"]] == ["ch000-s00.opus"]
         assert no_background_work["chapters"] == [("b1", 0)]
 
     def test_it_is_stored_on_the_book(self, client, make_book):
@@ -1154,7 +1158,8 @@ class TestSettingTheOpeningNote:
 
     def test_clearing_it_also_remakes_the_opening(self, client, make_book, no_background_work):
         make_book(announce=True, opening="A notice.")
-        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        books.update_book("b1", lambda b: b["chapters"][0].update(
+            state="ready", segments=[{"file": "ch000-s00.opus", "seconds": 9.0}]))
         r = client.post("/api/books/update", json={"id": "b1", "opening": ""})
         assert r.get_json()["renamed"] is True
         assert books.find_book("b1")["opening"] == ""
@@ -1162,7 +1167,8 @@ class TestSettingTheOpeningNote:
     def test_setting_the_same_note_again_remakes_nothing(self, client, make_book,
                                                         no_background_work):
         make_book(announce=True, opening="A notice.")
-        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        books.update_book("b1", lambda b: b["chapters"][0].update(
+            state="ready", segments=[{"file": "ch000-s00.opus", "seconds": 9.0}]))
         r = client.post("/api/books/update", json={"id": "b1", "opening": "A notice."})
         assert r.get_json()["renamed"] is False
         assert no_background_work["chapters"] == []
@@ -1184,3 +1190,96 @@ class TestSettingTheOpeningNote:
         b = books.find_book("b1")
         assert [books.respell(p, b["respell"]) for p, _ in after] \
             != [books.respell(p, {}) for p, _ in before]        # …and the spoken one isn't
+
+    def test_an_edit_while_it_is_still_rendering_is_not_lost(self, client, make_book,
+                                                            no_background_work):
+        """The bug this guard replaced: re-recording used to need the chapter to be *ready* at the
+        moment you saved, so a second edit made while the first was still being spoken was stored
+        and never said. The render then marked the chapter ready with the older wording, and
+        nothing would ever notice."""
+        make_book(announce=True)
+        books.update_book("b1", lambda b: b["chapters"][0].update(
+            state="rendering", segments=[{"file": "ch000-s00.opus", "seconds": 9.0}]))
+        r = client.post("/api/books/update", json={"id": "b1", "opening": "A later thought."})
+        assert r.get_json()["renamed"] is True
+        assert books.find_book("b1")["chapters"][0]["state"] == "pending"
+        assert no_background_work["chapters"] == [("b1", 0)]
+
+    def test_but_a_chapter_with_no_audio_yet_needs_no_remake(self, client, make_book,
+                                                             no_background_work):
+        """Nothing on disk to be wrong — the render will use the note when it gets there."""
+        make_book(announce=True)
+        r = client.post("/api/books/update", json={"id": "b1", "opening": "A notice."})
+        assert r.get_json()["renamed"] is False
+        assert no_background_work["chapters"] == []
+
+
+class TestNarratingAChapterAgain:
+    """A render keeps every part it finds on disk, which is what makes resuming an interrupted
+    chapter cheap and what makes "do it again" a no-op. When the audio itself is what's wrong — a
+    mispronunciation, an announcement fixed after the fact — the only way out was to clear the
+    whole book."""
+
+    def narrated(self, parts=3, index=0, state="ready"):
+        segs = []
+        for si in range(parts):
+            name = f"ch{index:03d}-s{si:02d}.opus"
+            p = books.book_dir("b1", "audio", name)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            open(p, "wb").write(b"\0" * 64)
+            segs.append({"file": name, "seconds": 9.0})
+        books.update_book("b1", lambda b: b["chapters"][index].update(
+            state=state, segments=segs, seconds=27.0, total=parts))
+        return segs
+
+    def test_asking_again_normally_does_nothing(self, client, make_book, no_background_work):
+        make_book()
+        self.narrated()
+        got = client.post("/api/books/render", json={"id": "b1", "chapter": 0}).get_json()
+        assert got["started"] == []
+        assert len(books.find_book("b1")["chapters"][0]["segments"]) == 3
+
+    def test_redo_throws_the_parts_away_and_starts(self, client, make_book, no_background_work):
+        make_book()
+        self.narrated()
+        got = client.post("/api/books/render",
+                          json={"id": "b1", "chapter": 0, "redo": True}).get_json()
+        assert got["started"] == [0]
+        c = books.find_book("b1")["chapters"][0]
+        assert c["state"] == "pending" and c["segments"] == [] and c["seconds"] is None
+        assert os.listdir(books.book_dir("b1", "audio")) == []
+        assert no_background_work["chapters"] == [("b1", 0)]
+
+    def test_it_only_touches_the_chapter_asked_for(self, client, make_book, no_background_work):
+        make_book(names=["One", "Two"], texts=["word " * 10] * 2)
+        self.narrated(index=0)
+        self.narrated(index=1)
+        client.post("/api/books/render", json={"id": "b1", "chapter": 0, "redo": True})
+        assert sorted(os.listdir(books.book_dir("b1", "audio"))) \
+            == ["ch001-s00.opus", "ch001-s01.opus", "ch001-s02.opus"]
+        assert books.find_book("b1")["chapters"][1]["state"] == "ready"
+
+    def test_not_while_it_is_being_narrated(self, client, make_book, no_background_work):
+        """The render holds the files it's writing; deleting underneath it would have it publish
+        parts that aren't there."""
+        make_book()
+        self.narrated(state="rendering")
+        r = client.post("/api/books/render", json={"id": "b1", "chapter": 0, "redo": True})
+        assert r.status_code == 409
+        assert len(os.listdir(books.book_dir("b1", "audio"))) == 3
+        assert no_background_work["chapters"] == []
+
+    def test_no_such_chapter(self, client, make_book):
+        make_book()
+        assert client.post("/api/books/render",
+                           json={"id": "b1", "chapter": 9, "redo": True}).status_code == 404
+
+    def test_a_chapter_left_out_is_still_left_out(self, client, make_book, no_background_work):
+        """redo clears its audio — it asked for that — but a skipped chapter isn't narrated."""
+        make_book()
+        self.narrated()
+        books.update_book("b1", lambda b: b["chapters"][0].update(skip=True))
+        got = client.post("/api/books/render",
+                          json={"id": "b1", "chapter": 0, "redo": True}).get_json()
+        assert got["started"] == []
+        assert no_background_work["chapters"] == []

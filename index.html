@@ -1980,7 +1980,14 @@ function chapterRow(c, grouped){
   // the first one hadn't worked. A chapter a bulk run will reach keeps its button, because
   // tapping it is how you pull it forward.
   const todo = !c.skip && !asked && (c.state === "pending" || c.state === "error");
+  // ↻ on a chapter that has audio: a render keeps every part it finds, so asking again changes
+  // nothing when what's wrong is the audio itself — a name said wrong, an announcement fixed
+  // afterwards, a part that came out short. Not while it's being narrated, and not while it's
+  // already queued.
+  const redo = segs.length && c.state !== "rendering" && !asked;
   el.innerHTML = `<div class="cliphead"><div class="nm">${esc(chapterLabel(c, grouped))}</div>
+      ${redo ? `<button class="skip redo" title="Narrate this again from nothing"
+                        aria-label="Narrate this again">↻</button>` : ""}
       <button class="skip" title="${c.skip ? "Narrate this after all"
                                            : "Leave this out of the narration"}"
               >${c.skip ? "↩" : "⊘"}</button>
@@ -1991,8 +1998,10 @@ function chapterRow(c, grouped){
     <div class="tr">${plays ? '<span class="play">▶</span> ' : ""}${esc(note)}</div>`;
   el.querySelector(".cliphead").addEventListener("click", ()=> chapterTapped(c.i));
   el.querySelector(".tr").addEventListener("click", ()=> chapterTapped(c.i));
-  el.querySelector(".skip").addEventListener("click",
+  el.querySelector(".skip:not(.redo)").addEventListener("click",
                                              e => { e.stopPropagation(); toggleSkip(c.i); });
+  const again = el.querySelector(".redo");
+  if(again) again.addEventListener("click", e => { e.stopPropagation(); redoChapter(c.i); });
   const nar = el.querySelector(".narrow");
   if(nar) nar.addEventListener("click", e => { e.stopPropagation(); narrateChapter(c.i); });
   if(segs.length || c.state === "rendering") el.appendChild(partsPanel(c));
@@ -2087,6 +2096,26 @@ async function toggleSkip(i){
     watchRenders();
   } else toast(skip ? `⊘ “${esc(c.name)}” is out of the narration.`
                     : `↩ “${esc(c.name)}” is back in the narration.`);
+}
+
+// Narrate one again from nothing, throwing away what it has. The parts it already made are what
+// a normal render would keep, so this is the only way to replace audio that is itself the problem.
+async function redoChapter(i){
+  const c = BOOK.chapters[i];
+  const mins = workMin(c.words);
+  if(!confirm(`Narrate “${c.name}” again? Its ${(c.segments || []).length} part(s) are thrown`
+              + ` away and re-made, roughly ${hoursLeft(mins)} of work.`)) return;
+  const d = await (await fetch("/api/books/render", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: BOOK.id, chapter: i, redo: true})})).json();
+  if(!d.ok) return toast("❌ " + (d.msg || "couldn't start it"));
+  if(!(d.started || []).length)
+    return toast(`Cleared “${esc(c.name)}” — it's left out, so ↩ puts it back to be narrated.`);
+  toast(d.ahead ? `⏳ Queued “${esc(c.name)}” again — ${d.ahead} chapter`
+                  + `${d.ahead === 1 ? "" : "s"} to narrate first.`
+                : `<span class="spin"></span>Narrating “${esc(c.name)}” again — roughly `
+                  + `${hoursLeft(mins)} of work.`);
+  watchRenders();
 }
 
 async function narrateChapter(i){

@@ -741,3 +741,59 @@ class TestAMapChangeDuringARender:
         make_book(names=["One"], texts=[self.paragraphs()], respell={"Vermeer": "Vermayr"})
         books.render_chapter("b1", 0)
         assert chapter("b1")["state"] == "ready"
+
+
+class TestAnOpeningNoteSavedMidRender:
+    """The other half of the same fault. A render reads the book once and then holds the lock for
+    the whole chapter, so a note saved while it runs is missing from what it wrote — and it must
+    not then mark the chapter ready saying the old thing."""
+
+    def test_it_is_left_pending_rather_than_ready(self, make_book, monkeypatch):
+        make_book(names=["Chapter One"], texts=[LONG], announce=True, opening="First thought.")
+        made = []
+
+        def edit_the_note_midway(text, voice, out_path, intro=None, tail_pause=0,
+                                 respellings=None):
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            open(out_path, "wb").write(b"\0" * 64)
+            made.append(os.path.basename(out_path))
+            if len(made) == 1:                      # while the rest of the chapter is still to go
+                books.update_book("b1", lambda b: b.update(opening="Second thought."))
+
+        monkeypatch.setattr(books, "_render_segment", edit_the_note_midway)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
+        books.render_chapter("b1", 0)
+
+        assert chapter("b1")["state"] == "pending"
+        assert not os.path.exists(books.book_dir("b1", "audio", "ch000-s00.opus"))
+        assert os.path.exists(books.book_dir("b1", "audio", "ch000-s01.opus"))   # the rest stays
+
+    def test_a_second_pass_says_the_new_note(self, make_book, monkeypatch):
+        make_book(names=["Chapter One"], texts=[LONG], announce=True, opening="First thought.")
+        made = []
+
+        def edit_the_note_midway(text, voice, out_path, intro=None, tail_pause=0,
+                                 respellings=None):
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            open(out_path, "wb").write(b"\0" * 64)
+            made.append((os.path.basename(out_path), [p for p, _ in (intro or [])]))
+            if len(made) == 1:
+                books.update_book("b1", lambda b: b.update(opening="Second thought."))
+
+        monkeypatch.setattr(books, "_render_segment", edit_the_note_midway)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
+        books.render_chapter("b1", 0)
+        books.render_chapter("b1", 0)
+
+        assert chapter("b1")["state"] == "ready"
+        again = [m for m in made[1:] if m[0] == "ch000-s00.opus"]
+        assert len(again) == 1                                  # only the opening was re-made
+        assert "Second thought." in again[0][1]
+        assert "Second thought." in chapter("b1")["intro"]
+
+    def test_an_untouched_book_still_finishes(self, make_book, fake_tts):
+        """The scan runs on every chapter now, not only when the map moved, so the ordinary path
+        has to come out ready."""
+        make_book(names=["Chapter One"], texts=[LONG], announce=True, opening="A notice.")
+        books.render_chapter("b1", 0)
+        assert chapter("b1")["state"] == "ready"

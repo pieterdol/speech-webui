@@ -198,6 +198,12 @@ it — a full book is hours of work.
   left to do and not in a `.m4b`. It's a mark, not a deletion — the chapter keeps its number,
   its text and any audio it already had, and putting it back costs nothing. A rescan keeps the
   marks, on the same terms as it keeps the audio: only when the chapters still line up.
+- **↻ narrates a chapter again** from nothing, on any chapter that has audio. A render keeps every
+  part it finds on disk — that's what makes resuming an interrupted chapter cheap — so asking for a
+  finished one again changes nothing, which is no use when the audio itself is the problem: a name
+  said wrong before there was a respelling for it, an announcement fixed after the fact, a part
+  that came out short. It asks first, since a long chapter is hours, and it refuses while that
+  chapter is being narrated: the render holds the files it's writing.
 - **Narrator** — the same picker as everywhere else, Kokoro English and Piper Dutch. A book
   declaring `nl` gets a Dutch voice by default. Changing it after rendering discards that
   book's audio, so it asks first.

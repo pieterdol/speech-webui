@@ -359,21 +359,25 @@ def stale_segments(book, index, old, new):
             hits.add(0)
     return hits
 
-def respell_stragglers(book_id, index, used):
-    """Parts of this chapter just made under `used` that the book's map no longer agrees with.
+def stragglers(book_id, index, used):
+    """Parts of this chapter, just made, that the book no longer agrees with.
 
     True when it found some, having deleted them and left the chapter pending for another pass.
-    A render reads the map once and then holds the lock for the whole chapter, so a respelling
-    saved half way through would otherwise be missing from every part after it — and marked
-    ready. Rather than have the endpoint reach into a running render, the render checks itself
-    on the way out."""
+    A render reads the book once and then holds the lock for the whole chapter — a quarter of an
+    hour, or an hour on a long one — so anything saved meanwhile is missing from what it wrote.
+    Rather than have every endpoint reach into a running render, the render checks itself on the
+    way out, which makes one invariant of it: a chapter is only ready when what is on disk is
+    what the book now says it should be.
+
+    Two things can have moved: the pronunciation map, which affects any part, and the opening
+    announcement, which affects the first. Both are asked at once, because stale_segments already
+    compares the recorded announcement against the one the book would produce now — and it is
+    asked even when the map is untouched, which is how an opening note edited while the opening
+    was still rendering used to slip through and be marked ready saying the old thing."""
     book = find_book(book_id)
     if not book:
         return False
-    now = book.get("respell") or {}
-    if now == (used or {}):
-        return False
-    plan = respell_repair_plan(book, used or {}, now)
+    plan = respell_repair_plan(book, used or {}, book.get("respell") or {})
     if index not in plan:
         return False
     apply_respell_repair(book_id, {index: plan[index]})
@@ -576,12 +580,13 @@ def render_chapter(book_id, index):
                 update_book(book_id, lambda b, m=list(made), n=len(segments):
                             b["chapters"][index].update(segments=m, done=len(m), total=n))
             if not render_cancelled(book_id, gen):
-                # The map can have changed while this ran — a render holds the lock for the
-                # whole chapter, so a respelling saved during segment 2 of 8 leaves the six
-                # after it made the old way, and the endpoint couldn't delete files that didn't
-                # exist yet. Checked here rather than there, which makes it one invariant: a
-                # chapter is only ready when every part on disk agrees with the map on record.
-                if respell_stragglers(book_id, index, respellings):
+                # The book can have changed while this ran — a render holds the lock for the
+                # whole chapter, so a respelling saved during segment 2 of 8 leaves the six after
+                # it made the old way, and an opening note saved during segment 1 leaves the
+                # announcement saying the old thing. Checked here rather than in every endpoint
+                # that can move either: a chapter is only ready when what's on disk is what the
+                # book now says it should be. See stragglers.
+                if stragglers(book_id, index, respellings):
                     return
                 update_book(book_id, lambda b: b["chapters"][index].update(
                     state="ready", error=None,
@@ -1099,10 +1104,15 @@ def api_book_update():
     # Asked as "would the opening sound different?" rather than field by field: that's the
     # comparison render_chapter itself makes against the record on the chapter, so it can't drift
     # from it, and one expression covers the title, the spoken title and the opening note.
+    # On "has it any audio to be wrong", not on "is it finished". Requiring ready meant an edit
+    # made while the opening was still being re-recorded from the *previous* edit was stored and
+    # never spoken: the render then marked the chapter ready with the older wording, and nothing
+    # would ever notice. A chapter part-way through has published segments too, and queueing a
+    # second render behind the first is what the lock is for.
     opens = first_chapter(book)
     said = lambda b: [respell(p, b.get("respell") or {}) for p, _ in chapter_intro(b, opens)]
     renamed = bool(opens is not None and not resets
-                   and chapters[opens].get("state") == "ready"
+                   and (chapters[opens].get("segments") or [])
                    and said(rename(dict(book))) != said(book))
 
     def apply(b):
@@ -1213,9 +1223,28 @@ def api_book_delete():
     shutil.rmtree(book_dir(book["id"]), ignore_errors=True)
     return jsonify(ok=True)
 
+def drop_chapter_audio(book_id, index):
+    """Throw away everything narrated for one chapter, on disk and in the index.
+
+    For narrating it again from nothing: a render reuses every part still on disk, which is what
+    makes resuming cheap and what makes "do it again" a no-op unless the files go first."""
+    audio = book_dir(book_id, "audio")
+    for name in sorted(os.listdir(audio)) if os.path.isdir(audio) else []:
+        if name.startswith(f"ch{index:03d}-s") and name.endswith(".opus"):
+            os.remove(os.path.join(audio, name))
+    update_book(book_id, lambda b: b["chapters"][index].update(
+        state="pending", segments=[], done=0, seconds=None, error=None))
+
 @app.post("/api/books/render")
 def api_book_render():
-    """Ask for a chapter (and optionally the one after it, to stay ahead of the listener)."""
+    """Ask for a chapter (and optionally the one after it, to stay ahead of the listener).
+
+    `redo` narrates one that is already finished. Nothing else can: a render keeps every part it
+    finds on disk, so asking again for a chapter that has them changes nothing — which is right
+    for resuming an interrupted one and no use when the audio itself is what's wrong. A voice that
+    mispronounced something, an announcement that was fixed after the fact, a part that came out
+    truncated: the way out was to clear the whole book's narration.
+    """
     d = request.get_json(force=True, silent=True) or {}
     book = find_book(d.get("id") or "")
     if not book:
@@ -1225,6 +1254,16 @@ def api_book_render():
     except (TypeError, ValueError):
         return jsonify(ok=False, msg="which chapter?"), 400
     chapters = book.get("chapters") or []
+    if d.get("redo"):
+        if not 0 <= index < len(chapters):
+            return jsonify(ok=False, msg="no such chapter"), 404
+        # Not while it's being narrated: the render holds the files it's writing, and a delete
+        # underneath it would have it publish parts that aren't there.
+        if chapters[index].get("state") == "rendering":
+            return jsonify(ok=False, msg="that chapter is being narrated now"), 409
+        drop_chapter_audio(book["id"], index)
+        book = find_book(book["id"]) or book
+        chapters = book.get("chapters") or []
     wanted = [index]
     if d.get("ahead"):
         # staying a chapter ahead of the listener means the next chapter they'll actually
