@@ -1708,6 +1708,26 @@ $("#bookCog").addEventListener("click", ()=>{
 const hoursLeft = mins => mins >= 90 ? `${(mins / 60).toFixed(1)} h`
                                      : `${Math.max(1, Math.round(mins))} min`;
 
+// …and the clock time that lands on, which at bedtime is the number you actually want: "8.4 h"
+// is arithmetic you have to do in your head at half past eleven, "done by 04:20" isn't.
+//
+// Nothing under half an hour, where a clock time says less than the duration did. The day is
+// named when the answer isn't today's, because that's precisely the case worth naming — a run
+// asked for at night finishes tomorrow, and a bare "04:20" would read as this morning.
+function doneBy(mins){
+  if(!(mins >= 30)) return "";
+  const t = new Date(Date.now() + mins * 60000);
+  const clock = t.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  const tomorrow = new Date(); tomorrow.setHours(24, 0, 0, 0);
+  const after = new Date(tomorrow); after.setDate(after.getDate() + 1);
+  return t < tomorrow ? clock
+       : t < after ? `${clock} tomorrow`
+       : `${clock} on ${t.toLocaleDateString([], {weekday: "short"})}`;
+}
+// As a clause to hang off "roughly 2.9 h left", so the places that quote a duration can quote
+// the time as well without each deciding whether it's worth saying.
+const byNote = mins => { const by = doneBy(mins); return by ? ` — done by about ${by}` : ""; };
+
 // Where you'd carry on from, or null. The stored position is only an offer if the part it names
 // is still on disk: clearing a book's narration, or switching narrator, leaves a position
 // pointing at audio that no longer exists.
@@ -1777,7 +1797,8 @@ function renderWholeBook(){
   $("#allHint").innerHTML = ra.running
     ? `<span class="spin"></span>Narrating ${partsLabel(parts)}`
       + ` — ${scopeDone} of ${scope.length} chapters done, roughly `
-      + hoursLeft(scopeLeftMin) + ` left. It keeps going if you close the page.`
+      + hoursLeft(scopeLeftMin) + ` left${byNote(scopeLeftMin)}.`
+      + ` It keeps going if you close the page.`
     : `${ready.length} of ${chs.length} chapters narrated.`
       + (part ? ` ${part} more ${part === 1 ? "is" : "are"} part-way through.` : "")
       + (left.length ? ` The rest is about ${hoursLeft(leftMin)} of work.` : " All done.");
@@ -1908,7 +1929,10 @@ function partGroup(g){
   el.querySelector(".nar").addEventListener("click", async e => {
     e.stopPropagation();
     const mins = Math.round(words / 146 / 2.4);
-    if(!confirm(`Narrate the rest of “${g.part}”? Roughly ${mins} min of work.`)) return;
+    // A part of The Institute is two hours, so this says the same thing the whole book does —
+    // in hours where it's hours, and with the clock time it lands on.
+    if(!confirm(`Narrate the rest of “${g.part}”? Roughly ${hoursLeft(mins)} of work`
+                + `${byNote(mins)}.`)) return;
     const d = await (await fetch("/api/books/render_all", {method:"POST",
       headers:{"Content-Type":"application/json"},
       body: JSON.stringify({id: BOOK.id, part: g.part})})).json();
@@ -2172,18 +2196,21 @@ function watchRenders(){
 $("#renderAll").addEventListener("click", async ()=>{
   if(!BOOK) return;
   const left = (BOOK.chapters || []).filter(c => c.state === "pending");
-  const hrs = (left.reduce((n, c) => n + c.words / 146, 0) / 2.4 / 60).toFixed(1);
-  if(!confirm(`Narrate ${left.length} chapters? That's roughly ${hrs} h of work — it carries`
-              + ` on in the background, and you can stop it any time.`)) return;
+  const mins = left.reduce((n, c) => n + c.words / 146, 0) / 2.4;
+  const hrs = hoursLeft(mins);
+  // The whole-book run is the one you start and go to bed on, so the decision is "will it be
+  // done by morning" rather than "how many hours is that".
+  if(!confirm(`Narrate ${left.length} chapters? That's roughly ${hrs} of work${byNote(mins)}`
+              + ` — it carries on in the background, and you can stop it any time.`)) return;
   const d = await (await fetch("/api/books/render_all", {method:"POST",
     headers:{"Content-Type":"application/json"}, body: JSON.stringify({id: BOOK.id})})).json();
   // A toast rather than the status line: what the run is doing belongs in the hint beside this
   // button and the panel under it, both of which keep saying it. This only answers the tap.
   toast(d.already ? "⏳ The whole book is already being narrated."
     : d.widened ? `⏳ The run covers the whole book now — ${left.length} chapters left, about `
-                  + `${hrs} h, carrying on from what it's narrating.`
+                  + `${hrs}, carrying on from what it's narrating.`
     : `<span class="spin"></span>Narrating the whole book — ${left.length} chapters, about `
-      + `${hrs} h of work.`);
+      + `${hrs} of work.`);
   watchRenders();
 });
 $("#renderStop").addEventListener("click", async ()=>{

@@ -368,6 +368,12 @@ it — a full book is hours of work.
   chapter in flight finish rather than leaving half of one behind. *Narrate part* is the same
   run scoped to one part, counting its progress and hours-left over the part rather than the
   book.
+
+  **Anything long enough says the time it finishes**, not only how long it takes — *roughly
+  8.4 h of work — done by about 06:40 tomorrow*. On a phone at bedtime that's the number you
+  can act on, and the day is named when the answer isn't today's, since a bare *06:40* would
+  read as this morning. Under half an hour it's the duration alone. The clock is the browser's,
+  so the phone answers in its own time.
 - **A run can be added to while it runs.** There's one run per book, and it covers a set of
   parts — asking for another part while one is being narrated queues that part behind it, and
   asking for the whole book widens the run to everything. Nothing is interrupted and nothing

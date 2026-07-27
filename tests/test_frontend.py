@@ -138,6 +138,18 @@ def test_the_audio_element_is_in_the_player(page):
     assert player < page.index('id="bookAudio"') < page.index("<script>")
 
 
+def test_the_running_hint_says_what_time_it_will_be_done(script):
+    """The panel a run is watched through has to quote the clock time, not only the duration:
+    "2.9 h left" is arithmetic you do in your head at bedtime.
+
+    Structural, like everything else here — there's no JS runtime in these tests, so what the
+    arithmetic comes to is unasserted. This catches the clause being dropped from the hint,
+    which is how it would actually go.
+    """
+    start = script.index('$("#allHint").innerHTML')
+    assert "byNote(" in script[start:script.index(";", start)]
+
+
 def helper(script):
     """The text of the downloadLink definition, up to the semicolon that ends it."""
     start = script.index("const downloadLink")
