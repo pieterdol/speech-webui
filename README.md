@@ -294,11 +294,16 @@ it — a full book is hours of work.
   reported alongside the download. The full book is ~564 MB. On the phone the same file is
   offered through the iOS share sheet instead of as a download — see the constraint below.
 - **Already exported** lists every `.m4b` the book still has on disk, newest first, with its
-  size and when it was built, each one downloadable (or shareable) again. The export panel above it belongs to
-  the run that just happened and is gone on the next reload; the file isn't, so nothing about
-  taking a second copy — another player, another phone — needs the book re-encoded. A book that
-  has never been exported shows no list at all. *Clear narration* deletes these along with the
-  audio they were built from, which is why it says so before it does it.
+  size and when it was built, each one downloadable (or shareable) again. The export panel above
+  it belongs to the run that just happened and is gone on the next reload; the file isn't, so
+  nothing about taking a second copy — another player, another phone — needs the book re-encoded.
+  A book that has never been exported shows no list at all.
+- **Deleting an export** takes that one file and nothing else: the narration stays, so the book
+  can be exported again without narrating a word. These are the largest files the app makes —
+  137 MB for one book, and the three exported here are 199 MB together — and the only other way
+  to remove one is *Clear narration*, which also deletes every chapter's audio. The filename
+  arrives over the wire, so it goes through `safe_path` and has to end in `.m4b`: nothing else in
+  the export directory, and nothing outside it, can be deleted through that endpoint.
 
 **Why files rather than streaming.** iOS suspends a page's timers when the screen locks, so the
 sentence-at-a-time approach Chat uses would stall the moment the phone goes in a pocket. Files

@@ -542,3 +542,77 @@ class TestExportPage:
     def test_no_escaping_the_export_directory(self, client, make_book):
         make_book()
         assert client.get("/get/b1/../../books.json").status_code in (301, 400, 404)
+
+
+class TestDeletingOneExport:
+    """These are the biggest files the app makes — 137 MB for one book — and the only button
+    that used to remove them was *Clear narration*, which also deletes every chapter's audio.
+    An export can be rebuilt from the narration; the narration can't be rebuilt from anything
+    but hours of GPU."""
+
+    def write_export(self, name="A Book.m4b", book_id="b1"):
+        p = books.book_dir(book_id, "export", name)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(b"\0" * 1024)
+        return p
+
+    def delete(self, client, file, book="b1"):
+        return client.post("/api/books/export/delete", json={"id": book, "file": file})
+
+    def test_deletes_the_one_it_was_given(self, client, make_book):
+        make_book()
+        keep = self.write_export("Part Two.m4b")
+        gone = self.write_export("Part One.m4b")
+        assert self.delete(client, "Part One.m4b").get_json()["ok"] is True
+        assert not os.path.exists(gone)
+        assert os.path.exists(keep)
+
+    def test_the_narration_stays(self, client, make_book):
+        """The whole point of it being separate from Clear narration."""
+        make_book()
+        audio = books.book_dir("b1", "audio", "ch000-s00.opus")
+        os.makedirs(os.path.dirname(audio), exist_ok=True)
+        open(audio, "wb").write(b"\0" * 64)
+        books.update_book("b1", lambda b: b["chapters"][0].update(
+            state="ready", segments=[{"file": "ch000-s00.opus", "seconds": 9.0}]))
+        self.write_export()
+        self.delete(client, "A Book.m4b")
+        assert os.path.exists(audio)
+        assert books.find_book("b1")["chapters"][0]["state"] == "ready"
+
+    def test_answers_with_what_is_left(self, client, make_book):
+        """The page redraws from this rather than from what it assumes the delete did."""
+        make_book()
+        self.write_export("One.m4b")
+        self.write_export("Two.m4b")
+        got = self.delete(client, "One.m4b").get_json()["exports"]
+        assert [e["file"] for e in got] == ["Two.m4b"]
+
+    def test_unknown_book(self, client):
+        assert self.delete(client, "A Book.m4b", book="nope").status_code == 404
+
+    def test_a_file_that_is_not_there(self, client, make_book):
+        make_book()
+        assert self.delete(client, "never-built.m4b").status_code == 404
+
+    def test_no_climbing_out_of_the_export_directory(self, client, make_book):
+        """The filename comes off the wire, so it goes through safe_path like every other one."""
+        make_book()
+        assert self.delete(client, "../../books.json").status_code == 404
+        assert os.path.exists(books.BOOKS_FILE)
+
+    def test_only_exports(self, client, make_book):
+        """Inside the right directory but not one of the files this endpoint is about."""
+        make_book()
+        other = books.book_dir("b1", "export", "notes.txt")
+        os.makedirs(os.path.dirname(other), exist_ok=True)
+        open(other, "w").write("keep me")
+        assert self.delete(client, "notes.txt").status_code == 404
+        assert os.path.exists(other)
+
+    def test_one_book_cannot_delete_another_s(self, client, make_book):
+        make_book(book_id="mine")
+        make_book(book_id="theirs")
+        theirs = self.write_export("Theirs.m4b", book_id="theirs")
+        assert self.delete(client, "Theirs.m4b", book="mine").status_code == 404
+        assert os.path.exists(theirs)

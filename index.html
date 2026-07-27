@@ -2042,15 +2042,40 @@ const canShareFiles = (() => {
   }catch(e){ return false; }
 })();
 function exportActions(x){
-  if(!homeScreenApp)
-    return `<div class="acts">${downloadLink(x.url, "⬇ Download the .m4b")}</div>`;
   const share = canShareFiles
     ? `<button class="shareExp" data-url="${x.url}" data-file="${esc(x.file)}">📤 Share the
          .m4b</button>` : "";
-  return `<div class="acts">${share}
-      <a href="${x.url.replace("/export/", "/get/")}" target="_blank" rel="noopener">🧭 Open in
-        Safari</a></div>
+  const get = homeScreenApp
+    ? `${share}<a href="${x.url.replace("/export/", "/get/")}" target="_blank" rel="noopener">🧭
+         Open in Safari</a>`
+    : downloadLink(x.url, "⬇ Download the .m4b");
+  return `<div class="acts">${get}
+      <button class="del delExp" data-file="${esc(x.file)}">🗑 Delete</button></div>
     <div class="hint expmsg"></div>`;
+}
+
+// Deleting one export, rather than the whole narration. These are the largest files the app
+// makes — 137 MB for one book — and until now the only button that removed them was *Clear
+// narration*, which also throws away every chapter's audio.
+async function deleteExport(btn){
+  if(!BOOK) return;
+  const msg = btn.closest(".acts").nextElementSibling;
+  const name = btn.dataset.file;
+  if(!confirm(`Delete “${name}”? The narration it was built from stays, so the book can be`
+              + ` exported again.`)) return;
+  btn.disabled = true;
+  const d = await (await fetch("/api/books/export/delete", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: BOOK.id, file: name})})).json();
+  if(!d.ok){
+    btn.disabled = false;
+    if(msg) msg.textContent = "❌ " + (d.msg || "couldn't delete it");
+    return;
+  }
+  // The panel above the list reports one export and links to it. Deleting that one from there
+  // leaves it offering a file that has gone, so the panel goes with it.
+  if(btn.closest("#exportOut")) $("#exportOut").innerHTML = "";
+  renderExports(d.exports);
 }
 
 // iOS opens the share sheet only while a tap is still fresh, and a hundred megabytes over the
@@ -2102,8 +2127,10 @@ async function fetchAsFile(url, name, say){
 // Delegated: the rows are rebuilt on every poll, and a listener per button would be rebound
 // with them — including onto a button holding a file it had already fetched.
 $("#reader").addEventListener("click", e => {
-  const btn = e.target.closest(".shareExp");
-  if(btn) shareExport(btn);
+  const share = e.target.closest(".shareExp");
+  if(share) return shareExport(share);
+  const del = e.target.closest(".delExp");
+  if(del) deleteExport(del);
 });
 function stopWatching(){ if(bookPoll){ clearInterval(bookPoll); bookPoll = null; } }
 

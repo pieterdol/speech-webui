@@ -974,6 +974,32 @@ def api_book_export():
                      daemon=True).start()
     return jsonify(job_id=jid)
 
+@app.post("/api/books/export/delete")
+def api_book_export_delete():
+    """Throw away one built .m4b, keeping the narration it was made from.
+
+    Until now the only button that removed an export was *Clear narration*, which also deletes
+    every chapter's audio — a heavy price for reclaiming a file that can be rebuilt from what
+    stays. Three books' exports are 199 MB here, so they're worth being able to drop one at a
+    time."""
+    d = request.get_json(force=True, silent=True) or {}
+    book = find_book(d.get("id") or "")
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    name = d.get("file") or ""
+    path = safe_path(book_dir(book["id"], "export"), name)
+    # The extension as much as the path: safe_path keeps the caller inside the export directory,
+    # and this keeps it to the files this endpoint is about.
+    if not path or not name.endswith(".m4b"):
+        return jsonify(ok=False, msg="not an export of this book"), 404
+    try:
+        os.remove(path)
+    except OSError as e:
+        return jsonify(ok=False, msg=str(e)[:200]), 500
+    # The list back, so the page redraws from what's on disk rather than from what it assumes
+    # the delete did.
+    return jsonify(ok=True, exports=book_exports(book["id"]))
+
 @app.get("/export/<book_id>/<path:filename>")
 def book_export(book_id, filename):
     path = safe_path(book_dir(book_id, "export"), filename)

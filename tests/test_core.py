@@ -1,7 +1,7 @@
 """The shared plumbing: the atomic index write, the job table, and the path guard.
 
-safe_path is the one security boundary in the app — four routes hand it a filename that came
-off the wire — so it gets the most attention here.
+safe_path is the one security boundary in the app — seven routes hand it a filename that came
+off the wire, two of which delete what it resolves to — so it gets the most attention here.
 """
 import json
 import os
