@@ -616,3 +616,37 @@ class TestDeletingOneExport:
         theirs = self.write_export("Theirs.m4b", book_id="theirs")
         assert self.delete(client, "Theirs.m4b", book="mine").status_code == 404
         assert os.path.exists(theirs)
+
+
+class TestQueueFeedback:
+    """A tap on a chapter row is answered by a toast, which has to say which of the two things
+    happened — narrating now, or waiting behind something else. The status line it replaced was
+    at the foot of the page, several screens below the row, and said neither."""
+
+    def test_nothing_running_is_nothing_ahead(self, client, make_book):
+        make_book()
+        assert client.post("/api/books/render", json={"id": "b1", "chapter": 0}
+                           ).get_json()["ahead"] == 0
+
+    def test_counts_what_is_narrating_and_what_is_waiting(self, client, make_book, monkeypatch):
+        """Including another book's chapters: the lock is global, so they're just as much in
+        the way as this book's."""
+        make_book()
+        monkeypatch.setitem(books.render_state, "current", ("other", 7))
+        monkeypatch.setitem(books.render_state, "waiting", [("other", 8), ("b1", 3)])
+        assert client.post("/api/books/render", json={"id": "b1", "chapter": 0}
+                           ).get_json()["ahead"] == 3
+
+    def test_the_tap_is_not_counted_as_ahead_of_itself(self, client, make_book, monkeypatch):
+        """Read before the render thread goes. Counting after it would report the first tap on
+        an idle machine as one deep, which reads as "queued" when it started immediately."""
+        monkeypatch.setitem(books.render_state, "waiting", [])
+
+        def joins_the_queue(book_id, i):
+            with books.render_state_lock:
+                books.render_state["waiting"].append((book_id, i))
+
+        monkeypatch.setattr(books, "render_chapter", joins_the_queue)
+        make_book()
+        assert client.post("/api/books/render", json={"id": "b1", "chapter": 0}
+                           ).get_json()["ahead"] == 0

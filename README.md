@@ -229,6 +229,15 @@ it — a full book is hours of work.
   4-second refresh. Every chapter has its own **Narrate** button; tapping the row does it too,
   until there's something to play, when tapping plays instead. A part or whole-book run can be
   stopped, a single chapter can't, so anything over ten minutes of work asks first.
+- **A tap is answered where you tapped it.** Starting, queueing, stopping or leaving a chapter
+  out raises a toast at the bottom of the screen — fixed, so it's on screen wherever you are in a
+  192-chapter list, and it rides above the player when that's showing. It says which of the two
+  things happened, because they're indistinguishable otherwise: *Narrating "X" — roughly 40 min
+  of work*, or *Queued "X" — 2 chapters to narrate first*. Renders are serialized across every
+  book, so a tap during someone else's chapter changes nothing visible for twenty minutes, and
+  the depth it reports is what's actually holding the lock — not the whole-book run's remaining
+  chapters, which would say 190 for a chapter that is in fact next. Anything you need to keep
+  reading stays in a panel; the toast fades, or a tap dismisses it.
 - **Narrating now**, above *Whole book*, says which chapter the engine is on and which of its
   parts — "part 1 of 8" from the start, since splitting happens before any audio is made — and
   folds open to what's waiting behind it with a rough total of the work left. It appears only

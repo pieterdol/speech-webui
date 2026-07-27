@@ -280,6 +280,17 @@ def render_status():
                 queue_.append(entry((b["id"], c["i"]), "queued"))
     return {"current": entry(current, "narrating") if current else None, "queue": queue_}
 
+def render_depth():
+    """How many chapters are being narrated or waiting on the lock right now.
+
+    Not render_status()'s queue, which is longer on purpose — it projects the rest of a
+    whole-book run so the page can list it. As an answer to "when does the chapter I just
+    tapped start" that projection is nonsense: it would say 190 for a book with 190 chapters
+    left, when the tapped one competes for the lock with the single chapter the run is on.
+    """
+    with render_state_lock:
+        return int(bool(render_state["current"])) + len(render_state["waiting"])
+
 def render_chapter(book_id, index):
     """Render one chapter to opus, a segment at a time. Marks progress in books.json as it
     goes so the page can show it."""
@@ -818,13 +829,16 @@ def api_book_render():
         # staying a chapter ahead of the listener means the next chapter they'll actually
         # hear, so anything left out of the narration isn't it
         wanted += [c["i"] for c in chapters[index + 1:] if not c.get("skip")][:1]
+    # Read before the threads go: what the page tells the reader is whether their tap starts
+    # narrating or joins a queue, and after starting we'd be counting ourselves.
+    ahead = render_depth()
     started = []
     for i in wanted:
         if 0 <= i < len(chapters) and not chapters[i].get("skip") \
                 and chapters[i].get("state") in ("pending", "error"):
             threading.Thread(target=render_chapter, args=(book["id"], i), daemon=True).start()
             started.append(i)
-    return jsonify(ok=True, started=started)
+    return jsonify(ok=True, started=started, ahead=ahead)
 
 @app.post("/api/books/skip")
 def api_book_skip():

@@ -419,3 +419,48 @@ class TestQueue:
         books.update_book("b1", lambda b: b["chapters"][2].update(skip=True))
         books.update_book("b1", lambda b: b.update(render_all={"running": True, "part": None}))
         assert [e["chapter"] for e in books.render_status()["queue"]] == [0, 1, 3]
+
+
+class TestRenderDepth:
+    """What the page tells the reader when they tap a chapter: it either starts narrating or
+    joins a queue, and since renders are serialized across every book those two look identical
+    for the next twenty minutes."""
+
+    def test_idle(self):
+        assert books.render_depth() == 0
+
+    def test_counts_the_one_narrating_and_the_ones_behind_it(self, make_book, monkeypatch):
+        make_book(names=["One", "Two", "Three"], texts=["word " * 40] * 3)
+        started = threading.Event()
+        release = threading.Event()
+
+        def _seg(text, voice, out_path, intro=None, tail_pause=0):
+            started.set()
+            release.wait(timeout=10)
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            open(out_path, "wb").write(b"\0")
+
+        monkeypatch.setattr(books, "_render_segment", _seg)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
+        threads = [threading.Thread(target=books.render_chapter, args=("b1", i))
+                   for i in range(3)]
+        for t in threads:
+            t.start()
+        assert started.wait(timeout=10)
+        time.sleep(0.2)                       # let the other two stack up behind the lock
+
+        assert books.render_depth() == 3      # one narrating, two waiting
+
+        release.set()
+        for t in threads:
+            t.join(timeout=20)
+        assert books.render_depth() == 0
+
+    def test_a_bulk_run_counts_as_the_chapter_it_is_on(self, make_book):
+        """render_status projects the rest of a whole-book run so the page can list what's
+        coming; the depth must not, or a chapter tapped during a run would be told it is 190th
+        in line when it is in fact second."""
+        make_book(names=[f"Chapter {i}" for i in range(4)], texts=["word " * 40] * 4)
+        books.update_book("b1", lambda b: b.update(render_all={"running": True, "part": None}))
+        assert len(books.render_status()["queue"]) == 4
+        assert books.render_depth() == 0      # nothing is holding the lock yet

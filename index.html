@@ -249,6 +249,15 @@
   /* Nothing should end up underneath it. main already carries the safe-area inset, so this
      is the bar's own height on top of whatever padding the view had. */
   body.playing main { padding-bottom:calc(112px + env(safe-area-inset-bottom,0px)); }
+  /* Answering a tap where the tap was. Fixed, above the player and its speed menu, and out of
+     the way of the home indicator; it rides up when the player is on screen. */
+  #toast { position:fixed; z-index:40; left:12px; right:12px; margin:0 auto; max-width:520px;
+           bottom:calc(16px + env(safe-area-inset-bottom,0px));
+           padding:13px 16px; border-radius:12px; background:#332e4e; color:var(--text);
+           border:1px solid var(--line); box-shadow:0 8px 28px #000a; font-size:14.5px;
+           line-height:1.4; text-align:center; transition:opacity .25s, transform .25s; }
+  body.playing #toast { bottom:calc(112px + env(safe-area-inset-bottom,0px)); }
+  #toast.going { opacity:0; transform:translateY(8px); }
   @media (max-width:420px){
     .mpspeed input { width:52px; }
     /* the native controls need what's left of the row more than these two do */
@@ -518,6 +527,10 @@
   <div id="bookStatus"></div>
 </main>
 
+<!-- Also outside every view: what it acknowledges is a tap on a chapter row, which in a book of
+     192 of them is usually nowhere near the foot of the page. Tap it to dismiss it early. -->
+<div id="toast" hidden></div>
+
 <!-- Outside every view on purpose. The audio keeps playing when you go back to the library,
      open a different book, or switch to Studio or Chat, so its controls have to survive that
      too — and it has to say which book it belongs to, which is no longer the one on screen. -->
@@ -557,11 +570,37 @@ const secure = window.isSecureContext;
 let MODE = "studio";
 function setStatus(html, err=false){
   const el = MODE === "chat" ? $("#chatStatus") : MODE === "books" ? $("#bookStatus") : $("#status");
-  el.style.display = "block";
+  // Nothing to say hides the line. Leaving the message before it up is worse than an empty box:
+  // it sits there reading as a report on whatever you did most recently.
+  el.style.display = html ? "block" : "none";
   el.className = err ? "err" : "";
   el.innerHTML = html;
 }
 const fmt = s => { s = Math.round(s||0); return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`; };
+
+// Feedback for a tap, where the tap was. The status line lives at the foot of the page, which
+// on a 192-chapter book is several screens below the row you touched — so a render that had
+// started looked exactly like a tap that had missed. This is for the answer to "did that do
+// anything"; anything you need to keep reading still belongs in a panel.
+let toastGoing = null, toastGone = null;
+function toast(html, ms=4500){
+  const el = $("#toast");
+  el.innerHTML = html;
+  el.hidden = false;
+  el.classList.remove("going");
+  clearTimeout(toastGoing);
+  clearTimeout(toastGone);
+  toastGoing = setTimeout(()=>{
+    el.classList.add("going");
+    // hidden only once the fade has run, or it would disappear rather than fade
+    toastGone = setTimeout(()=>{ el.hidden = true; }, 300);
+  }, ms);
+}
+$("#toast").addEventListener("click", ()=>{
+  clearTimeout(toastGoing);
+  clearTimeout(toastGone);
+  $("#toast").hidden = true;
+});
 
 // A download inside a home-screen app is a trap on iOS: the file arrives on a full-screen
 // "Open in…" splash with no chrome behind it, and since a standalone app has no back button
@@ -1733,10 +1772,13 @@ function partGroup(g){
     e.stopPropagation();
     const mins = Math.round(words / 146 / 2.4);
     if(!confirm(`Narrate the rest of “${g.part}”? Roughly ${mins} min of work.`)) return;
-    await fetch("/api/books/render_all", {method:"POST",
+    const d = await (await fetch("/api/books/render_all", {method:"POST",
       headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({id: BOOK.id, part: g.part})});
-    setStatus(`Narrating “${g.part}” in the background.`);
+      body: JSON.stringify({id: BOOK.id, part: g.part})})).json();
+    toast(d.already
+      ? "⏳ This book is already narrating — that run has to finish or be stopped first."
+      : `<span class="spin"></span>Narrating “${esc(g.part)}” — about `
+        + `${hoursLeft(mins)} of work, chapter by chapter.`);
     watchRenders();
   });
   el.querySelector(".exp").addEventListener("click", e => {
@@ -1863,8 +1905,8 @@ async function chapterTapped(i){
   // Anything with audio behind it plays, finished or not — an interrupted chapter is still
   // half an hour of listening, and its unfinished parts are one tap away in the panel.
   if(c.state === "ready" || (c.segments || []).length) return playChapter(i, 0, 0);
-  if(c.state === "rendering"){ setStatus("Still narrating that one…"); return; }
-  if(c.skip){ setStatus("That one is left out — ↩ puts it back."); return; }
+  if(c.state === "rendering"){ toast("Still narrating that one…"); return; }
+  if(c.skip){ toast("That one is left out — ↩ puts it back."); return; }
   narrateChapter(i);
 }
 
@@ -1882,7 +1924,7 @@ async function toggleSkip(i){
   const d = await (await fetch("/api/books/skip", {method:"POST",
     headers:{"Content-Type":"application/json"},
     body: JSON.stringify({id: BOOK.id, chapter: i, skip})})).json();
-  if(!d.ok) return setStatus("❌ " + (d.msg || "couldn't change that"), true);
+  if(!d.ok) return toast("❌ " + (d.msg || "couldn't change that"));
   BOOK = d.book;
   if(NP && NP.id === BOOK.id) NP.chapters = BOOK.chapters;
   renderChapterList();
@@ -1890,10 +1932,11 @@ async function toggleSkip(i){
   // leaving the front matter out hands the opening to the next one — which has to be re-made
   // to say it. Only its first part: the rest of the chapter stays on disk.
   if((d.reopened || []).length){
-    setStatus('<span class="spin"></span>Re-recording the opening — the title and author'
-              + ' move to the chapter that starts the book now.');
+    toast('<span class="spin"></span>Re-recording the opening — the title and author'
+          + ' move to the chapter that starts the book now.', 7000);
     watchRenders();
-  } else setStatus(skip ? "Left out of the narration." : "Back in the narration.");
+  } else toast(skip ? `⊘ “${esc(c.name)}” is out of the narration.`
+                    : `↩ “${esc(c.name)}” is back in the narration.`);
 }
 
 async function narrateChapter(i){
@@ -1904,10 +1947,17 @@ async function narrateChapter(i){
   // chapters are four hours of work each, so anything long enough to regret asks first.
   if(mins > 10 && !confirm(`Narrate “${c.name}”? Roughly ${hoursLeft(mins)} of work, and a`
                            + ` single chapter can't be stopped once it starts.`)) return;
-  setStatus('<span class="spin"></span>Narrating — roughly ' + hoursLeft(mins)
-    + ' of work for ' + Math.round(left / 146) + ' min of audio.');
-  await fetch("/api/books/render", {method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({id: BOOK.id, chapter: i})});
+  const d = await (await fetch("/api/books/render", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: BOOK.id, chapter: i})})).json();
+  if(!d.ok) return toast("❌ " + (d.msg || "couldn't start it"));
+  // Started or queued is the whole question: renders are serialized across every book, so a tap
+  // while something else is narrating changes nothing you can see for the next twenty minutes.
+  if(!(d.started || []).length) toast(`Nothing to narrate in “${esc(c.name)}”.`);
+  else if(d.ahead) toast(`⏳ Queued “${esc(c.name)}” — ${d.ahead} chapter`
+    + `${d.ahead === 1 ? "" : "s"} to narrate first.`);
+  else toast(`<span class="spin"></span>Narrating “${esc(c.name)}” — roughly `
+    + `${hoursLeft(mins)} of work for ${Math.round(left / 146)} min of audio.`);
   watchRenders();
 }
 
@@ -1946,15 +1996,19 @@ $("#renderAll").addEventListener("click", async ()=>{
   const hrs = (left.reduce((n, c) => n + c.words / 146, 0) / 2.4 / 60).toFixed(1);
   if(!confirm(`Narrate ${left.length} chapters? That's roughly ${hrs} h of work — it carries`
               + ` on in the background, and you can stop it any time.`)) return;
-  await fetch("/api/books/render_all", {method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({id: BOOK.id})});
-  setStatus("Narrating the whole book — it keeps going if you close the page.");
+  const d = await (await fetch("/api/books/render_all", {method:"POST",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify({id: BOOK.id})})).json();
+  // A toast rather than the status line: what the run is doing belongs in the hint beside this
+  // button and the panel under it, both of which keep saying it. This only answers the tap.
+  toast(d.already ? "⏳ This book is already narrating."
+    : `<span class="spin"></span>Narrating the whole book — ${left.length} chapters, about `
+      + `${hrs} h of work.`);
   watchRenders();
 });
 $("#renderStop").addEventListener("click", async ()=>{
   await fetch("/api/books/render_stop", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({id: BOOK.id})});
-  setStatus("Stopping after the chapter being narrated now.");
+  toast("⏹ Stopping — the chapter being narrated now will finish first.");
 });
 
 const EXPORT_LABELS = {queued:"Queued…", collecting:"Gathering the chapters…",
