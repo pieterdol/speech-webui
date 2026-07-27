@@ -391,6 +391,14 @@ it — a full book is hours of work.
 
   The scope lives in `render_all.parts`, `[]` meaning the whole book. A run started before that
   existed carries a single `part` name instead, which is read the same way rather than migrated.
+- **Export the audiobook when a run finishes**, a per-book toggle in ⚙, does the last two taps
+  for you: a whole-book run is hours and gets started at bedtime, so the `.m4b` is waiting in the
+  morning rather than needing the phone picked up first. Off by default — an export is a few
+  hundred megabytes and its own hour of ffmpeg. Only a run that worked through everything it
+  covers exports; stopping one is the answer to "not like this", and half a book isn't what you
+  asked for. A run over a single part exports that part, and a wider one exports the whole book.
+  The encode runs in the finished run's own thread, so it can't race the narration, and since
+  nobody is polling a job at four in the morning the outcome goes to `speech.log` as well.
 - **Export as audiobook (.m4b)** builds one file from whatever is narrated: chapter markers,
   cover art, title and author, AAC 48 kbps mono. On the phone, tap the download and share it
   into **BookPlayer**, which gives you chapters, sleep timer and position with no PC involved —

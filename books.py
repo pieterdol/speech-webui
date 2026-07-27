@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from flask import Response, jsonify, request, send_from_directory
 
 import epub
-from core import (app, index_lock, jobs, log_transfer, new_job, run_lock, safe_path,
+from core import (app, index_lock, jobs, log, log_transfer, new_job, run_lock, safe_path,
                   write_json, HERE)
 from media import audio_seconds, pad_with_silence
 from textprep import (ONES, TENS, clean_respell, cut_sentences, respell,
@@ -792,6 +792,9 @@ def render_all_worker(book_id):
     part added to the run while it's going is picked up by the worker already in flight. One
     worker per book, however much it's asked to do.
     """
+    # Told apart from being stopped, and from the book going away: only a run that worked
+    # through everything it covers has produced the audiobook the book may have asked for.
+    finished = False
     while True:
         book = find_book(book_id)
         if not book or not (book.get("render_all") or {}).get("running"):
@@ -799,6 +802,7 @@ def render_all_worker(book_id):
         # only "pending" — a chapter that errored is skipped rather than retried forever
         nxt = next((c["i"] for c in run_scope(book) if c.get("state") == "pending"), None)
         if nxt is None:
+            finished = True
             break
         render_chapter(book_id, nxt)
         # Counted over what the run covers, not the whole book. Reporting 3 of 192 for a run
@@ -809,6 +813,36 @@ def render_all_worker(book_id):
         update_book(book_id, lambda b, n=done, t=len(scope):
                     b.setdefault("render_all", {}).update(done=n, total=t))
     update_book(book_id, lambda b: b.setdefault("render_all", {}).update(running=False))
+    if finished:
+        auto_export(book_id)
+
+def auto_export(book_id):
+    """Build the .m4b a finished run was for, if the book asked for one.
+
+    The whole point of narrating overnight is to have an audiobook in the morning, and the run
+    finishing and the file existing were two taps apart — taps nobody was there to make. Off by
+    default: an export is a few hundred megabytes and hours of ffmpeg on a long book.
+
+    Scoped the way the run was, where that's unambiguous: a run over a single part exports that
+    part, and a wider one — several parts, or the whole book — exports the whole book, which is
+    the file you'd have asked for by hand anyway.
+
+    Runs in the worker's own thread, which has nothing left to do, so the encode is serialized
+    behind the narration that produced it rather than racing it. Its job is in the table like any
+    other export's, but nothing is polling it at four in the morning, so the outcome goes to the
+    log as well — a nightly run that quietly failed to export should be findable afterwards.
+    """
+    book = find_book(book_id)
+    if not book or not book.get("auto_export"):
+        return
+    parts = run_parts(book.get("render_all") or {})
+    part = parts[0] if len(parts) == 1 else None
+    jid = new_job("export")
+    log.info("auto-export: building %s%s", book.get("title") or book_id,
+             f" · {part}" if part else "")
+    export_worker(jid, book_id, part)
+    job = jobs.get(jid) or {}
+    log.info("auto-export: %s", job.get("error") or f"built {job.get('file')}")
 
 def export_worker(jid, book_id, part=None):
     """Build one .m4b: every narrated chapter, chapter markers, cover art, metadata.
@@ -1119,6 +1153,9 @@ def api_book_update():
         rename(b)
         if d.get("voice") and tts_engine_of(d["voice"]): b["voice"] = d["voice"]
         if d.get("announce") is not None: b["announce"] = bool(d["announce"])
+        # Nothing narrated changes with it — it decides what happens after a run ends — so
+        # unlike the narrator it doesn't reset a thing.
+        if d.get("auto_export") is not None: b["auto_export"] = bool(d["auto_export"])
         if isinstance(d.get("position"), dict): b["position"] = d["position"]
         if resets:
             b["gen"] = b.get("gen", 0) + 1        # invalidates anything mid-render

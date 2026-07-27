@@ -343,6 +343,76 @@ class TestRenderAllWorker:
         assert states == ["error", "ready"]
 
 
+class TestAutoExport:
+    """The point of narrating overnight is an .m4b in the morning. A per-book toggle builds it
+    at the end of a run, so the run finishing and the file existing aren't two taps apart."""
+
+    @staticmethod
+    def exports(monkeypatch):
+        """What export_worker was asked to build, without running an hour of ffmpeg."""
+        built = []
+        monkeypatch.setattr(books, "export_worker",
+                            lambda jid, book_id, part=None: built.append((book_id, part)))
+        return built
+
+    def test_a_finished_run_exports_the_book(self, make_book, fake_tts, monkeypatch):
+        built = self.exports(monkeypatch)
+        make_book(names=["One", "Two"], texts=["word " * 40] * 2, auto_export=True)
+        books.update_book("b1", lambda b: b.update(render_all={
+            "running": True, "done": 0, "total": 2}))
+        books.render_all_worker("b1")
+        assert built == [("b1", None)]
+
+    def test_a_book_that_did_not_ask_gets_nothing(self, make_book, fake_tts, monkeypatch):
+        built = self.exports(monkeypatch)
+        make_book(names=["One"], texts=["word " * 40])
+        books.update_book("b1", lambda b: b.update(render_all={
+            "running": True, "done": 0, "total": 1}))
+        books.render_all_worker("b1")
+        assert built == []
+
+    def test_a_stopped_run_exports_nothing(self, make_book, fake_tts, monkeypatch):
+        """Stopping is the answer to "not like this" — half a book is not what you asked for,
+        and the chapters left pending say so."""
+        built = self.exports(monkeypatch)
+        make_book(names=["One", "Two"], texts=["word " * 40] * 2, auto_export=True)
+        books.update_book("b1", lambda b: b.update(render_all={"running": False, "total": 2}))
+        books.render_all_worker("b1")
+        assert built == []
+
+    def test_a_one_part_run_exports_that_part(self, make_book, fake_tts, monkeypatch):
+        built = self.exports(monkeypatch)
+        make_book(names=["A · One", "B · One"], texts=["word " * 40] * 2, auto_export=True)
+        books.update_book("b1", lambda b: b.update(render_all={
+            "running": True, "done": 0, "total": 1, "parts": ["A"]}))
+        books.render_all_worker("b1")
+        assert built == [("b1", "A")]
+
+    def test_a_run_over_several_parts_exports_the_whole_book(self, make_book, fake_tts,
+                                                             monkeypatch):
+        """One file rather than one per part: a run widened to two parts is on its way to
+        covering the book, and the whole book is the file you'd ask for by hand."""
+        built = self.exports(monkeypatch)
+        make_book(names=["A · One", "B · One", "C · One"], texts=["word " * 40] * 3,
+                  auto_export=True)
+        books.update_book("b1", lambda b: b.update(render_all={
+            "running": True, "done": 0, "total": 2, "parts": ["A", "B"]}))
+        books.render_all_worker("b1")
+        assert built == [("b1", None)]
+
+    def test_a_failed_chapter_does_not_hold_the_export_back(self, make_book, fake_tts,
+                                                            monkeypatch):
+        """A run steps past an error, so "nothing pending left" is as finished as it gets —
+        and the export says how many chapters were unfinished or missing anyway."""
+        built = self.exports(monkeypatch)
+        make_book(names=["One", "Two"], texts=["word " * 40] * 2, auto_export=True)
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="error"))
+        books.update_book("b1", lambda b: b.update(render_all={
+            "running": True, "done": 0, "total": 2}))
+        books.render_all_worker("b1")
+        assert built == [("b1", None)]
+
+
 class TestQueue:
     def test_idle(self):
         assert books.render_status() == {"current": None, "queue": []}

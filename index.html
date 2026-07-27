@@ -497,6 +497,12 @@
         Announce the title, the part and the chapter number</label>
       <div class="hint">“The Institute” … “by Stephen King” … “The Night Knocker” … “one” …
         then the text, with a pause after each. The title and author open the book only.</div>
+      <label class="check"><input type="checkbox" id="bookAutoExport">
+        Export the audiobook when a run finishes</label>
+      <div class="hint">A whole-book run is hours, so it gets started at bedtime — this has the
+        .m4b waiting in <em>Exported audiobooks</em> in the morning instead of two taps away. A
+        run over one part exports that part. Off by default: an export is a few hundred megabytes
+        and its own hour of ffmpeg.</div>
       <label for="bookSayTitle">Say the title as</label>
       <input type="text" id="bookSayTitle">
       <div class="hint">For a title written to be read rather than heard. “11/22/63: A Novel”
@@ -1681,6 +1687,7 @@ async function openBook(id){
   cov.src = coverUrl(BOOK, "thumb");
   pickOption($("#bookVoice"), BOOK.voice);
   $("#bookHeadings").checked = BOOK.announce !== false;
+  $("#bookAutoExport").checked = !!BOOK.auto_export;
   $("#bookSayTitle").value = BOOK.spoken_title || "";
   $("#bookSayTitle").placeholder = BOOK.title || "";
   // A fresh draft per book: an edit is only ever about the book in front of you, and carrying one
@@ -1819,6 +1826,9 @@ function renderWholeBook(){
       + ` — ${scopeDone} of ${scope.length} chapters done, roughly `
       + hoursLeft(scopeLeftMin) + ` left${byNote(scopeLeftMin)}.`
       + ` It keeps going if you close the page.`
+      // The reassurance you want when you put the phone down, and the one place that says the
+      // setting is armed without opening ⚙.
+      + (BOOK.auto_export ? " The audiobook is exported when it's done." : "")
     : `${ready.length} of ${chs.length} chapters narrated.`
       + (part ? ` ${part} more ${part === 1 ? "is" : "are"} part-way through.` : "")
       + (left.length ? ` The rest is about ${hoursLeft(leftMin)} of work.` : " All done.");
@@ -2731,6 +2741,8 @@ document.addEventListener("keydown", e => { if(e.key === "Escape") showSpeedMenu
 
 $("#bookVoice").addEventListener("change", ()=> changeBook({voice: $("#bookVoice").value}));
 $("#bookHeadings").addEventListener("change", ()=> changeBook({announce: $("#bookHeadings").checked}));
+$("#bookAutoExport").addEventListener("change",
+  ()=> changeBook({auto_export: $("#bookAutoExport").checked}));
 // On change, not on every keystroke: each save can re-make the book's opening.
 $("#bookSayTitle").addEventListener("change", ()=> changeBook({spoken_title: $("#bookSayTitle").value}));
 // Same deal for the opening note: on change, since each save can re-record the book's opening.

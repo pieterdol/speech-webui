@@ -198,6 +198,25 @@ class TestClearNarration:
         assert os.path.exists(books.book_dir("b1", "text", "ch000.txt"))
 
 
+class TestAutoExportSetting:
+    def test_stored_on_the_book_and_turned_off_again(self, client, make_book):
+        make_book()
+        assert client.post("/api/books/update",
+                           json={"id": "b1", "auto_export": True}).get_json()["ok"]
+        assert books.find_book("b1")["auto_export"] is True
+        client.post("/api/books/update", json={"id": "b1", "auto_export": False})
+        assert books.find_book("b1")["auto_export"] is False
+
+    def test_it_changes_nothing_that_was_narrated(self, client, make_book):
+        """It decides what happens after a run ends, so unlike the narrator it asks nothing
+        and throws nothing away."""
+        make_book()
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        r = client.post("/api/books/update", json={"id": "b1", "auto_export": True})
+        assert r.status_code == 200 and not r.get_json().get("needs_confirm")
+        assert books.find_book("b1")["chapters"][0]["state"] == "ready"
+
+
 class TestRetryingFailures:
     """A bulk run steps past a chapter that errored, so failures accumulate without anything
     saying so. One button asks for all of them again."""
