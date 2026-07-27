@@ -153,6 +153,10 @@
   .acts .copy.done { color:var(--ok); border-color:#2f6b45; }
   .acts .del { color:#ff9db0; border-color:#7a2f42; background:#2e2030; }
   .out audio { width:100%; margin-top:2px; }
+  /* One row per .m4b already on disk. The rule goes above every row but the first, so a book
+     with one export doesn't get a stray line. */
+  .exp + .exp { margin-top:10px; padding-top:10px; border-top:1px solid var(--line); }
+  .exp .nm { font-size:14px; word-break:break-word; }
   .dim { color:var(--muted); font-size:13.5px; }
   .warn { color:#ffd479; font-size:12.5px; margin-top:8px; }
   /* ---- books ---- */
@@ -502,6 +506,10 @@
          the page: on a long book that was several screens away from what you'd just tapped. -->
     <div id="exportOut"></div>
 
+    <!-- Exports that already exist. Hidden until there is one, so a book nobody has exported
+         doesn't carry an empty card. -->
+    <div class="card" id="exportsHave" style="margin-top:12px;display:none"></div>
+
     <!-- One list. A book divided into parts shows them as the outer level, each folding open
          to its chapters; a book without parts is the same list with the outer level missing. -->
     <h2>Chapters</h2>
@@ -554,6 +562,20 @@ function setStatus(html, err=false){
   el.innerHTML = html;
 }
 const fmt = s => { s = Math.round(s||0); return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`; };
+
+// A download inside a home-screen app is a trap on iOS: the file arrives on a full-screen
+// "Open in…" splash with no chrome behind it, and since a standalone app has no back button
+// the only way out is force-quitting it (WebKit bug 236943, still there). A link with
+// target="_blank" is handed to Safari instead, which has a toolbar, saves the file into Files
+// and leaves the app running behind it — one trip out of the app in exchange for an exit.
+// navigator.standalone is Safari-only and true only for the home-screen copy, so every other
+// browser keeps the plain in-page download.
+const homeScreenApp = navigator.standalone === true;
+// The download attribute is ignored when target is set, so the two cases don't overlap. The
+// file downloads either way: the server sends the export as an attachment.
+const downloadLink = (url, label) => homeScreenApp
+  ? `<a href="${url}" target="_blank" rel="noopener">${label}</a>`
+  : `<a href="${url}" download>${label}</a>`;
 
 // remember the picks that are annoying to redo on a phone
 const store = {
@@ -973,7 +995,7 @@ function showAudio(d, engine, text){
     <audio controls autoplay src="${d.url}"></audio>
     <div class="txt" style="margin-top:10px;font-size:13.5px;color:var(--muted)">${esc(text)}</div>
     <div class="acts">
-      <a href="${d.url}" download>⬇ Download</a>
+      ${downloadLink(d.url, "⬇ Download")}
       <button class="del">🗑 Delete</button>
     </div>`;
   card.querySelector(".del").addEventListener("click", async ()=>{
@@ -1527,6 +1549,7 @@ async function openBook(id){
     if(c.i === at || c.state === "rendering") OPEN_GROUPS.add(partOf(c));
   });
   $("#exportOut").innerHTML = "";
+  renderExports(d.exports);
   renderChapterList();
   watchRenders();
 }
@@ -1907,6 +1930,9 @@ function watchRenders(){
     const busy = (BOOK.chapters || []).some(c => c.state === "rendering")
               || (BOOK.render_all || {}).running
               || NARRATING.current || (NARRATING.queue || []).length;
+    // Rides along with the poll it's already making, so an export started on the PC turns up
+    // on the phone that's watching the same book narrate.
+    renderExports(d.exports);
     renderChapterList();
     if(!busy) stopWatching();
   };
@@ -1949,14 +1975,16 @@ async function exportBook(part, btn){
     const d = await r.json();
     if(!r.ok) throw new Error(d.error || r.status);
     const done = await waitForJob(d.job_id, EXPORT_LABELS, exportSays);
-    // A download link rather than an automatic download: on iOS you want to choose where
-    // it goes, and it can be a few hundred MB.
+    // Offered rather than started: it can be a few hundred MB, and on the phone where it goes
+    // is a decision — see exportActions.
     exportSays(
       `<div class="outhead">${esc(part || BOOK.title)} · ${esc(done.text || "")}
          · ${fmt(done.seconds)}</div>
-       <div class="acts"><a href="${done.url}" download>⬇ Download the .m4b</a></div>
-       <div class="hint">On the phone: tap it, then share it into BookPlayer.</div>`);
+       ${exportActions(done)}
+       <div class="hint">${homeScreenApp ? "BookPlayer takes it straight from the share sheet."
+                                         : "On the phone: share it into BookPlayer."}</div>`);
     $("#exportOut").scrollIntoView({behavior:"smooth", block:"nearest"});
+    refreshExports();
   }catch(e){
     exportSays("❌ " + esc(e.message), true);
     $("#exportOut").scrollIntoView({behavior:"smooth", block:"nearest"});
@@ -1964,6 +1992,119 @@ async function exportBook(part, btn){
   if(btn) btn.disabled = false;
 }
 $("#exportBook").addEventListener("click", e => exportBook(null, e.currentTarget));
+
+// Every .m4b the book already has, which the panel above doesn't cover: that one reports the
+// export it just ran and is gone on the next reload, while the file it made stays. Without
+// this the only way back to an audiobook built yesterday was to encode the whole book again.
+const mb = n => n >= 1e9 ? (n / 1e9).toFixed(1) + " GB" : Math.round(n / 1e6) + " MB";
+// Two exports of the same book on one day are usually the whole book and a part — the date
+// alone wouldn't tell them apart, and the size and the name do.
+const whenMade = t => new Date(t * 1000)
+  .toLocaleString([], {day:"numeric", month:"short", hour:"2-digit", minute:"2-digit"});
+let exportsDrawn = "";
+function renderExports(list){
+  const have = list || [];
+  // An unchanged list is left alone rather than rebuilt. The poll comes round every 4 s, and
+  // redrawing would throw away a row's fetched file — and its progress — mid-share.
+  const sig = JSON.stringify(have.map(x => [x.url, x.bytes, x.made]));
+  if(sig === exportsDrawn) return;
+  exportsDrawn = sig;
+  const el = $("#exportsHave");
+  el.style.display = have.length ? "block" : "none";
+  el.innerHTML = have.length
+    ? `<div class="outhead">Already exported</div>` + have.map(x =>
+        `<div class="exp"><div class="nm">${esc(x.file)}</div>
+           <div class="hint">${mb(x.bytes)} · ${whenMade(x.made)}</div>
+           ${exportActions(x)}</div>`).join("")
+    : "";
+}
+async function refreshExports(){
+  if(!BOOK) return;
+  const r = await fetch("/api/books/" + BOOK.id);
+  if(r.ok) renderExports((await r.json()).exports);
+}
+
+// What can be done with one built .m4b, which is not the same question on the two devices.
+//
+// In a browser it's a download. In the home-screen app a download cannot finish at all: iOS
+// opens the link in a browser view with no address bar, and handed a file rather than a page it
+// renders blank and greys out both Share and Open-in-Safari — the file has arrived and there's
+// nothing to do with it. So the file is fetched here and handed to the iOS share sheet, which
+// is where BookPlayer is anyway; the Files detour a download would need is skipped entirely.
+//
+// "Open in Safari" is the way out when that fails. It goes to /get/, a page wrapping the same
+// link — a page is something that view can render, which leaves its own Open-in-Safari button
+// live, and a download started in real Safari behaves like any other download.
+const canShareFiles = (() => {
+  try {
+    return !!(navigator.canShare
+              && navigator.canShare({files: [new File([""], "a.m4b", {type:"audio/mp4"})]}));
+  }catch(e){ return false; }
+})();
+function exportActions(x){
+  if(!homeScreenApp)
+    return `<div class="acts">${downloadLink(x.url, "⬇ Download the .m4b")}</div>`;
+  const share = canShareFiles
+    ? `<button class="shareExp" data-url="${x.url}" data-file="${esc(x.file)}">📤 Share the
+         .m4b</button>` : "";
+  return `<div class="acts">${share}
+      <a href="${x.url.replace("/export/", "/get/")}" target="_blank" rel="noopener">🧭 Open in
+        Safari</a></div>
+    <div class="hint expmsg"></div>`;
+}
+
+// iOS opens the share sheet only while a tap is still fresh, and a hundred megabytes over the
+// tailnet doesn't arrive that fast. So the first tap fetches the file and the sheet is asked
+// for on the tap after it, the file kept in hand meanwhile: one tap when it's small enough to
+// make the window, two when it isn't.
+async function shareExport(btn){
+  const msg = btn.closest(".acts").nextElementSibling;
+  const say = t => { if(msg) msg.textContent = t; };
+  try{
+    if(!btn._file){
+      btn.disabled = true;
+      btn._file = await fetchAsFile(btn.dataset.url, btn.dataset.file, say);
+      btn.disabled = false;
+      btn.textContent = "📤 Share it now";
+    }
+    say("Opening the share sheet…");
+    await navigator.share({files: [btn._file]});
+    say("Sent — pick BookPlayer, or Save to Files.");
+  }catch(err){
+    btn.disabled = false;
+    // Closing the sheet is a choice, not a failure. A share refused for a stale gesture keeps
+    // the file, so the next tap goes straight to the sheet inside a fresh one.
+    say(err.name === "AbortError" ? ""
+        : err.name === "NotAllowedError" ? "Ready — tap “Share it now”."
+        : "❌ " + err.message);
+  }
+}
+// Read in chunks rather than as one blob: it's the only way to say how far along a download of
+// this size is, and a silent half-minute on a phone reads as a broken button.
+async function fetchAsFile(url, name, say){
+  say("Fetching…");
+  const res = await fetch(url);
+  if(!res.ok) throw new Error("the server said " + res.status);
+  const total = +res.headers.get("Content-Length") || 0;
+  if(!res.body) return new File([await res.blob()], name, {type:"audio/mp4"});
+  const reader = res.body.getReader(), chunks = [];
+  let got = 0;
+  for(;;){
+    const {done, value} = await reader.read();
+    if(done) break;
+    chunks.push(value);
+    got += value.length;
+    say(total ? `Fetching… ${Math.round(got / total * 100)}% of ${mb(total)}`
+              : `Fetching… ${mb(got)}`);
+  }
+  return new File(chunks, name, {type:"audio/mp4"});
+}
+// Delegated: the rows are rebuilt on every poll, and a listener per button would be rebound
+// with them — including onto a button holding a file it had already fetched.
+$("#reader").addEventListener("click", e => {
+  const btn = e.target.closest(".shareExp");
+  if(btn) shareExport(btn);
+});
 function stopWatching(){ if(bookPoll){ clearInterval(bookPoll); bookPoll = null; } }
 
 // ---- the player ----
@@ -2320,12 +2461,14 @@ $("#bookClear").addEventListener("click", async ()=>{
   if(!BOOK) return;
   const n = (BOOK.chapters || []).filter(c => c.state === "ready").length;
   if(!confirm(`Delete the narration for “${BOOK.title}”? ${n} chapter(s) would have to be`
-              + ` narrated again. The book, its text and its cover stay.`)) return;
+              + ` narrated again, and any exported audiobook goes with it. The book, its text`
+              + ` and its cover stay.`)) return;
   const d = await (await fetch("/api/books/clear", {method:"POST",
     headers:{"Content-Type":"application/json"}, body: JSON.stringify({id: BOOK.id})})).json();
   if(!d.ok){ setStatus("❌ " + (d.msg || "couldn't clear it"), true); return; }
   BOOK = d.book;
   stopIfPlaying(BOOK.id);
+  renderExports([]);            // clearing takes the exports with it, server-side
   renderChapterList();
   setStatus("Narration cleared.");
 });

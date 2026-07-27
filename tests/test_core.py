@@ -6,6 +6,8 @@ off the wire — so it gets the most attention here.
 import json
 import os
 
+import flask
+
 import core
 
 
@@ -114,3 +116,69 @@ class TestSafePath:
         (tmp_path / "books-evil").mkdir()
         (tmp_path / "books-evil" / "x.txt").write_bytes(b"x")
         assert core.safe_path(str(tmp_path / "books"), "../books-evil/x.txt") is None
+
+
+class TestLogTransfer:
+    """What the export route is instrumented with. A 200 in the access log says a download
+    started; only this says whether it finished, which is the whole question when a phone
+    accepts a file and then throws it away."""
+
+    def wrap(self, chunks, total=None, headers=None, what="export A.m4b"):
+        """A file response the way send_from_directory leaves one, wrapped and handed back."""
+        with core.app.test_request_context("/export/b1/A.m4b", headers=headers or {}):
+            r = flask.Response(iter(chunks), direct_passthrough=True)
+            if total is not None:
+                r.headers["Content-Length"] = str(total)
+            return core.log_transfer(r, what)
+
+    def test_counts_what_went_out(self, caplog):
+        with caplog.at_level("INFO", logger="speech"):
+            r = self.wrap([b"a" * 10, b"b" * 10], total=20)
+            assert b"".join(r.response) == b"a" * 10 + b"b" * 10
+        assert "sent 20 of 20 bytes" in "\n".join(caplog.messages)
+        assert "INCOMPLETE" not in "\n".join(caplog.messages)
+
+    def test_an_abandoned_transfer_says_so(self, caplog):
+        """The phone opening the file, taking a look and closing the view. Closing the iterator
+        is what a WSGI server does when the client goes away mid-transfer, and it's the case
+        this logging exists to make visible."""
+        with caplog.at_level("INFO", logger="speech"):
+            r = self.wrap([b"a" * 10, b"b" * 10], total=20)
+            it = iter(r.response)
+            next(it)
+            it.close()
+        assert "sent 10 of 20 bytes — INCOMPLETE" in "\n".join(caplog.messages)
+
+    def test_the_file_behind_it_is_closed(self):
+        """Replacing the body takes closing the file off werkzeug, so a transfer that ends —
+        either way — has to close it here or the handle leaks per download."""
+        class Body:
+            closed = False
+            def __iter__(self): return iter([b"x"])
+            def close(self): self.closed = True
+
+        body = Body()
+        with core.app.test_request_context("/export/b1/A.m4b"):
+            r = flask.Response(body, direct_passthrough=True)
+            wrapped = core.log_transfer(r, "export A.m4b")
+        list(wrapped.response)
+        assert body.closed
+
+    def test_the_file_is_closed_on_an_abandoned_transfer_too(self):
+        class Body:
+            closed = False
+            def __iter__(self): return iter([b"x", b"y"])
+            def close(self): self.closed = True
+
+        body = Body()
+        with core.app.test_request_context("/export/b1/A.m4b"):
+            wrapped = core.log_transfer(flask.Response(body, direct_passthrough=True), "e")
+        it = iter(wrapped.response)
+        next(it)
+        it.close()
+        assert body.closed
+
+    def test_names_the_request_it_was_serving(self, caplog):
+        with caplog.at_level("INFO", logger="speech"):
+            list(self.wrap([b"x"], total=1, what="export The Institute.m4b").response)
+        assert "export The Institute.m4b" in "\n".join(caplog.messages)

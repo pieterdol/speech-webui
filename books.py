@@ -3,13 +3,14 @@
 Owns its own storage paths rather than taking them from core, which is what lets the tests
 point the whole layer at a tmpdir.
 """
-import json, os, re, shutil, subprocess, tempfile, threading, time, urllib.parse, uuid
+import html, json, os, re, shutil, subprocess, tempfile, threading, time, urllib.parse, uuid
 from contextlib import contextmanager
 
-from flask import jsonify, request, send_from_directory
+from flask import Response, jsonify, request, send_from_directory
 
 import epub
-from core import app, index_lock, jobs, new_job, run_lock, safe_path, write_json, HERE
+from core import (app, index_lock, jobs, log_transfer, new_job, run_lock, safe_path,
+                  write_json, HERE)
 from media import audio_seconds, pad_with_silence
 from textprep import ONES, TENS, cut_sentences, respell
 from tts import piper_voice_ids, tts_engine_of, tts_say
@@ -62,6 +63,23 @@ def book_summary(b):
            {"chapters": len(chapters), "ready": ready,
             "cover_v": cover_version(b.get("id")),
             "words": sum(c.get("words", 0) for c in chapters)}
+
+def book_exports(book_id):
+    """The .m4b files already built for this book, newest first.
+
+    An export is a file that stays on disk, but the link to it only existed in the panel the
+    export job wrote — so reloading the page, or picking the phone up the next day, meant
+    encoding the whole book again to get at a copy that was already there."""
+    d = book_dir(book_id, "export")
+    found = []
+    for name in os.listdir(d) if os.path.isdir(d) else []:
+        path = os.path.join(d, name)
+        if not name.endswith(".m4b") or not os.path.isfile(path):
+            continue
+        st = os.stat(path)
+        found.append({"file": name, "bytes": st.st_size, "made": int(st.st_mtime),
+                      "url": f"/export/{book_id}/{urllib.parse.quote(name)}"})
+    return sorted(found, key=lambda e: -e["made"])
 
 def update_book(book_id, fn):
     """Read-modify-write one book under the index lock. Renders mutate chapter state from a
@@ -699,7 +717,8 @@ def api_book(book_id):
     # rather than needing a second request. It's global: renders are serialized across books,
     # so this book can be waiting on another one's chapter.
     return jsonify(book=b | {"cover_v": cover_version(book_id)},
-                   parts=book_parts(b), narrating=render_status())
+                   parts=book_parts(b), narrating=render_status(),
+                   exports=book_exports(book_id))
 
 @app.post("/api/books/update")
 def api_book_update():
@@ -960,8 +979,50 @@ def book_export(book_id, filename):
     path = safe_path(book_dir(book_id, "export"), filename)
     if not path:
         return jsonify(error="not found"), 404
-    return send_from_directory(book_dir(book_id, "export"), filename,
-                               as_attachment=True, conditional=True)
+    r = send_from_directory(book_dir(book_id, "export"), filename,
+                            as_attachment=True, conditional=True)
+    # 137 MB over the tailnet to a phone that may or may not keep it — worth a log line saying
+    # which it was. See log_transfer.
+    return log_transfer(r, f"export {filename}")
+
+@app.get("/get/<book_id>/<path:filename>")
+def book_export_page(book_id, filename):
+    """The same download with a page around it, for the home-screen app.
+
+    iOS opens a target="_blank" link in a browser view that has no address bar — just Done,
+    Back, Share, Reload and Open-in-Safari. Handed the .m4b itself it has no page to show, so
+    it renders blank and greys out both Share and Open-in-Safari: the file has arrived and
+    there is nothing to do with it. Handed a page it shows the page, which leaves those two
+    buttons live — and a download started in real Safari behaves like any other, landing in
+    Files where BookPlayer can take it.
+    """
+    path = safe_path(book_dir(book_id, "export"), filename)
+    if not path:
+        return jsonify(error="not found"), 404
+    name = html.escape(filename)
+    href = html.escape(f"/export/{book_id}/{urllib.parse.quote(filename)}")
+    mb = os.path.getsize(path) / 1e6
+    page = f"""<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{name}</title>
+<style>
+ body {{ margin:0; padding:28px 20px; background:#141322; color:#efeefb; font-size:17px;
+        line-height:1.5; font-family:-apple-system,system-ui,sans-serif; }}
+ h1 {{ font-size:19px; margin:0 0 6px; word-break:break-word; }}
+ .sz {{ color:#9a97b8; font-size:14px; margin-bottom:22px; }}
+ a.dl {{ display:block; padding:16px; border-radius:12px; background:#2a2640;
+         border:1px solid #3a3557; color:#efeefb; text-decoration:none; text-align:center;
+         font-size:17px; }}
+ p {{ color:#9a97b8; font-size:14px; margin-top:22px; }}
+</style>
+<h1>{name}</h1>
+<div class="sz">{mb:.0f} MB audiobook</div>
+<a class="dl" href="{href}" download>⬇ Download it</a>
+<p>If nothing happens, tap the compass at the bottom right to open this in Safari and
+download it there. The file lands in Files, and BookPlayer opens it from the share sheet.</p>
+"""
+    return Response(page, mimetype="text/html")
 
 @app.post("/api/books/cover")
 def api_book_cover():

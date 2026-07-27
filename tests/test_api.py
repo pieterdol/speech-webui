@@ -393,3 +393,152 @@ class TestCoverVersion:
         assert r.get_json()["cover_v"] > before
         assert client.get("/api/books").get_json()["books"][0]["cover_v"] == \
             r.get_json()["cover_v"]
+
+
+class TestExistingExports:
+    """The reader offers every .m4b the book already has, not only the one the current page
+    built — the file outlives the panel that linked to it, and re-encoding a 137 MB book to
+    get at a copy already on disk is half an hour of GPU for nothing."""
+
+    def write_export(self, name="A Book.m4b", mtime=None, book_id="b1"):
+        p = books.book_dir(book_id, "export", name)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(b"\0" * 2048)
+        if mtime:
+            os.utime(p, (mtime, mtime))
+        return p
+
+    def test_a_book_carries_what_it_has_already_exported(self, client, make_book):
+        make_book()
+        self.write_export(mtime=1_700_000_000)
+        got = client.get("/api/books/b1").get_json()["exports"]
+        assert len(got) == 1
+        assert got[0]["file"] == "A Book.m4b"
+        assert got[0]["bytes"] == 2048
+        assert got[0]["made"] == 1_700_000_000
+
+    def test_the_url_is_the_one_that_downloads_it(self, client, make_book):
+        """Spaces and all — the name is what the player shows, so it's encoded, not rewritten."""
+        make_book()
+        self.write_export()
+        url = client.get("/api/books/b1").get_json()["exports"][0]["url"]
+        assert url == "/export/b1/A%20Book.m4b"
+        r = client.get(url)
+        assert r.status_code == 200
+        assert "attachment" in r.headers["Content-Disposition"]
+
+    def test_nothing_exported_is_an_empty_list(self, client, make_book):
+        """Not a 500 from listing a directory the export has never made."""
+        make_book()
+        assert client.get("/api/books/b1").get_json()["exports"] == []
+
+    def test_newest_first(self, client, make_book):
+        make_book()
+        self.write_export("Whole.m4b", mtime=1_700_000_000)
+        self.write_export("Part One.m4b", mtime=1_700_009_999)
+        got = [e["file"] for e in client.get("/api/books/b1").get_json()["exports"]]
+        assert got == ["Part One.m4b", "Whole.m4b"]
+
+    def test_only_finished_files_are_offered(self, client, make_book):
+        """ffmpeg's own leftovers live in a tmpdir, but a half-written or renamed file in here
+        would otherwise be handed over as an audiobook."""
+        make_book()
+        self.write_export("Done.m4b")
+        self.write_export("Done.m4b.part")
+        os.makedirs(books.book_dir("b1", "export", "notes"), exist_ok=True)
+        got = [e["file"] for e in client.get("/api/books/b1").get_json()["exports"]]
+        assert got == ["Done.m4b"]
+
+    def test_one_book_is_not_offered_another_s(self, client, make_book):
+        make_book(book_id="mine")
+        make_book(book_id="theirs")
+        self.write_export("Theirs.m4b", book_id="theirs")
+        assert client.get("/api/books/mine").get_json()["exports"] == []
+
+    def test_clearing_the_narration_takes_them(self, client, make_book):
+        """The audio they were built from is gone, so an export left behind would be the only
+        copy of a narration the book says it hasn't got."""
+        make_book()
+        self.write_export()
+        client.post("/api/books/clear", json={"id": "b1"})
+        assert client.get("/api/books/b1").get_json()["exports"] == []
+
+
+class TestTransferLog:
+    """A download the phone abandons and one it keeps are the same 200 in the access log, so
+    the export route counts what actually went out. This is the only instrument there is for a
+    bug that only happens on the phone."""
+
+    def serve(self, client, headers=None):
+        p = books.book_dir("b1", "export", "A Book.m4b")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(b"\0" * 5000)
+        return client.get("/export/b1/A%20Book.m4b", headers=headers or {})
+
+    def test_a_finished_transfer_logs_what_it_sent(self, client, make_book, caplog):
+        make_book()
+        with caplog.at_level("INFO", logger="speech"):
+            assert len(self.serve(client).data) == 5000
+        line = "\n".join(caplog.messages)
+        assert "A Book.m4b" in line
+        assert "sent 5000 of 5000 bytes" in line
+        assert "INCOMPLETE" not in line
+
+    def test_the_user_agent_comes_along(self, client, make_book, caplog):
+        """Everything arrives from 127.0.0.1 through the tailnet proxy, so the UA is the only
+        thing that says whether it was the phone or the PC."""
+        make_book()
+        with caplog.at_level("INFO", logger="speech"):
+            self.serve(client, {"User-Agent": "iPhone/Safari"})
+        assert "ua=iPhone/Safari" in "\n".join(caplog.messages)
+
+    def test_a_range_request_is_recorded_as_one(self, client, make_book, caplog):
+        make_book()
+        with caplog.at_level("INFO", logger="speech"):
+            assert self.serve(client, {"Range": "bytes=0-99"}).status_code == 206
+        assert "range=bytes=0-99" in "\n".join(caplog.messages)
+
+
+class TestExportPage:
+    """The wrapper page. In the home-screen app iOS opens a target="_blank" link in a browser
+    view with no address bar; handed the .m4b itself it renders blank and greys out both Share
+    and Open-in-Safari, which is a dead end with a Done button. A page renders, so those
+    buttons stay live and Safari can take the download."""
+
+    def make_export(self, name="A Book.m4b"):
+        p = books.book_dir("b1", "export", name)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(b"\0" * 3_000_000)
+        return p
+
+    def test_it_is_a_page_and_not_the_file(self, client, make_book):
+        make_book()
+        self.make_export()
+        r = client.get("/get/b1/A%20Book.m4b")
+        assert r.status_code == 200
+        assert r.mimetype == "text/html"
+        assert "attachment" not in r.headers.get("Content-Disposition", "")
+
+    def test_it_links_to_the_download(self, client, make_book):
+        make_book()
+        self.make_export()
+        body = client.get("/get/b1/A%20Book.m4b").get_data(as_text=True)
+        assert 'href="/export/b1/A%20Book.m4b"' in body
+        assert "3 MB" in body
+
+    def test_a_name_with_markup_in_it_is_escaped(self, client, make_book):
+        """The name comes from the book's title, which the reader can type."""
+        make_book()
+        self.make_export("A <script>x</script> Book.m4b")
+        body = client.get("/get/b1/A%20%3Cscript%3Ex%3C%2Fscript%3E%20Book.m4b"
+                          ).get_data(as_text=True)
+        assert "<script>x" not in body
+        assert "&lt;script&gt;" in body
+
+    def test_nothing_exported_is_a_404(self, client, make_book):
+        make_book()
+        assert client.get("/get/b1/nothing.m4b").status_code == 404
+
+    def test_no_escaping_the_export_directory(self, client, make_book):
+        make_book()
+        assert client.get("/get/b1/../../books.json").status_code in (301, 400, 404)

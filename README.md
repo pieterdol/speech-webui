@@ -291,7 +291,14 @@ it — a full book is hours of work.
   into **BookPlayer**, which gives you chapters, sleep timer and position with no PC involved —
   nothing in the export is player-specific. *Whatever is narrated* means every part on disk, not
   only the chapters that finished, and the count of unfinished and un-narrated chapters is
-  reported alongside the download. The full book is ~564 MB.
+  reported alongside the download. The full book is ~564 MB. On the phone the same file is
+  offered through the iOS share sheet instead of as a download — see the constraint below.
+- **Already exported** lists every `.m4b` the book still has on disk, newest first, with its
+  size and when it was built, each one downloadable (or shareable) again. The export panel above it belongs to
+  the run that just happened and is gone on the next reload; the file isn't, so nothing about
+  taking a second copy — another player, another phone — needs the book re-encoded. A book that
+  has never been exported shows no list at all. *Clear narration* deletes these along with the
+  audio they were built from, which is why it says so before it does it.
 
 **Why files rather than streaming.** iOS suspends a page's timers when the screen locks, so the
 sentence-at-a-time approach Chat uses would stall the moment the phone goes in a pocket. Files
@@ -387,7 +394,7 @@ setup.sh      one-time install of the app venv and all three speech engines
 speech.py     entry point (port 8600). Imports the feature modules for the routes they
               register, serves the page, starts the worker reaper. Not named app.py, so
               restart.sh can't collide with comfy-webui's.
-core.py       the Flask app, the job table, the locks, write_json/safe_path
+core.py       the Flask app, the job table, the locks, write_json/safe_path/log_transfer
 textprep.py   prose -> speakable text, and cutting it into sentences
 media.py      ffmpeg and ffprobe helpers
 clips.py      recorded/uploaded audio, transcripts, voice presets
@@ -447,7 +454,8 @@ ffmpeg for real, reading the chapter marks back out of a finished `.m4b` — the
 they line up with the audio rather than merely being written.
 
 `tests/test_frontend.py` is structural, not behavioural: every `$("#id")` resolves, no element is
-left unreferenced, tags balance, ids are unique, and the inline script parses. One file with no
+left unreferenced, tags balance, ids are unique, the inline script parses, and no download link is
+built outside the one helper that knows what iOS does with them. One file with no
 build step means nothing else catches a dangling reference before the phone does. The parse check
 uses `node --check` where node exists, which is what CI runs, and falls back to esprima where it
 doesn't — a desktop is not a build box, and the check is worth most on the machine the page is
@@ -468,6 +476,34 @@ redirects along with everything else, and the rest of the test then runs against
 ## Gotchas
 
 - **No mic on plain http** — use the HTTPS URL. The UI says so if it detects an insecure context.
+- **A download can't finish inside the home-screen app** — on the phone the audiobook is
+  *shared*, not downloaded. Two separate iOS behaviours make the download impossible, and the
+  page detects the app with `navigator.standalone`:
+
+  A plain link puts the file on a full-screen "Open in…" splash with the app hidden behind it,
+  and a home-screen app has no toolbar to leave it with, so the app has to be force-quit (WebKit
+  236943). Adding `target="_blank"` escapes that — the link opens in a browser view that does
+  have a Done button — but that view is handed a file rather than a page, so it renders blank
+  and greys out both its Share and its Open-in-Safari buttons. Nothing on that screen can save
+  the file.
+
+  So **Share the .m4b** fetches the file in the page and hands it to `navigator.share`, and the
+  share sheet passes it to BookPlayer directly — the Files detour a download would need doesn't
+  happen. It takes two taps on a large book: iOS opens the sheet only during a fresh tap and a
+  hundred megabytes over the tailnet outlasts that, so the first tap fetches (showing progress)
+  and the second one shares, the file kept in hand between them. **Open in Safari** is the
+  fallback, and points at `/get/…` rather than the file: a page is something that browser view
+  can render, which leaves *its* Open-in-Safari button live, and a download in real Safari
+  behaves normally and lands in Files.
+
+  Every other browser keeps the plain `download` link, which is why this is invisible on the PC.
+- **Whether a download finished is in `speech.log`.** The access log can't tell you: an
+  abandoned transfer and a completed one are both a `200` with no size, and iOS discards a file
+  it can't hand anywhere. So the export route counts the bytes it actually streams —
+  `sent 16384 of 137022062 bytes — INCOMPLETE · range=- · ua=…` — which separates a phone that
+  never asked from one that read the whole file and threw it away. The User-Agent is in there
+  because every request arrives from `127.0.0.1` through the tailnet proxy, so nothing else says
+  which device it was.
 - **Whisper model downloads** happen on first use (`small` ≈ 500 MB, `large-v3-turbo` ≈ 1.6 GB)
   into `~/.cache/huggingface`; the first transcription after a switch is slower.
 - **F5-TTS needs the reference transcript.** If it's blank the CLI would download and run its

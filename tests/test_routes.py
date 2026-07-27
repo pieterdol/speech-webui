@@ -48,6 +48,7 @@ EXPECTED = {
     ("/cover/<book_id>/<size>.jpg", "GET"),
     ("/export/<book_id>/<path:filename>", "GET"),
     ("/favicon.ico", "GET"),
+    ("/get/<book_id>/<path:filename>", "GET"),
     ("/icon.png", "GET"),
     ("/out/<path:filename>", "GET"),
     ("/preset/<path:filename>", "GET"),

@@ -136,3 +136,27 @@ def test_the_audio_element_is_in_the_player(page):
     """And the <audio> has to be inside it, or hiding a view would still take the sound."""
     player = page.index('id="miniPlayer"')
     assert player < page.index('id="bookAudio"') < page.index("<script>")
+
+
+def helper(script):
+    """The text of the downloadLink definition, up to the semicolon that ends it."""
+    start = script.index("const downloadLink")
+    return script[start:script.index(";", start)]
+
+
+def test_the_home_screen_app_sends_a_download_to_safari(script):
+    """In the home-screen app a download lands on an iOS splash screen the app can't leave.
+    The way out is a link Safari takes over, which rules out the download attribute — it's
+    ignored once target is set — and needs the standalone check to tell the two apart."""
+    standalone, plain = helper(script).split("\n")[1:3]
+    assert "navigator.standalone" in script
+    assert 'target="_blank"' in standalone and "download" not in standalone
+    assert "download>" in plain and "_blank" not in plain
+
+
+def test_no_download_link_is_built_outside_the_helper(script):
+    """Which only holds while every download goes through it — a hand-written <a download>
+    is the same trap again, and it'd take another phone to notice."""
+    rest = script.replace(helper(script), "")
+    assert re.findall(r"<a\b[^>]*\bdownload\b[^>]*>", rest) == []
+    assert rest.count("downloadLink(") >= 2
