@@ -168,3 +168,112 @@ class TestMetadata:
         assert " " in job["file"]
         assert " " not in job["url"]
         assert "%20" in job["url"]
+
+
+class TestNothingHalfBuiltIsOffered:
+    """The export is encoded under a name the library doesn't recognise and renamed when it's
+    whole. Writing straight to the .m4b put a file that grew as you watched into "Exported
+    audiobooks", with Share and Delete beside however much of an audiobook existed so far."""
+
+    def test_the_finished_file_is_the_only_one_left(self, make_book, silence):
+        make_book(names=["One"], texts=["word " * 10])
+        narrate("b1", 0, silence, 1.0)
+        job = run_export("b1")
+        assert job["status"] == "done", job.get("error")
+        left = sorted(os.listdir(books.book_dir("b1", "export")))
+        assert job["file"] in left
+        assert not [f for f in left if f.endswith(".part")]
+
+    def test_it_is_encoded_under_the_part_name(self, make_book, silence, monkeypatch):
+        """What the listing never sees. Caught by watching the file ffmpeg is handed rather than
+        by trusting the name it ends up under."""
+        make_book(names=["One"], texts=["word " * 10])
+        narrate("b1", 0, silence, 1.0)
+        real = subprocess.run
+        handed = []
+
+        def spy(cmd, *a, **kw):
+            if cmd and cmd[0] == "ffmpeg":
+                handed.append(cmd[-1])
+            return real(cmd, *a, **kw)
+
+        monkeypatch.setattr(books.subprocess, "run", spy)
+        run_export("b1")
+        assert handed and handed[-1].endswith(".m4b.part")
+        assert books.book_exports("b1")[0]["file"].endswith(".m4b")
+
+    def test_a_partial_file_is_never_listed(self, make_book):
+        """Directly: whatever the encoder is doing, the listing is what the page offers."""
+        make_book()
+        p = books.book_dir("b1", "export", "A Book.m4b.part")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(b"\0" * 4096)
+        assert books.book_exports("b1") == []
+
+    def test_a_failed_encode_leaves_nothing_behind(self, make_book, silence, monkeypatch):
+        make_book(names=["One"], texts=["word " * 10])
+        narrate("b1", 0, silence, 1.0)
+        real = subprocess.run
+
+        def half_write(cmd, *a, **kw):
+            if cmd and cmd[0] == "ffmpeg" and cmd[-1].endswith(".part"):
+                open(cmd[-1], "wb").write(b"\0" * 2048)      # started, then died
+                return subprocess.CompletedProcess(cmd, 1, "", "boom")
+            return real(cmd, *a, **kw)
+
+        monkeypatch.setattr(books.subprocess, "run", half_write)
+        job = run_export("b1")
+        assert job["status"] == "error"
+        assert os.listdir(books.book_dir("b1", "export")) == []
+
+    def test_a_restart_sweeps_one_left_by_a_killed_export(self, make_book):
+        make_book()
+        p = books.book_dir("b1", "export", "A Book.m4b.part")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(b"\0" * 4096)
+        keep = books.book_dir("b1", "export", "Older.m4b")
+        open(keep, "wb").write(b"\0" * 128)
+        books.clear_stale_state()
+        assert os.listdir(books.book_dir("b1", "export")) == ["Older.m4b"]
+
+
+class TestWhatAnExportSaysAboutItself:
+    """The chapter counts and the running time were in the job's result and nowhere else, so
+    they vanished on the next reload while the file they described stayed. They're written
+    beside the file now, which is what lets one list serve both the export just built and the
+    ones built yesterday."""
+
+    def test_written_beside_the_file(self, make_book, silence):
+        make_book(names=["One", "Two"], texts=["word " * 10] * 2)
+        narrate("b1", 0, silence, 1.0)
+        job = run_export("b1")
+        got = books.book_exports("b1")[0]
+        assert got["text"] == job["text"] == "1 chapters, 1 not narrated"
+        assert got["seconds"] == job["seconds"]
+
+    def test_an_export_without_one_still_lists(self, make_book):
+        """Built before the note existed — it just says less about itself."""
+        make_book()
+        p = books.book_dir("b1", "export", "Old.m4b")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(b"\0" * 512)
+        got = books.book_exports("b1")[0]
+        assert got["file"] == "Old.m4b"
+        assert got["text"] is None and got["seconds"] is None
+
+    def test_the_note_is_not_offered_as_an_audiobook(self, make_book):
+        make_book()
+        p = books.book_dir("b1", "export", "A Book.m4b")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(b"\0" * 512)
+        books.write_export_note("b1", "A Book.m4b", "1 chapters", 12.5)
+        assert [e["file"] for e in books.book_exports("b1")] == ["A Book.m4b"]
+
+    def test_deleting_the_export_takes_its_note(self, client, make_book):
+        make_book()
+        p = books.book_dir("b1", "export", "A Book.m4b")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(b"\0" * 512)
+        books.write_export_note("b1", "A Book.m4b", "1 chapters", 12.5)
+        client.post("/api/books/export/delete", json={"id": "b1", "file": "A Book.m4b"})
+        assert os.listdir(books.book_dir("b1", "export")) == []

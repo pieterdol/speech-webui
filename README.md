@@ -317,11 +317,21 @@ it — a full book is hours of work.
   only the chapters that finished, and the count of unfinished and un-narrated chapters is
   reported alongside the download. The full book is ~564 MB. On the phone the same file is
   offered through the iOS share sheet instead of as a download — see the constraint below.
-- **Already exported** lists every `.m4b` the book still has on disk, newest first, with its
-  size and when it was built, each one downloadable (or shareable) again. The export panel above
-  it belongs to the run that just happened and is gone on the next reload; the file isn't, so
-  nothing about taking a second copy — another player, another phone — needs the book re-encoded.
-  A book that has never been exported shows no list at all.
+- **Exported audiobooks** is the one place an export appears, the one just built included. Every
+  `.m4b` the book still has on disk, newest first, each with what went into it — chapters, how
+  many were unfinished or not narrated, how long it plays — its size, when it was built, and the
+  buttons to take it or delete it. Taking a second copy never needs the book re-encoded. A book
+  that has never been exported shows no list at all, and while one is being built the panel above
+  says so and nothing else.
+
+  What an export came to used to live only in the job's result, so it went with the next reload
+  while the file it described stayed. It's written beside the file now, as `<name>.m4b.json`; an
+  export built before that just says its size and date.
+- **An export being encoded is never offered.** ffmpeg writes to `<name>.m4b.part` and the file
+  is renamed when it's whole — the listing only knows `.m4b`, so a half-built audiobook can't be
+  shared or deleted, and a killed encode leaves a `.part` (swept on the next start) rather than a
+  truncated `.m4b` that looks finished. The rename is what the extension used to do for ffmpeg,
+  so the muxer is now named outright: `-f ipod`, byte-for-byte what `.m4b` selected before.
 - **Deleting an export** takes that one file and nothing else: the narration stays, so the book
   can be exported again without narrating a word. These are the largest files the app makes —
   137 MB for one book, and the three exported here are 199 MB together — and the only other way

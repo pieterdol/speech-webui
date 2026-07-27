@@ -2069,7 +2069,8 @@ const EXPORT_LABELS = {queued:"Queued…", collecting:"Gathering the chapters…
 // Progress and failures land in the panel under the export buttons rather than in the page's
 // status line, which on a long book is several screens below whatever you just tapped.
 const exportSays = (html, err=false) =>
-  $("#exportOut").innerHTML = `<div class="out${err ? " err" : ""}">${html}</div>`;
+  $("#exportOut").innerHTML = html
+    ? `<div class="out${err ? " err" : ""}">${html}</div>` : "";
 
 async function exportBook(part, btn){
   if(!BOOK) return;
@@ -2082,16 +2083,15 @@ async function exportBook(part, btn){
     const d = await r.json();
     if(!r.ok) throw new Error(d.error || r.status);
     const done = await waitForJob(d.job_id, EXPORT_LABELS, exportSays);
-    // Offered rather than started: it can be a few hundred MB, and on the phone where it goes
-    // is a decision — see exportActions.
-    exportSays(
-      `<div class="outhead">${esc(part || BOOK.title)} · ${esc(done.text || "")}
-         · ${fmt(done.seconds)}</div>
-       ${exportActions(done)}
-       <div class="hint">${homeScreenApp ? "BookPlayer takes it straight from the share sheet."
-                                         : "On the phone: share it into BookPlayer."}</div>`);
-    $("#exportOut").scrollIntoView({behavior:"smooth", block:"nearest"});
-    refreshExports();
+    // No panel of its own for the finished export: it said the same things as the row that's
+    // about to appear in the list — the same three buttons under a header — one above the other.
+    // The list is where an export lives, so the progress panel goes and the new file turns up
+    // there, at the top, being the newest.
+    exportSays("");
+    await refreshExports();
+    toast(`✅ Built ${esc(done.file || "the audiobook")} — ${esc(done.text || "")}`
+          + ` · ${fmt(done.seconds)}`);
+    $("#exportsHave").scrollIntoView({behavior:"smooth", block:"nearest"});
   }catch(e){
     exportSays("❌ " + esc(e.message), true);
     $("#exportOut").scrollIntoView({behavior:"smooth", block:"nearest"});
@@ -2100,9 +2100,10 @@ async function exportBook(part, btn){
 }
 $("#exportBook").addEventListener("click", e => exportBook(null, e.currentTarget));
 
-// Every .m4b the book already has, which the panel above doesn't cover: that one reports the
-// export it just ran and is gone on the next reload, while the file it made stays. Without
-// this the only way back to an audiobook built yesterday was to encode the whole book again.
+// Every .m4b the book has, and the only place any of them appears: an export that has just
+// finished is a row here like the rest, since the panel that used to report it said the same
+// things twice over. Without the list the way back to yesterday's audiobook was to encode the
+// whole book again — the file outlives any panel, and now the summary beside it does too.
 const mb = n => n >= 1e9 ? (n / 1e9).toFixed(1) + " GB" : Math.round(n / 1e6) + " MB";
 // Two exports of the same book on one day are usually the whole book and a part — the date
 // alone wouldn't tell them apart, and the size and the name do.
@@ -2118,11 +2119,20 @@ function renderExports(list){
   exportsDrawn = sig;
   const el = $("#exportsHave");
   el.style.display = have.length ? "block" : "none";
+  // What went into it — chapters, how many were unfinished or left out, how long it plays —
+  // comes from the note written beside the file, so it survives the reload the old panel didn't.
+  // An export made before that note existed just says its size and when.
+  const what = x => [x.text, x.seconds ? fmt(x.seconds) : null, mb(x.bytes), whenMade(x.made)]
+                      .filter(Boolean).join(" · ");
   el.innerHTML = have.length
-    ? `<div class="outhead">Already exported</div>` + have.map(x =>
+    ? `<div class="outhead">Exported audiobooks</div>` + have.map(x =>
         `<div class="exp"><div class="nm">${esc(x.file)}</div>
-           <div class="hint">${mb(x.bytes)} · ${whenMade(x.made)}</div>
+           <div class="hint">${esc(what(x))}</div>
            ${exportActions(x)}</div>`).join("")
+      // Once under the list rather than once per row, which is where the panel that used to
+      // carry it put it — three rows would have said it three times.
+      + (homeScreenApp ? `<div class="hint">BookPlayer takes it straight from the share`
+                         + ` sheet.</div>` : "")
     : "";
 }
 async function refreshExports(){
@@ -2179,9 +2189,6 @@ async function deleteExport(btn){
     if(msg) msg.textContent = "❌ " + (d.msg || "couldn't delete it");
     return;
   }
-  // The panel above the list reports one export and links to it. Deleting that one from there
-  // leaves it offering a file that has gone, so the panel goes with it.
-  if(btn.closest("#exportOut")) $("#exportOut").innerHTML = "";
   renderExports(d.exports);
 }
 

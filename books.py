@@ -64,12 +64,30 @@ def book_summary(b):
             "cover_v": cover_version(b.get("id")),
             "words": sum(c.get("words", 0) for c in chapters)}
 
+def export_note_path(book_id, name):
+    return book_dir(book_id, "export", name + ".json")
+
+def write_export_note(book_id, name, text, seconds):
+    """What the export came to, beside the file it describes.
+
+    How many chapters went in, how many were unfinished or not narrated, and how long it plays:
+    all of it was in the job's result and nowhere else, so it vanished on the next reload while
+    the file it described stayed. Reading it back off the file would mean ffprobe per export per
+    poll; a few bytes of JSON written once doesn't."""
+    try:
+        write_json(export_note_path(book_id, name), {"text": text, "seconds": seconds})
+    except OSError:
+        pass                 # the export itself is fine; it just won't say as much about itself
+
 def book_exports(book_id):
     """The .m4b files already built for this book, newest first.
 
     An export is a file that stays on disk, but the link to it only existed in the panel the
     export job wrote — so reloading the page, or picking the phone up the next day, meant
-    encoding the whole book again to get at a copy that was already there."""
+    encoding the whole book again to get at a copy that was already there.
+
+    Only finished ones: an export being encoded is called .m4b.part until it's whole, so it
+    can't be listed, shared or deleted halfway through."""
     d = book_dir(book_id, "export")
     found = []
     for name in os.listdir(d) if os.path.isdir(d) else []:
@@ -77,7 +95,14 @@ def book_exports(book_id):
         if not name.endswith(".m4b") or not os.path.isfile(path):
             continue
         st = os.stat(path)
+        note = {}
+        try:
+            with open(export_note_path(book_id, name)) as f:
+                note = json.load(f)
+        except (OSError, ValueError):
+            pass             # exports built before the note existed simply say less
         found.append({"file": name, "bytes": st.st_size, "made": int(st.st_mtime),
+                      "text": note.get("text"), "seconds": note.get("seconds"),
                       "url": f"/export/{book_id}/{urllib.parse.quote(name)}"})
     return sorted(found, key=lambda e: -e["made"])
 
@@ -575,6 +600,7 @@ def export_worker(jid, book_id, part=None):
     job = jobs[jid]
     job["status"] = "collecting"
     tmpdir = tempfile.mkdtemp(prefix="m4b-")
+    building = None          # the half-written .m4b, once there is one for the finally to clear
     try:
         book = find_book(book_id)
         if not book:
@@ -627,6 +653,13 @@ def export_worker(jid, book_id, part=None):
         safe = re.sub(r"[^\w\- ]+", "", title).strip()[:80] or "audiobook"
         name = f"{safe}.m4b"
         out  = book_dir(book_id, "export", name)
+        # Encoded under a name the library doesn't recognise and renamed when it's whole, the
+        # way the index is written. ffmpeg writing straight to the .m4b put a file that grew as
+        # you watched it into "Already exported", offering Share and Delete on however much of
+        # an audiobook existed so far; the rename is atomic, on the same directory, so a reader
+        # sees the finished file or no file. It also means a killed export leaves a .part rather
+        # than a truncated .m4b that looks finished.
+        building = out + ".part"
         cover = cover_path(book_id, "full") if ensure_cover(book_id) else None
 
         job.update(status="encoding", seconds=round(clock, 1))
@@ -640,20 +673,28 @@ def export_worker(jid, book_id, part=None):
             cmd += ["-map", "2:v", "-c:v", "copy", "-disposition:v:0", "attached_pic"]
         # 48 kbps AAC mono: the source is already 32 kbps opus, so this adds little loss
         # while staying in the format every audiobook player reads.
-        cmd += ["-c:a", "aac", "-b:a", "48k", "-ac", "1", "-movflags", "+faststart", out]
+        # -f ipod names the muxer the .m4b extension used to pick for us, which the .part name
+        # can't: ffmpeg infers the container from the extension and refuses an unknown one.
+        # Checked byte-for-byte against what the extension selected — same file, named later.
+        cmd += ["-c:a", "aac", "-b:a", "48k", "-ac", "1", "-movflags", "+faststart",
+                "-f", "ipod", building]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
-        if r.returncode != 0 or not os.path.exists(out):
+        if r.returncode != 0 or not os.path.exists(building):
             raise RuntimeError("ffmpeg failed: " + (r.stderr or "")[-300:])
+        text = (f"{len(marks)} chapters"
+                + (f", {partial} unfinished" if partial else "")
+                + (f", {skipped} not narrated" if skipped else ""))
+        os.replace(building, out)
+        write_export_note(book_id, name, text, round(clock, 1))
         # The name keeps its spaces — it's what the player will show — so the URL has to be
         # encoded rather than handed over raw.
         job.update(status="done", url=f"/export/{book_id}/{urllib.parse.quote(name)}", file=name,
-                   text=f"{len(marks)} chapters"
-                        + (f", {partial} unfinished" if partial else "")
-                        + (f", {skipped} not narrated" if skipped else ""),
-                   seconds=round(clock, 1))
+                   text=text, seconds=round(clock, 1))
     except Exception as e:
         job.update(status="error", error=str(e)[:300])
     finally:
+        if building and os.path.exists(building):
+            os.remove(building)                  # a failed encode leaves nothing behind
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
@@ -1061,6 +1102,10 @@ def api_book_export_delete():
         os.remove(path)
     except OSError as e:
         return jsonify(ok=False, msg=str(e)[:200]), 500
+    # …and what it said about itself, which describes a file that has gone
+    note = export_note_path(book["id"], name)
+    if os.path.exists(note):
+        os.remove(note)
     # The list back, so the page redraws from what's on disk rather than from what it assumes
     # the delete did.
     return jsonify(ok=True, exports=book_exports(book["id"]))
@@ -1178,6 +1223,12 @@ def clear_stale_state():
                 kept = segments_on_disk(b["id"], c["i"])
                 c.update(state="pending", segments=kept, error=None, done=len(kept))
                 changed = True
+        # An export killed mid-encode leaves its .m4b.part behind. It's never listed, so it
+        # would sit there invisibly, and a book exported nightly would keep one per attempt.
+        d = book_dir(b["id"], "export")
+        for name in os.listdir(d) if os.path.isdir(d) else []:
+            if name.endswith(".m4b.part"):
+                os.remove(os.path.join(d, name))
     if changed:
         write_books(items)
 
