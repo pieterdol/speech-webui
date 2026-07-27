@@ -184,6 +184,14 @@
   /* a select with a play-the-sample button beside it */
   .pickrow { display:flex; gap:8px; align-items:center; }
   .pickrow select { flex:1; min-width:0; }
+  .pickrow input[type=text] { flex:1; min-width:0; margin:0; }
+  /* One respelling: the written word, how it should sound, and the two buttons. Wraps rather
+     than squeezing, since either side can be a long name on a narrow phone. */
+  .say { display:flex; gap:8px; align-items:center; padding:7px 0; font-size:14px;
+         border-top:1px solid var(--line); }
+  .say:first-child { border-top:none; }
+  .say .w { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .say .arrow { flex:none; color:var(--muted); }
   /* ---- chat ---- */
   .chatbar { display:flex; gap:8px; align-items:center; }
   .chatbar select { flex:1; min-width:0; }
@@ -476,6 +484,21 @@
       <div class="hint">For a title written to be read rather than heard. “11/22/63: A Novel”
         wants “eleven, twenty-two, sixty-three”. Only the announcement changes — the written
         title, the library and the .m4b keep the real one. Empty means say it as written.</div>
+      <label>Say these words differently</label>
+      <div id="respellList"></div>
+      <div class="pickrow" style="margin-top:8px">
+        <input type="text" id="respellFrom" placeholder="written" autocapitalize="off"
+               spellcheck="false">
+        <input type="text" id="respellTo" placeholder="spoken" autocapitalize="off"
+               spellcheck="false">
+        <button id="respellHear" class="iconbtn" title="Hear it in this book's voice"
+                aria-label="Hear it">▶</button>
+        <button id="respellAdd" class="iconbtn" title="Add" aria-label="Add">＋</button>
+      </div>
+      <div class="hint">Neither engine takes a pronunciation override, so a name it says wrong is
+        fixed by spelling it the way it should sound — “Vermeer” as “Vermayr”. ▶ speaks the
+        spoken form first, so you can get it right before anything is narrated. Whole words,
+        any capitalisation. Saving re-narrates only the parts that said it the old way.</div>
       <label for="bookCoverFile">Replace the cover</label>
       <input type="file" id="bookCoverFile" accept="image/*">
       <div class="hint">Taken from the EPUB when it declares one. Shows in the list and on
@@ -1434,6 +1457,22 @@ function previewVoice(sel, btn){
 $("#voicePlay").addEventListener("click", e => previewVoice($("#voice"), e.currentTarget));
 $("#chatVoicePlay").addEventListener("click", e => previewVoice($("#chatVoice"), e.currentTarget));
 
+// Any short phrase, in a given voice. Same shape as the sample above and for the same reason:
+// src and play() inside the tap, because iOS won't play audio after an await.
+function previewSaying(text, voice, btn){
+  if(!text || !voice) return;
+  if(!sampleAudio) sampleAudio = new Audio();
+  sampleAudio.src = "/api/say?voice=" + encodeURIComponent(voice)
+                  + "&text=" + encodeURIComponent(text);
+  const label = btn.textContent;
+  btn.textContent = "…";
+  const done = ()=>{ btn.textContent = label; };
+  sampleAudio.onended = done;
+  sampleAudio.onerror = ()=>{ done(); toast("Couldn't say “" + esc(text) + "”."); };
+  sampleAudio.onplaying = ()=>{ btn.textContent = "⏸"; };
+  sampleAudio.play().catch(()=>{ done(); toast("Tap again to hear it."); });
+}
+
 function waitForJob(job, labels = GEN_LABELS, report = setStatus){
   return new Promise((resolve, reject)=>{
     const tick = ()=> fetch("/api/status/" + job).then(r => r.json().then(d => ({ok:r.ok, d})))
@@ -1575,6 +1614,8 @@ async function openBook(id){
   $("#bookHeadings").checked = BOOK.announce !== false;
   $("#bookSayTitle").value = BOOK.spoken_title || "";
   $("#bookSayTitle").placeholder = BOOK.title || "";
+  renderRespellings();
+  $("#respellFrom").value = $("#respellTo").value = "";
   $("#bookSkipped").textContent = (BOOK.skipped || []).length
     ? `Left out ${BOOK.skipped.length} sections that look like front or back matter.` : "";
   // Nothing folded open carries across books. What opens unasked: the part you're reading,
@@ -2123,7 +2164,8 @@ function renderExports(list){
   // comes from the note written beside the file, so it survives the reload the old panel didn't.
   // An export made before that note existed just says its size and when.
   const what = x => [x.text, x.seconds ? fmt(x.seconds) : null, mb(x.bytes), whenMade(x.made)]
-                      .filter(Boolean).join(" · ");
+                      .filter(Boolean).join(" · ")
+                  + (x.stale ? " · ⚠ says a word the old way" : "");
   el.innerHTML = have.length
     ? `<div class="outhead">Exported audiobooks</div>` + have.map(x =>
         `<div class="exp"><div class="nm">${esc(x.file)}</div>
@@ -2556,6 +2598,73 @@ async function changeBook(patch){
   } else setStatus("Saved.");
 }
 $("#bookVoicePlay").addEventListener("click", e => previewVoice($("#bookVoice"), e.currentTarget));
+
+// ---- how this book says a word ----
+// Neither engine takes a pronunciation override, so a name it reads wrong can only be fixed by
+// respelling it. The list belongs to the book — the names in one novel are nobody else's problem
+// — and saving it re-narrates only the parts that said the word the old way, which is what makes
+// fixing one on chapter forty affordable.
+function renderRespellings(){
+  const map = (BOOK && BOOK.respell) || {};
+  const words = Object.keys(map).sort((a, b) => a.localeCompare(b));
+  $("#respellList").innerHTML = words.length
+    ? words.map(w =>
+        `<div class="say"><div class="w">${esc(w)}</div><div class="arrow">→</div>
+           <div class="w">${esc(map[w]) || "<em>(silent)</em>"}</div>
+           <button class="iconbtn hearSay" data-say="${esc(map[w])}" title="Hear it"
+                   aria-label="Hear it">▶</button>
+           <button class="iconbtn dropSay" data-word="${esc(w)}" title="Remove"
+                   aria-label="Remove">⊘</button></div>`).join("")
+    : `<div class="hint">Nothing yet — a name the narrator gets wrong goes here.</div>`;
+}
+
+async function saveRespellings(map){
+  const call = extra => fetch("/api/books/respell", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: BOOK.id, respell: map, ...extra})}).then(r => r.json());
+  let d = await call({});
+  // Enough of the book to be worth knowing the cost first — one common word would re-narrate
+  // everything, which is correct and not what anybody meant.
+  if(d.needs_confirm){
+    if(!confirm(`${d.msg}. Go ahead?`)) return false;
+    d = await call({confirm: true});
+  }
+  if(!d.ok){ toast("❌ " + (d.msg || "couldn't save that")); return false; }
+  BOOK = d.book;
+  renderRespellings();
+  renderChapterList();
+  if(d.unchanged) toast("Already saying it that way.");
+  else if(!d.parts) toast("Saved — nothing narrated says it, so there's nothing to re-make.");
+  else {
+    toast(`<span class="spin"></span>Saved — re-narrating ${d.parts} part`
+          + `${d.parts === 1 ? "" : "s"} across ${d.chapters.length} chapter`
+          + `${d.chapters.length === 1 ? "" : "s"}.`);
+    watchRenders();
+  }
+  return true;
+}
+
+$("#respellHear").addEventListener("click", e =>
+  previewSaying($("#respellTo").value.trim() || $("#respellFrom").value.trim(),
+                $("#bookVoice").value, e.currentTarget));
+$("#respellAdd").addEventListener("click", async ()=>{
+  if(!BOOK) return;
+  const from = $("#respellFrom").value.trim(), to = $("#respellTo").value.trim();
+  if(!from) return toast("Which word?");
+  if(await saveRespellings({...(BOOK.respell || {}), [from]: to}))
+    $("#respellFrom").value = $("#respellTo").value = "";
+});
+// Delegated: the rows are rebuilt on every save.
+$("#respellList").addEventListener("click", e => {
+  const hear = e.target.closest(".hearSay");
+  if(hear) return previewSaying(hear.dataset.say, $("#bookVoice").value, hear);
+  const drop = e.target.closest(".dropSay");
+  if(!drop || !BOOK) return;
+  const left = {...(BOOK.respell || {})};
+  delete left[drop.dataset.word];
+  // Taking one out is as much a change as putting it in: the audio still says the respelled form.
+  saveRespellings(left);
+});
 $("#bookCoverFile").addEventListener("change", async e => {
   const f = e.target.files[0];
   if(!f || !BOOK) return;

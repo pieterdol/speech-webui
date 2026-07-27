@@ -275,6 +275,26 @@ it — a full book is hours of work.
   The book's own opening belongs to the first chapter it *narrates*, not to chapter 1 — leaving
   the front matter out moves the title and author onto whatever comes first now, and the chapter
   gaining or losing them has its first part re-made on the spot.
+- **Say these words differently** is the book's own pronunciation list, in ⚙: written form on the
+  left, how it should sound on the right, ▶ to hear it in this book's voice before committing to
+  it. The names in one novel are nobody else's problem, so this sits on the book, on top of the
+  global `RESPELL`. Whole words, any capitalisation; an empty spoken form means don't say the word
+  at all.
+
+  Saving one re-narrates **only the parts that said it the old way** — usually a single ten-minute
+  part per occurrence out of a book of hundreds, which is what makes fixing a name on chapter
+  forty affordable. Which parts, exactly, is decided by asking whether the text the engine would
+  be handed changes, not by searching for the word: that catches a removed entry (the audio still
+  says the respelled form), an entry that fires on another rule's output, and one keyed `Doctor`
+  reaching text that reads `Dr. Who`. A word in the title, the author or a part name is caught
+  through the recorded opening instead, and a word only in a chapter's heading line costs nothing,
+  since the heading is dropped before the text is read.
+
+  Everything the change invalidates is deleted at once, so no export can pick it up, and every
+  affected chapter is queued — a finished book stays finished. Past a couple of chapters it says
+  what it will cost first: one common word would correctly re-narrate everything. A run in flight
+  is not interrupted; if a save lands mid-chapter, that chapter is left pending rather than marked
+  ready, and the next pass fills the gap.
 - **Clear narration** in ⚙ throws away the audio and keeps the book, its text and its cover —
   useful after changing something that should be re-spoken.
 - **Covers** come from the EPUB, in the library grid, beside the title, in the player, and on
@@ -326,7 +346,9 @@ it — a full book is hours of work.
 
   What an export came to used to live only in the job's result, so it went with the next reload
   while the file it described stayed. It's written beside the file now, as `<name>.m4b.json`; an
-  export built before that just says its size and date.
+  export built before that just says its size and date. One built before a pronunciation changed
+  says **⚠ says a word the old way** — it isn't deleted, since rebuilding is hours of ffmpeg and
+  the copy already on a phone is fine, but it shouldn't be shared again unnoticed.
 - **An export being encoded is never offered.** ffmpeg writes to `<name>.m4b.part` and the file
   is renamed when it's whole — the listing only knows `.m4b`, so a half-built audiobook can't be
   shared or deleted, and a killed encode leaves a `.part` (swept on the next start) rather than a
@@ -434,7 +456,7 @@ speech.py     entry point (port 8600). Imports the feature modules for the route
               register, serves the page, starts the worker reaper. Not named app.py, so
               restart.sh can't collide with comfy-webui's.
 core.py       the Flask app, the job table, the locks, write_json/safe_path/log_transfer
-textprep.py   prose -> speakable text, and cutting it into sentences
+textprep.py   prose -> speakable text, respellings, and cutting it into sentences
 media.py      ffmpeg and ffprobe helpers
 clips.py      recorded/uploaded audio, transcripts, voice presets
 stt.py        faster-whisper
@@ -472,9 +494,10 @@ uv pip install --python .venv/bin/python pytest    # once
 
 Also on every push and pull request, via `.github/workflows/tests.yml`.
 
-**What's covered.** Every module, ~390 tests. The books state machine, which is where the bugs
+**What's covered.** Every module, ~500 tests. The books state machine, which is where the bugs
 actually live: a render cancelled under itself, what survives a restart, which chapters an export
-takes, how a part run scopes its progress, the queue, what leaving a chapter out takes it out of.
+takes, how a part run scopes its progress, the queue, what leaving a chapter out takes it out of,
+and which audio a changed pronunciation invalidates — including a save landing mid-render.
 The pure functions — reading a chapter number out of a heading, cutting text into segments,
 chunks, sentences and phoneme batches, what gets announced before the prose. The stores behind
 clips, presets and chats. And the HTTP contracts, including the cache headers on narration audio.
@@ -571,11 +594,16 @@ redirects along with everything else, and the rest of the test then runs against
 - **Spoken replies leave wavs in `outputs/`**, one per sentence-chunk rather than one per
   reply, so a talkative session accumulates quickly (~190 KB per chunk). They're gitignored
   and safe to delete wholesale.
-- **Fixing a mispronunciation means respelling it.** `RESPELL` in `textprep.py` maps a word to
-  something the engine says correctly — `movies` → `movees`, because espeak clips the `-ies` to
-  "movis". Kokoro's documented `[word](/phonemes/)` override belongs to the KPipeline package and
-  not to `kokoro_onnx`, which reads the markup itself out loud, so respelling is the whole
-  toolkit.
+- **Fixing a mispronunciation means respelling it**, at one of two levels. `RESPELL` in
+  `textprep.py` is the global map, for words any book gets wrong — `movies` → `movees`, because
+  espeak clips the `-ies` to "movis". A book also carries its own, `book["respell"]`, edited from
+  ⚙ and applied on top; where both name a word the book wins. Kokoro's documented
+  `[word](/phonemes/)` override belongs to the KPipeline package and not to `kokoro_onnx`, which
+  reads the markup itself out loud, so respelling is the whole toolkit.
+
+  A replacement goes through `re.sub` as a *callable*, never as a template. It's typed in by
+  hand, and as a template `AC\DC` or `\1` would be read as a backreference and raise inside a
+  render thread.
 - **A slash between numbers isn't a sound.** `11/22/63` read as written comes out *"eleven slash
   twenty-two slash sixty-three"*, so the slash becomes the comma that is the beat between the
   groups — `11, 22, 63` — and a leading zero comes off, `02` being read *"zero two"*. The digits

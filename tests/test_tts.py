@@ -175,3 +175,79 @@ class TestSampleRoute:
             f.write(b"RIFF" + b"\0" * 64)
         assert client.get("/api/sample/af_heart").status_code == 200
         assert called == []
+
+
+class TestSayRoute:
+    """Hearing one word before committing a book to a respelling of it. A plain GET that answers
+    with audio, because /api/speak is a job to poll and awaiting a poll loses the tap iOS needs
+    to play anything at all."""
+
+    def say(self, monkeypatch, text="Vermayr", voice="af_heart"):
+        """Renders by writing the text into the file, so a test can read back what was said."""
+        monkeypatch.setattr(tts, "tts_engine_of", lambda v: "kokoro")
+
+        def fake_say(voice, said, speed, out):
+            with open(out, "w") as f:
+                f.write(said)
+
+        monkeypatch.setattr(tts, "tts_say", fake_say)
+        return f"/api/say?voice={voice}&text={text}"
+
+    def test_it_answers_with_audio(self, client, monkeypatch):
+        url = self.say(monkeypatch)
+        r = client.get(url)
+        assert r.status_code == 200
+        assert r.get_data(as_text=True) == "Vermayr"
+
+    def test_what_it_says_is_respelled(self, client, monkeypatch):
+        """What you want to hear is what a render would say, not what you typed."""
+        url = self.say(monkeypatch, text="Pieter")
+        assert client.get(url).get_data(as_text=True) == "Peter"
+
+    def test_nothing_to_say(self, client, monkeypatch):
+        self.say(monkeypatch)
+        assert client.get("/api/say?voice=af_heart&text=%20").status_code == 400
+
+    def test_unknown_voice(self, client, monkeypatch):
+        monkeypatch.setattr(tts, "tts_engine_of", lambda v: None)
+        assert client.get("/api/say?voice=nope&text=hello").status_code == 404
+
+    def test_the_same_word_twice_is_rendered_once(self, client, monkeypatch):
+        url = self.say(monkeypatch)
+        calls = []
+        real = tts.tts_say
+        monkeypatch.setattr(tts, "tts_say",
+                            lambda *a: (calls.append(a), real(*a))[1])
+        assert client.get(url).status_code == 200
+        assert client.get(url).status_code == 200
+        assert len(calls) == 1
+
+    def test_two_voices_are_two_files(self, client, monkeypatch):
+        """The cache is keyed by what was said and who said it, not by the word alone."""
+        monkeypatch.setattr(tts, "tts_engine_of", lambda v: "kokoro")
+        monkeypatch.setattr(tts, "tts_say",
+                            lambda voice, said, speed, out: open(out, "w").write(voice))
+        assert client.get("/api/say?voice=af_heart&text=hi").get_data(as_text=True) == "af_heart"
+        assert client.get("/api/say?voice=bf_emma&text=hi").get_data(as_text=True) == "bf_emma"
+
+    def test_a_failed_render_is_not_cached(self, client, monkeypatch):
+        monkeypatch.setattr(tts, "tts_engine_of", lambda v: "kokoro")
+
+        def half_write(voice, said, speed, out):
+            open(out, "wb").write(b"\0")
+            raise RuntimeError("engine fell over")
+
+        monkeypatch.setattr(tts, "tts_say", half_write)
+        assert client.get("/api/say?voice=af_heart&text=hello").status_code == 500
+        assert [f for f in os.listdir(tts.SAMPLES_DIR) if f.startswith("say-")] == []
+
+    def test_busy_says_so_rather_than_waiting(self, client, monkeypatch):
+        """A two-minute F5 clone holds run_lock; the page can explain a 503, not a hang. Stood
+        in for rather than really held, so the test doesn't wait out the timeout."""
+        class Busy:
+            def acquire(self, timeout=None): return False
+            def release(self): pass                      # never reached, and must not be needed
+
+        monkeypatch.setattr(tts, "tts_engine_of", lambda v: "kokoro")
+        monkeypatch.setattr(tts, "run_lock", Busy())
+        assert client.get("/api/say?voice=af_heart&text=hello").status_code == 503

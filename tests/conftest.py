@@ -173,9 +173,9 @@ def fake_tts(monkeypatch):
     """
     calls = []
 
-    def _render_segment(text, voice, out_path, intro=None, tail_pause=0):
+    def _render_segment(text, voice, out_path, intro=None, tail_pause=0, respellings=None):
         calls.append({"text": text, "voice": voice, "out": out_path, "intro": intro,
-                      "tail_pause": tail_pause})
+                      "tail_pause": tail_pause, "respellings": respellings})
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         with open(out_path, "wb") as f:
             f.write(b"\0" * 256)

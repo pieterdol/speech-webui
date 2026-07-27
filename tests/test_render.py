@@ -43,7 +43,7 @@ class TestRenderChapter:
         split happens before the state is written."""
         seen = []
 
-        def slow_segment(text, voice, out_path, intro=None, tail_pause=0):
+        def slow_segment(text, voice, out_path, intro=None, tail_pause=0, respellings=None):
             seen.append(dict(books.find_book("b1")["chapters"][0]))
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0")
@@ -58,7 +58,7 @@ class TestRenderChapter:
     def test_each_part_is_published_as_it_finishes(self, make_book, monkeypatch):
         counts = []
 
-        def watch(text, voice, out_path, intro=None, tail_pause=0):
+        def watch(text, voice, out_path, intro=None, tail_pause=0, respellings=None):
             counts.append(len(books.find_book("b1")["chapters"][0]["segments"]))
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0")
@@ -154,7 +154,7 @@ class TestAnnouncementInvalidation:
 
 class TestCancellation:
     def slow_tts(self, monkeypatch, delay=0.15):
-        def _seg(text, voice, out_path, intro=None, tail_pause=0):
+        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None):
             time.sleep(delay)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0" * 64)
@@ -176,7 +176,7 @@ class TestCancellation:
 
     def test_it_stops_within_a_segment_not_at_the_end(self, make_book, monkeypatch):
         made = []
-        def _seg(text, voice, out_path, intro=None, tail_pause=0):
+        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None):
             made.append(out_path)
             time.sleep(0.15)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -352,7 +352,7 @@ class TestQueue:
         started = threading.Event()
         release = threading.Event()
 
-        def _seg(text, voice, out_path, intro=None, tail_pause=0):
+        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None):
             started.set()
             release.wait(timeout=10)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -384,7 +384,7 @@ class TestQueue:
         started = threading.Event()
         release = threading.Event()
 
-        def _seg(text, voice, out_path, intro=None, tail_pause=0):
+        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None):
             started.set()
             release.wait(timeout=10)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -434,7 +434,7 @@ class TestRenderDepth:
         started = threading.Event()
         release = threading.Event()
 
-        def _seg(text, voice, out_path, intro=None, tail_pause=0):
+        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None):
             started.set()
             release.wait(timeout=10)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -514,3 +514,230 @@ class TestARunThatGrows:
         assert len(books.render_status()["queue"]) == 4
         books.update_book("b1", lambda b: b["render_all"].update(parts=["A"]))
         assert len(books.render_status()["queue"]) == 2
+
+
+class TestABooksOwnPronunciations:
+    """A book's map has to reach the engine and be recorded in what the audio was made with."""
+
+    def test_the_map_reaches_the_segment_render(self, make_book, fake_tts):
+        make_book(names=["One"], texts=["word " * 40], respell={"Vermeer": "Vermayr"})
+        books.render_chapter("b1", 0)
+        assert fake_tts[0]["respellings"] == {"Vermeer": "Vermayr"}
+
+    def test_a_book_without_one_passes_nothing(self, make_book, fake_tts):
+        make_book(names=["One"], texts=["word " * 40])
+        books.render_chapter("b1", 0)
+        assert fake_tts[0]["respellings"] == {}
+
+    def test_the_recorded_opening_is_respelled_through_it(self, make_book, fake_tts):
+        """The intro record is what makes a stale opening detectable, so it has to be the
+        book's own spoken form, not the global one."""
+        make_book(names=["Chapter One"], texts=["word " * 40], title="Vermeer", author="",
+                  announce=True, respell={"Vermeer": "Vermayr"})
+        books.render_chapter("b1", 0)
+        assert chapter("b1")["intro"] == ["Vermayr", "1"]
+
+    def test_the_split_does_not_move_with_the_map(self, make_book, fake_tts):
+        """Segment count decides every filename. If respelling happened before the split, a
+        longer replacement could add a segment and rename everything after it — one word would
+        invalidate the whole book."""
+        text = "\n".join(f"Vermeer painted this one, number {i}. " * 30 for i in range(12))
+        make_book(names=["One"], texts=[text])
+        books.render_chapter("b1", 0)
+        plain = [c["out"] for c in fake_tts]
+
+        books.update_book("b1", lambda b: b.update(respell={"Vermeer": "V" * 60}))
+        books.update_book("b1", lambda b: b["chapters"][0].update(
+            state="pending", segments=[]))
+        for f in os.listdir(books.book_dir("b1", "audio")):
+            os.remove(books.book_dir("b1", "audio", f))
+        fake_tts.clear()
+        books.render_chapter("b1", 0)
+        assert [c["out"] for c in fake_tts] == plain
+        assert len(plain) > 1                     # a real multi-segment chapter, or it proves nothing
+
+
+class TestFindingTheAudioAMapChangeInvalidates:
+    """The scan that decides what gets re-narrated. Everything here is text work — no audio is
+    made — and it has to agree with the render about what each segment contains."""
+
+    def long_text(self, per_para=30, paras=12, word="Vermeer"):
+        """Enough prose to cut into several segments, with the word only in the first."""
+        first = f"{word} painted this. " * per_para
+        rest = "\n".join("Nothing of interest happened here at all. " * per_para
+                         for _ in range(paras))
+        return first + "\n" + rest
+
+    def test_a_word_in_one_segment_marks_only_that_segment(self, make_book):
+        make_book(names=["One"], texts=[self.long_text()])
+        book = self.narrated()
+        assert len(books.chapter_segments(book, 0)) > 2        # or it proves nothing
+        assert books.stale_segments(book, 0, {}, {"Vermeer": "Vermayr"}) == {0}
+
+    def test_a_word_in_every_segment_marks_all_of_them(self, make_book):
+        make_book(names=["One"], texts=[self.long_text(word="Nothing")])
+        book = self.narrated()
+        n = len(books.chapter_segments(book, 0))
+        assert books.stale_segments(book, 0, {}, {"nothing": "nuthin"}) == set(range(n))
+
+    def narrated(self, book_id="b1", index=0, intro=None):
+        """A rendered chapter carries the lead-in it was made with; an un-narrated one has no
+        record at all. Only the first is comparable, so the tests below say which they mean."""
+        books.update_book(book_id, lambda b: b["chapters"][index].update(intro=intro or []))
+        return books.find_book(book_id)
+
+    def test_a_word_that_is_not_there_marks_nothing(self, make_book):
+        make_book(names=["One"], texts=[self.long_text()])
+        book = self.narrated()
+        assert books.stale_segments(book, 0, {}, {"Rembrandt": "Rembrant"}) == set()
+
+    def test_a_chapter_with_no_recorded_opening_is_taken_as_stale(self, make_book):
+        """Only a rendered chapter has the record, so absent means "can't tell" — the same
+        reading render_chapter takes before it deletes the opening. It costs nothing on a
+        chapter with no audio, which is the only kind that has no record."""
+        make_book(names=["One"], texts=[self.long_text()])
+        book = books.find_book("b1")
+        assert "intro" not in book["chapters"][0]
+        assert books.stale_segments(book, 0, {}, {"Rembrandt": "Rembrant"}) == {0}
+        assert books.respell_repair_plan(book, {}, {"Rembrandt": "Rembrant"}) == {}
+
+    def test_removing_an_entry_invalidates_the_same_audio(self, make_book):
+        """The audio still says the respelled form, so it's as wrong as adding one."""
+        make_book(names=["One"], texts=[self.long_text()])
+        book = self.narrated()
+        assert books.stale_segments(book, 0, {"Vermeer": "Vermayr"}, {}) == {0}
+
+    def test_editing_one_invalidates_it_too(self, make_book):
+        make_book(names=["One"], texts=[self.long_text()])
+        book = self.narrated()
+        assert books.stale_segments(book, 0, {"Vermeer": "Vermayr"},
+                                    {"Vermeer": "Fermeer"}) == {0}
+
+    def test_a_word_only_in_the_title_marks_the_opening(self, make_book):
+        """Via the recorded lead-in, which is what catches the title, the author and a part
+        name without any of them being named in the scan."""
+        make_book(names=["Chapter One"], texts=[self.long_text(word="Nobody")],
+                  title="Vermeer", author="", announce=True)
+        books.update_book("b1", lambda b: b["chapters"][0].update(intro=["Vermeer", "1"]))
+        book = books.find_book("b1")
+        assert books.stale_segments(book, 0, {}, {"Vermeer": "Vermayr"}) == {0}
+
+    def test_a_word_in_the_heading_line_marks_nothing(self, make_book):
+        """The heading is dropped before the text is read, so a word only there is never
+        spoken — and re-narrating over it would be work for no change."""
+        make_book(names=["Vermeer"], texts=["Vermeer\n" + "Something else happened. " * 30])
+        book = self.narrated()
+        assert "Vermeer" in open(books.book_dir("b1", "text", "ch000.txt")).read()
+        assert books.stale_segments(book, 0, {}, {"Vermeer": "Vermayr"}) == set()
+
+    def test_a_chapter_with_no_text_file_is_skipped_not_fatal(self, make_book):
+        make_book(names=["One"], texts=["word " * 40])
+        os.remove(books.book_dir("b1", "text", "ch000.txt"))
+        book = books.find_book("b1")
+        assert books.chapter_segments(book, 0) == []
+        assert books.respell_repair_plan(book, {}, {"word": "werd"}) == {}
+
+    def test_the_plan_covers_only_audio_that_exists(self, make_book, fake_tts):
+        make_book(names=["One", "Two"], texts=[self.long_text()] * 2)
+        books.render_chapter("b1", 0)                          # chapter two stays un-narrated
+        book = books.find_book("b1")
+        assert books.respell_repair_plan(book, {}, {"Vermeer": "Vermayr"}) == {0: [0]}
+
+    def test_an_identical_map_plans_nothing(self, make_book, fake_tts):
+        make_book(names=["One"], texts=[self.long_text()])
+        books.render_chapter("b1", 0)
+        book = books.find_book("b1")
+        assert books.respell_repair_plan(book, {"a": "b"}, {"a": "b"}) == {}
+
+    def test_the_segment_indices_are_the_render_s_own(self, make_book, fake_tts):
+        """Whatever the scan calls segment 2 has to be the file the render calls segment 2."""
+        make_book(names=["One"], texts=[self.long_text(word="Nothing")])
+        books.render_chapter("b1", 0)
+        book = books.find_book("b1")
+        plan = books.respell_repair_plan(book, {}, {"nothing": "nuthin"})
+        made = [os.path.basename(c["out"]) for c in fake_tts]
+        assert [f"ch000-s{si:02d}.opus" for si in plan[0]] == made
+
+
+class TestAMapChangeDuringARender:
+    """A render reads the book's map once and then holds the lock for the whole chapter, so a
+    respelling saved half way through is missing from every part after it. The chapter must not
+    be marked ready in that state."""
+
+    def paragraphs(self, word="Vermeer", at=1, n=4):
+        """One paragraph per segment, the word in exactly one of them."""
+        filler = "Nothing of interest happened here. " * 200
+        return "\n".join((word + " " + filler) if i == at else filler for i in range(n))
+
+    def test_it_is_left_pending_rather_than_ready(self, make_book, monkeypatch):
+        make_book(names=["One"], texts=[self.paragraphs()])
+        seen = []
+
+        def save_the_map_midway(text, voice, out_path, intro=None, tail_pause=0,
+                                respellings=None):
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            open(out_path, "wb").write(b"\0" * 64)
+            seen.append(os.path.basename(out_path))
+            if len(seen) == 1:                 # a save landing while part two is still to come
+                books.update_book("b1", lambda b: b.update(respell={"Vermeer": "Vermayr"}))
+
+        monkeypatch.setattr(books, "_render_segment", save_the_map_midway)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
+        books.render_chapter("b1", 0)
+
+        c = chapter("b1")
+        assert c["state"] == "pending"                       # not ready, though it got to the end
+        assert not os.path.exists(books.book_dir("b1", "audio", "ch000-s01.opus"))
+
+    def test_the_parts_it_made_correctly_are_kept(self, make_book, monkeypatch):
+        """Only the ones the change invalidates go — the rest were made with a map that still
+        holds, and re-making them would be an hour of work for no difference."""
+        make_book(names=["One"], texts=[self.paragraphs()])
+        made = []
+
+        def save_the_map_midway(text, voice, out_path, intro=None, tail_pause=0,
+                                respellings=None):
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            open(out_path, "wb").write(b"\0" * 64)
+            made.append(os.path.basename(out_path))
+            if len(made) == 1:
+                books.update_book("b1", lambda b: b.update(respell={"Vermeer": "Vermayr"}))
+
+        monkeypatch.setattr(books, "_render_segment", save_the_map_midway)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
+        books.render_chapter("b1", 0)
+
+        assert files("b1") == ["ch000-s00.opus", "ch000-s02.opus", "ch000-s03.opus"]
+        assert [s["file"] for s in chapter("b1")["segments"]] == ["ch000-s00.opus"]
+
+    def test_a_second_pass_finishes_it(self, make_book, monkeypatch):
+        """The point of leaving it pending: the next render fills the one gap under the new map
+        and the chapter comes out ready, having re-made a single part.
+
+        Both passes run under the same stub — it only saves the map once, on the very first part
+        — because monkeypatch.undo() would take conftest's storage redirect with it."""
+        make_book(names=["One"], texts=[self.paragraphs()])
+        made = []
+
+        def save_the_map_midway(text, voice, out_path, intro=None, tail_pause=0,
+                                respellings=None):
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            open(out_path, "wb").write(b"\0" * 64)
+            made.append((os.path.basename(out_path), respellings))
+            if len(made) == 1:
+                books.update_book("b1", lambda b: b.update(respell={"Vermeer": "Vermayr"}))
+
+        monkeypatch.setattr(books, "_render_segment", save_the_map_midway)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
+        books.render_chapter("b1", 0)
+        assert chapter("b1")["state"] == "pending"
+        assert [f for f, _m in made] == [f"ch000-s{i:02d}.opus" for i in range(4)]
+
+        books.render_chapter("b1", 0)
+        assert chapter("b1")["state"] == "ready"
+        assert made[4:] == [("ch000-s01.opus", {"Vermeer": "Vermayr"})]   # one part, new map
+
+    def test_an_unchanged_map_is_not_a_straggler(self, make_book, fake_tts):
+        make_book(names=["One"], texts=[self.paragraphs()], respell={"Vermeer": "Vermayr"})
+        books.render_chapter("b1", 0)
+        assert chapter("b1")["state"] == "ready"

@@ -728,3 +728,181 @@ class TestAddingToARun:
         assert self.start(client, "A").get("already") is True
         assert self.start(client, "B")["added"] == "B"
         assert self.parts() == ["A", "B"]
+
+
+class TestBookRespellings:
+    """A book's own pronunciation map, and the audio a change to it re-makes. The map is the
+    only way to fix a name an engine says wrong, so saving one has to be cheap: the segments
+    that said it the old way go, and nothing else does."""
+
+    # One paragraph per segment: each is just under the 8000-character segment limit, so the
+    # word lands in exactly the segment the test means it to.
+    FILLER = "Nothing of interest happened here. " * 200
+    LONG = "\n".join([FILLER, "Vermeer painted this. " + FILLER, FILLER, FILLER])
+
+    @pytest.fixture(autouse=True)
+    def readable_audio(self, monkeypatch):
+        """The stand-in parts here are 128 zero bytes, and segments_on_disk deletes anything
+        ffprobe can't read a duration out of — right for a part a killed render left half
+        written, wrong for a fake one."""
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 9.0)
+
+    def post(self, client, mapping, book="b1", **extra):
+        return client.post("/api/books/respell",
+                           json={"id": book, "respell": mapping, **extra})
+
+    def narrated(self, book_id="b1", index=0):
+        """Chapter files on disk plus the index entry a finished render leaves, built by hand —
+        render_chapter is stubbed in this module."""
+        book = books.find_book(book_id)
+        segs = []
+        for si, _text in enumerate(books.chapter_segments(book, index)):
+            name = f"ch{index:03d}-s{si:02d}.opus"
+            p = books.book_dir(book_id, "audio", name)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            open(p, "wb").write(b"\0" * 128)
+            segs.append({"file": name, "seconds": 9.0})
+        books.update_book(book_id, lambda b: b["chapters"][index].update(
+            state="ready", segments=segs, seconds=9.0 * len(segs), total=len(segs), intro=[]))
+        return segs
+
+    def test_the_map_is_stored_cleaned(self, client, make_book):
+        make_book()
+        got = self.post(client, {"  Vermeer ": " Vermayr ", "": "x"}).get_json()
+        assert got["ok"] is True
+        assert books.find_book("b1")["respell"] == {"Vermeer": "Vermayr"}
+
+    def test_unknown_book(self, client):
+        assert self.post(client, {"a": "b"}, book="nope").status_code == 404
+
+    def test_an_identical_map_changes_nothing_at_all(self, client, make_book):
+        """Not even `updated` — the page would read that as work having happened."""
+        make_book(respell={"Vermeer": "Vermayr"})
+        before = books.find_book("b1").get("updated")
+        got = self.post(client, {"vermeer": "Vermayr"}).get_json()      # re-cased, same rule
+        assert got["unchanged"] is True
+        assert books.find_book("b1").get("updated") == before
+
+    def test_it_re_narrates_only_the_parts_that_said_the_word(self, client, make_book,
+                                                              no_background_work):
+        make_book(names=["One"], texts=[self.LONG])
+        segs = self.narrated()
+        assert len(segs) == 4                                 # the word is only in the second
+        got = self.post(client, {"Vermeer": "Vermayr"}).get_json()
+
+        assert got["chapters"] == [0] and got["parts"] == 1
+        assert not os.path.exists(books.book_dir("b1", "audio", "ch000-s01.opus"))
+        for keep in ("ch000-s00.opus", "ch000-s02.opus", "ch000-s03.opus"):
+            assert os.path.exists(books.book_dir("b1", "audio", keep))
+        assert no_background_work["chapters"] == [("b1", 0)]
+
+    def test_the_chapter_keeps_the_parts_that_are_still_right(self, client, make_book,
+                                                             no_background_work):
+        """Emptying the list would take a playable, current part off the page and out of an
+        export. segments_on_disk stops at the gap, which is what the player walks."""
+        make_book(names=["One"], texts=[self.LONG])
+        self.narrated()
+        self.post(client, {"Vermeer": "Vermayr"})              # the second part only
+        c = books.find_book("b1")["chapters"][0]
+        assert [s["file"] for s in c["segments"]] == ["ch000-s00.opus"]
+        assert c["state"] == "pending" and c["seconds"] is None
+        assert c["done"] == 1                       # s02 and s03 are on disk but behind the gap
+
+    def test_removing_an_entry_re_narrates_it_too(self, client, make_book, no_background_work):
+        make_book(names=["One"], texts=[self.LONG], respell={"Vermeer": "Vermayr"})
+        self.narrated()
+        got = self.post(client, {}).get_json()
+        assert got["removed"] == ["vermeer"]
+        assert got["parts"] == 1
+        assert books.find_book("b1")["respell"] == {}
+
+    def test_a_word_nothing_says_costs_nothing(self, client, make_book, no_background_work):
+        make_book(names=["One"], texts=[self.LONG])
+        self.narrated()
+        got = self.post(client, {"Rembrandt": "Rembrant"}).get_json()
+        assert got["chapters"] == [] and got["parts"] == 0
+        assert no_background_work["chapters"] == []
+        assert books.find_book("b1")["chapters"][0]["state"] == "ready"
+
+    def test_a_wide_change_asks_first(self, client, make_book, no_background_work):
+        """"the" would be correct and catastrophic: it deletes a whole narration."""
+        make_book(names=["One", "Two", "Three"], texts=[self.LONG] * 3)
+        for i in range(3):
+            self.narrated(index=i)
+        r = self.post(client, {"Nothing": "Nuthin"})           # in every segment of every chapter
+        assert r.status_code == 409
+        got = r.get_json()
+        assert got["needs_confirm"] is True and got["chapters"] == 3
+        assert got["parts"] > 3
+        # and it did none of it
+        assert books.find_book("b1").get("respell") is None
+        assert os.path.exists(books.book_dir("b1", "audio", "ch000-s01.opus"))
+        assert no_background_work["chapters"] == []
+
+    def test_and_does_it_when_confirmed(self, client, make_book, no_background_work):
+        make_book(names=["One", "Two", "Three"], texts=[self.LONG] * 3)
+        for i in range(3):
+            self.narrated(index=i)
+        got = self.post(client, {"Nothing": "Nuthin"}, confirm=True).get_json()
+        assert got["chapters"] == [0, 1, 2]
+        assert books.find_book("b1")["respell"] == {"Nothing": "Nuthin"}
+        assert sorted(no_background_work["chapters"]) == [("b1", 0), ("b1", 1), ("b1", 2)]
+
+    def test_a_chapter_left_out_is_repaired_but_not_re_narrated(self, client, make_book,
+                                                               no_background_work):
+        """render_chapter returns early on a skipped chapter, so queueing it would leave a job
+        that can never finish — but its stale audio still has to go, or un-skipping it later
+        would reveal a chapter that says the old name."""
+        make_book(names=["One"], texts=[self.LONG])
+        self.narrated()
+        books.update_book("b1", lambda b: b["chapters"][0].update(skip=True))
+        got = self.post(client, {"Vermeer": "Vermayr"}).get_json()
+        assert got["chapters"] == [0]
+        assert not os.path.exists(books.book_dir("b1", "audio", "ch000-s01.opus"))
+        assert no_background_work["chapters"] == []
+
+    def test_the_listening_position_is_left_where_it_was(self, client, make_book,
+                                                        no_background_work):
+        """The re-made part has the same name and a length that differs by a fraction of a
+        second. Moving the reader would cost more than the drift."""
+        make_book(names=["One"], texts=[self.LONG],
+                  position={"chapter": 0, "segment": 2, "offset": 44})
+        self.narrated()
+        self.post(client, {"Vermeer": "Vermayr"})
+        assert books.find_book("b1")["position"] == {"chapter": 0, "segment": 2, "offset": 44}
+
+    def test_it_does_not_invalidate_the_whole_book(self, client, make_book, no_background_work):
+        """gen means "everything here is wrong" and pairs with deleting the audio directory.
+        A pronunciation fix is a handful of files."""
+        make_book(names=["One"], texts=[self.LONG])
+        self.narrated()
+        self.post(client, {"Vermeer": "Vermayr"})
+        b = books.find_book("b1")
+        assert b["gen"] == 0
+        assert b["chapters"][0]["total"] == len(books.chapter_segments(b, 0))
+        assert b["chapters"][0]["intro"] == []          # the record of what s00 was made with
+
+    def test_one_book_s_map_is_its_own(self, client, make_book, no_background_work):
+        make_book(book_id="mine", names=["One"], texts=[self.LONG])
+        make_book(book_id="theirs", names=["One"], texts=[self.LONG])
+        self.post(client, {"Vermeer": "Vermayr"}, book="mine")
+        assert books.find_book("theirs").get("respell") is None
+
+    def test_a_change_that_re_makes_nothing_does_not_age_the_exports(self, client, make_book,
+                                                                    no_background_work):
+        """`respell_changed` is what marks an export as saying a word the old way. Adding a
+        respelling for a word no narrated audio contains changes no file, so flagging every
+        export over it would be crying wolf."""
+        make_book(names=["One"], texts=[self.LONG])
+        self.narrated()
+        p = books.book_dir("b1", "export", "A Book.m4b")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(b"\0" * 256)
+
+        self.post(client, {"Rembrandt": "Rembrant"})          # nothing says it
+        assert "respell_changed" not in books.find_book("b1")
+        assert books.book_exports("b1")[0]["stale"] is False
+
+        self.post(client, {"Vermeer": "Vermayr"})             # this one does
+        assert "respell_changed" in books.find_book("b1")
+        assert books.book_exports("b1")[0]["stale"] is True

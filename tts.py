@@ -4,7 +4,7 @@ Kokoro is the English engine and Piper the Dutch one, each driven by its own int
 their dependencies stay in their own venvs. F5 is the voice-cloning path and still runs as a
 CLI call.
 """
-import json, os, select, subprocess, tempfile, threading, time, uuid
+import hashlib, json, os, select, subprocess, tempfile, threading, time, uuid
 
 from flask import jsonify, request, send_from_directory
 
@@ -305,6 +305,41 @@ def api_sample(voice):
             return jsonify(error="busy generating something else — try again in a moment"), 503
         try:
             tts_say(voice, SAMPLE_TEXT[engine], 1.0, path)
+        except Exception as e:
+            if os.path.exists(path): os.remove(path)     # don't cache a half-written file
+            return jsonify(error=str(e)[:200]), 500
+        finally:
+            run_lock.release()
+    return send_from_directory(SAMPLES_DIR, name)
+
+@app.get("/api/say")
+def api_say():
+    """One short phrase, spoken and returned as audio in the same request.
+
+    For hearing a respelling before committing a book to it: you type a word, tap ▶, and know
+    in a second whether the engine says it right. /api/speak is the wrong shape for that — it's
+    a job to poll, and awaiting a poll loses the tap iOS needs to play audio at all, which is
+    why the samples beside the voice pickers are a plain GET too.
+
+    Whatever is asked for is respelled on the way in, since what you want to hear is what a
+    render would say, not what you typed."""
+    text = (request.args.get("text") or "").strip()[:200]
+    voice = request.args.get("voice") or ""
+    if not text:
+        return jsonify(error="nothing to say"), 400
+    if tts_engine_of(voice) is None:
+        return jsonify(error="unknown voice"), 404
+    spoken = respell(text)
+    # Cached under a name derived from what was actually spoken, so tapping ▶ twice — or a
+    # second book asking for the same word in the same voice — costs nothing.
+    name = "say-%s.wav" % hashlib.sha1(f"{voice}\n{spoken}".encode()).hexdigest()[:16]
+    path = os.path.join(SAMPLES_DIR, name)
+    if not os.path.exists(path):
+        # Don't sit behind a two-minute F5 clone: fail with something the page can explain.
+        if not run_lock.acquire(timeout=30):
+            return jsonify(error="busy generating something else — try again in a moment"), 503
+        try:
+            tts_say(voice, spoken, 1.0, path)
         except Exception as e:
             if os.path.exists(path): os.remove(path)     # don't cache a half-written file
             return jsonify(error=str(e)[:200]), 500

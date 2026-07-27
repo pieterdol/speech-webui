@@ -6,10 +6,18 @@ import re
 # the way in. Kokoro's documented [word](/phonemes/) form belongs to the KPipeline package and
 # does nothing here: kokoro_onnx offers only all-or-nothing is_phonemes, so the markup is read
 # out loud as "slash m stress u lengthen v i z slash". Respelling is the whole toolkit.
+#
+# These apply everywhere. A book also carries its own map — the names in a novel are nobody
+# else's problem — which respell() takes as `extra` and which wins where the two disagree.
 RESPELL = {
     "Pieter": "Peter",
     "movies": "movees",     # espeak clips the -ies to "movis"
 }
+
+# How many a book may carry, and how long each side may be. A cap because the map is typed in
+# from a phone and every entry is a regex pass over every chunk of every render.
+RESPELL_MAX   = 200
+RESPELL_CHARS = 80
 
 # Abbreviations written short and meant to be heard in full. The full stop is the whole
 # problem: an engine reads "Mr. Halloway" as "mister", then a sentence break, then the name —
@@ -112,7 +120,21 @@ def _expand(match, full):
     return full + ("." if not after or after[0].isupper() else "")
 
 
-def respell(text):
+def _word_re(src):
+    """The whole word, whatever its case. One helper because the substitution below and the
+    search that decides which audio a changed map invalidates have to agree exactly — a
+    difference between them would either re-make audio that was fine or leave audio that isn't.
+
+    \\b can't match beside a non-word character, so a key like "Ph.D." never fires. That's a
+    limitation of matching words rather than something to work around here.
+    """
+    return re.compile(rf"\b{re.escape(src)}\b", re.IGNORECASE)
+
+
+def respell(text, extra=None):
+    """`extra` is one book's own map, applied on top of the global one and winning where both
+    name the same word. None — every caller outside book narration — is exactly the global map.
+    """
     for pattern, full in _HONORIFIC:
         text = pattern.sub(full, text)
     for pattern, full in _SPOKEN:
@@ -120,9 +142,51 @@ def respell(text):
     text = _NUMBER_OF.sub("number", text)
     text = _SLASH_NUMBERS.sub(_spoken_groups, text)
     text = _HYPHEN_DATE.sub(_spoken_groups, text)
-    for src, dst in RESPELL.items():
-        text = re.sub(rf"\b{re.escape(src)}\b", dst, text, flags=re.IGNORECASE)
+    # A replacement is put in through a function, not as re.sub's template: a reader typing
+    # "AC\DC" or "\1" would otherwise have it read as a backreference and raise re.error deep
+    # inside a render thread. A callable is never interpreted.
+    #
+    # Merged rather than chained per map, so a book overriding a global word replaces that rule
+    # instead of running after it. The order is global keys first, then the book's own — which
+    # means a book key matching some global rule's *output* still fires on it. Deterministic,
+    # occasionally surprising, and what the repair scan compares against anyway.
+    for src, dst in (RESPELL | (extra or {})).items():
+        text = _word_re(src).sub(lambda m, d=dst: d, text)
     return text
+
+
+def clean_respell(mapping):
+    """One book's map as it goes to disk: no whitespace, no empties, no duplicates, capped.
+
+    Case-insensitive de-duplication because the match is: storing "Vermeer" and "vermeer" would
+    be two rules firing on the same word, the second one over the first one's output. An empty
+    *replacement* is kept — it means "don't say this at all", which is a real thing to want for a
+    footnote marker; an empty key is dropped, having nothing to match."""
+    out = {}
+    if not isinstance(mapping, dict):
+        return out
+    for src, dst in mapping.items():
+        if not isinstance(src, str) or not isinstance(dst, str):
+            continue
+        src, dst = src.strip()[:RESPELL_CHARS], dst.strip()[:RESPELL_CHARS]
+        if not src or src.casefold() in {k.casefold() for k in out}:
+            continue
+        out[src] = dst
+        if len(out) >= RESPELL_MAX:
+            break
+    return out
+
+
+def respell_diff(old, new):
+    """What changed between two maps: (added, edited, removed) as sorted key lists.
+
+    Compared case-folded, since re-casing a key that keeps its value changes no audio — the
+    match ignores case either way. For reporting, and for deciding there's nothing to do."""
+    a = {k.casefold(): v for k, v in (old or {}).items()}
+    b = {k.casefold(): v for k, v in (new or {}).items()}
+    return (sorted(k for k in b if k not in a),
+            sorted(k for k in b if k in a and a[k] != b[k]),
+            sorted(k for k in a if k not in b))
 
 
 # ---- turning a written reply into something worth listening to ----

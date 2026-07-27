@@ -59,6 +59,101 @@ class TestRespell:
         assert textprep.respell("I love watching movies.") == "I love watching movees."
 
 
+class TestABooksOwnRespellings:
+    """The names in a novel are nobody else's problem, so a book carries its own map on top of
+    the global one. Everything outside book narration passes no map at all, which has to mean
+    exactly what it meant before."""
+
+    def test_a_books_word_is_respelled_too(self):
+        assert textprep.respell("about Vermeer", {"Vermeer": "Vermayr"}) == "about Vermayr"
+
+    def test_the_global_map_still_applies(self):
+        assert textprep.respell("Pieter likes Vermeer", {"Vermeer": "Vermayr"}) \
+            == "Peter likes Vermayr"
+
+    def test_a_book_wins_where_both_name_the_word(self):
+        assert textprep.respell("Pieter", {"Pieter": "Peeter"}) == "Peeter"
+
+    def test_no_map_is_the_global_map(self):
+        assert textprep.respell("Hello Pieter", None) == textprep.respell("Hello Pieter")
+
+    def test_case_insensitive_and_whole_words_like_the_rest(self):
+        m = {"Vermeer": "Vermayr"}
+        assert textprep.respell("vermeer", m) == "Vermayr"
+        assert textprep.respell("Vermeerkade", m) == "Vermeerkade"
+
+    def test_a_replacement_is_never_read_as_a_backreference(self):
+        """A reader types what they hear. re.sub's template syntax would make "\\1" a group
+        reference and raise re.error deep inside a render thread."""
+        assert textprep.respell("play AC", {"AC": r"\1"}) == r"play \1"
+        assert textprep.respell("play AC", {"AC": "AC\\DC"}) == "play AC\\DC"
+
+    def test_an_empty_replacement_takes_the_word_out(self):
+        """For a footnote marker or a symbol that shouldn't be spoken at all."""
+        assert textprep.respell("said 1 there", {"1": ""}).split() == ["said", "there"]
+
+    def test_it_fires_on_what_an_earlier_rule_produced(self):
+        """Deterministic and worth knowing: the maps are merged, so a book key that matches a
+        global rule's output still applies to it."""
+        assert textprep.respell("movies", {"movees": "MOOVEES"}) == "MOOVEES"
+
+
+class TestCleaningABooksMap:
+    """It's typed in on a phone, and every entry is a regex pass over every chunk of every
+    render."""
+
+    def test_whitespace_comes_off(self):
+        assert textprep.clean_respell({"  Vermeer  ": " Vermayr "}) == {"Vermeer": "Vermayr"}
+
+    def test_an_empty_key_is_dropped(self):
+        assert textprep.clean_respell({"": "x", "   ": "y"}) == {}
+
+    def test_an_empty_replacement_is_kept(self):
+        """It means "don't say this", which is a real thing to want."""
+        assert textprep.clean_respell({"†": ""}) == {"†": ""}
+
+    def test_the_same_word_twice_is_one_rule(self):
+        """The match ignores case, so two casings would be two rules on the same word — the
+        second one running over the first one's output."""
+        assert list(textprep.clean_respell({"Vermeer": "a", "vermeer": "b"})) == ["Vermeer"]
+
+    def test_junk_is_ignored_rather_than_fatal(self):
+        assert textprep.clean_respell({"ok": "fine", 3: "x", "y": None}) == {"ok": "fine"}
+        assert textprep.clean_respell("not a map") == {}
+        assert textprep.clean_respell(None) == {}
+
+    def test_both_sides_are_capped(self):
+        long = "x" * (textprep.RESPELL_CHARS + 40)
+        got = textprep.clean_respell({long: long})
+        assert list(got) == [long[:textprep.RESPELL_CHARS]]
+        assert got[long[:textprep.RESPELL_CHARS]] == long[:textprep.RESPELL_CHARS]
+
+    def test_and_so_is_the_count(self):
+        many = {f"word{i}": "x" for i in range(textprep.RESPELL_MAX + 50)}
+        assert len(textprep.clean_respell(many)) == textprep.RESPELL_MAX
+
+
+class TestWhatChangedInAMap:
+    """Which entries moved decides whether there's any audio to re-make at all."""
+
+    def test_added_edited_and_removed(self):
+        old = {"a": "1", "b": "2", "c": "3"}
+        new = {"a": "1", "b": "changed", "d": "4"}
+        assert textprep.respell_diff(old, new) == (["d"], ["b"], ["c"])
+
+    def test_recasing_a_key_is_not_a_change(self):
+        """The match ignores case, so it's the same rule and the same audio."""
+        assert textprep.respell_diff({"Vermeer": "x"}, {"vermeer": "x"}) == ([], [], [])
+
+    def test_reordering_is_not_a_change(self):
+        assert textprep.respell_diff({"a": "1", "b": "2"}, {"b": "2", "a": "1"}) == ([], [], [])
+
+    def test_identical_maps_and_empty_ones(self):
+        assert textprep.respell_diff({"a": "1"}, {"a": "1"}) == ([], [], [])
+        assert textprep.respell_diff(None, None) == ([], [], [])
+        assert textprep.respell_diff({}, {"a": "1"}) == (["a"], [], [])
+
+
 class TestSpokenAbbreviations:
     """"Mr." is read as "mister" and then a sentence break, so the name lands after a pause
     the text never asked for. Writing the word out takes the full stop with it."""

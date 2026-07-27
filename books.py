@@ -12,7 +12,8 @@ import epub
 from core import (app, index_lock, jobs, log_transfer, new_job, run_lock, safe_path,
                   write_json, HERE)
 from media import audio_seconds, pad_with_silence
-from textprep import ONES, TENS, cut_sentences, respell
+from textprep import (ONES, TENS, clean_respell, cut_sentences, respell,
+                      respell_diff)
 from tts import piper_voice_ids, tts_engine_of, tts_say
 
 BOOKS_DIR  = os.path.join(HERE, "books")
@@ -29,6 +30,9 @@ os.makedirs(BOOKS_DIR, exist_ok=True)
 # audio arrives in a few minutes rather than sixteen, which is safe now that iOS is confirmed
 # to advance between files with the screen locked.
 SEGMENT_CHARS = 8000      # ≈10 min of speech at the measured ~13.6 characters per second
+# How many chapters a pronunciation change may re-narrate before it asks. Two is a name
+# in a couple of places; twenty is a word common enough to be a mistake.
+RESPELL_CONFIRM_AT = 2
 CHUNK_CHARS   = 600       # one Kokoro/Piper call ≈45 s of audio ≈17 s of work
 render_lock   = threading.Lock()      # one book render at a time
 # render_lock serializes renders, but a lock says nothing about who is holding it or who is
@@ -89,6 +93,10 @@ def book_exports(book_id):
     Only finished ones: an export being encoded is called .m4b.part until it's whole, so it
     can't be listed, shared or deleted halfway through."""
     d = book_dir(book_id, "export")
+    # An export is a snapshot and nothing rewrites it, so one built before a pronunciation
+    # changed still says the old name. Not deleted — rebuilding is two hours of ffmpeg and the
+    # copy on a phone is fine — but said out loud, so it isn't shared again by mistake.
+    changed = ((find_book(book_id) or {}).get("respell_changed") or 0)
     found = []
     for name in os.listdir(d) if os.path.isdir(d) else []:
         path = os.path.join(d, name)
@@ -103,6 +111,7 @@ def book_exports(book_id):
             pass             # exports built before the note existed simply say less
         found.append({"file": name, "bytes": st.st_size, "made": int(st.st_mtime),
                       "text": note.get("text"), "seconds": note.get("seconds"),
+                      "stale": st.st_mtime < changed,
                       "url": f"/export/{book_id}/{urllib.parse.quote(name)}"})
     return sorted(found, key=lambda e: -e["made"])
 
@@ -219,6 +228,85 @@ def split_chunks(text, limit=CHUNK_CHARS):
         out.append(buf.strip())
     return out
 
+def chapter_segments(book, index):
+    """The text of each of a chapter's segments, exactly as render_chapter would cut it — same
+    file, same heading strip, same split — or [] when there's no text to read.
+
+    Both the render and the repair have to agree about what segment 3 contains, so neither
+    derives it privately."""
+    chapters = book.get("chapters") or []
+    if not (0 <= index < len(chapters)):
+        return []
+    try:
+        with open(book_dir(book["id"], "text", f"ch{index:03d}.txt")) as f:
+            text = f.read()
+    except OSError:
+        return []               # render_chapter turns this into an error; nothing to repair
+    return split_segments(epub.strip_heading(text, chapters[index].get("name") or ""))
+
+def stale_segments(book, index, old, new):
+    """Which of a chapter's segments the engine would now be given differently, as indices.
+
+    The question is never "which segments contain the word" — it's whether what the engine gets
+    changes. Asked that way, one comparison covers every case: a word added, a word edited, a
+    word *removed* (the audio still says the respelled form), a book entry firing on some global
+    rule's output, and an entry keyed "Doctor" reaching text that reads "Dr. Who". Compared per
+    chunk, because chunks are what _render_segment actually feeds the engine.
+
+    Segment 0 is also stale when the spoken lead-in has changed, which is how a respelling of
+    the title, the author, or a part name is caught — without naming any of them here.
+
+    A chapter with no recorded lead-in counts as stale in segment 0, exactly as render_chapter
+    treats one: only a rendered chapter carries the record, so the answer is "can't tell" and
+    the safe reading is "re-make it". For an un-narrated chapter that costs nothing — there's no
+    file, so respell_repair_plan drops it.
+    """
+    hits = set()
+    for si, seg in enumerate(chapter_segments(book, index)):
+        if any(respell(c, old) != respell(c, new) for c in split_chunks(seg)):
+            hits.add(si)
+    chapters = book.get("chapters") or []
+    if 0 <= index < len(chapters):
+        spoken = [respell(p, new) for p, _ in chapter_intro(book, index)]
+        if chapters[index].get("intro") != spoken:
+            hits.add(0)
+    return hits
+
+def respell_stragglers(book_id, index, used):
+    """Parts of this chapter just made under `used` that the book's map no longer agrees with.
+
+    True when it found some, having deleted them and left the chapter pending for another pass.
+    A render reads the map once and then holds the lock for the whole chapter, so a respelling
+    saved half way through would otherwise be missing from every part after it — and marked
+    ready. Rather than have the endpoint reach into a running render, the render checks itself
+    on the way out."""
+    book = find_book(book_id)
+    if not book:
+        return False
+    now = book.get("respell") or {}
+    if now == (used or {}):
+        return False
+    plan = respell_repair_plan(book, used or {}, now)
+    if index not in plan:
+        return False
+    apply_respell_repair(book_id, {index: plan[index]})
+    return True
+
+def respell_repair_plan(book, old, new):
+    """{chapter index: [segment indices]} for the audio that a map change has made wrong.
+
+    Only files that exist: a chapter yet to be narrated has nothing to repair, and a segment
+    that was never made is simply rendered with the new map when its turn comes."""
+    plan = {}
+    for c in book.get("chapters") or []:
+        i = c["i"]
+        gone = sorted(si for si in stale_segments(book, i, old, new)
+                      if os.path.exists(book_dir(book["id"], "audio",
+                                                 f"ch{i:03d}-s{si:02d}.opus")))
+        if gone:
+            plan[i] = gone
+    return plan
+
 @contextmanager
 def render_slot(book_id, index):
     """Books this render in as waiting, then — once the caller says the lock is theirs — as
@@ -331,6 +419,11 @@ def render_chapter(book_id, index):
         if chapter.get("state") == "ready" or chapter.get("skip"):
             return
         voice = book.get("voice") or "af_heart"
+        # This book's own pronunciations, on top of the global map. Read here and passed down
+        # rather than looked up inside respell(), because the same function serves the studio and
+        # chat, where there is no book — and because the repair scan has to be able to ask what
+        # this map would have produced.
+        respellings = book.get("respell") or {}
         # Bumped whenever the narrator changes. A chapter that was already being rendered when
         # you switched would otherwise finish in the old voice and be marked ready, leaving one
         # chapter of the book in the wrong voice with nothing to show for it.
@@ -356,10 +449,14 @@ def render_chapter(book_id, index):
         # goes in as "11, 22, 63: A Novel", and a change to how a phrase is pronounced leaves the
         # written form identical. Comparing what's written would call that opening current when
         # it no longer is.
-        spoken = [respell(p) for p, _ in intro]
+        spoken = [respell(p, respellings) for p, _ in intro]
         # Split before publishing the state, not after: how many parts a chapter comes to is
         # pure text work, and knowing it up front is the difference between "part 1 of 2" and
         # ten minutes of "starting…" in the queue panel.
+        #
+        # Split on the *written* text, never the respelled form. Respelling first would make the
+        # segment count — and so every filename — depend on the pronunciation map, which would
+        # mean changing one word invalidated the whole book by construction.
         segments = split_segments(text)
         update_book(book_id, lambda b: b["chapters"][index].update(
             state="rendering", error=None, done=0, segments=[], intro=spoken,
@@ -384,13 +481,21 @@ def render_chapter(book_id, index):
                     # the closing pause belongs to the chapter, so only the last part gets it
                     _render_segment(seg_text, voice, out,
                                     intro=intro if si == 0 else None,
-                                    tail_pause=CHAPTER_END_PAUSE if si == len(segments) - 1 else 0)
+                                    tail_pause=CHAPTER_END_PAUSE if si == len(segments) - 1 else 0,
+                                    respellings=respellings)
                 made.append({"file": name, "seconds": audio_seconds(out)})
                 # publish each finished segment: you can start listening to segment 1 while
                 # segment 2 is still being made
                 update_book(book_id, lambda b, m=list(made), n=len(segments):
                             b["chapters"][index].update(segments=m, done=len(m), total=n))
             if not render_cancelled(book_id, gen):
+                # The map can have changed while this ran — a render holds the lock for the
+                # whole chapter, so a respelling saved during segment 2 of 8 leaves the six
+                # after it made the old way, and the endpoint couldn't delete files that didn't
+                # exist yet. Checked here rather than there, which makes it one invariant: a
+                # chapter is only ready when every part on disk agrees with the map on record.
+                if respell_stragglers(book_id, index, respellings):
+                    return
                 update_book(book_id, lambda b: b["chapters"][index].update(
                     state="ready", error=None,
                     seconds=round(sum(s["seconds"] for s in made), 1)))
@@ -698,24 +803,25 @@ def export_worker(jid, book_id, part=None):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def _render_segment(text, voice, out_path, intro=None, tail_pause=0):
+def _render_segment(text, voice, out_path, intro=None, tail_pause=0, respellings=None):
     """One segment = many TTS calls concatenated. run_lock is taken per chunk, not for the
     whole segment, so hours of narration don't starve everything else.
 
     `intro` is [(phrase, pause_after)] spoken first — the part name and chapter number.
-    `tail_pause` is silence appended at the very end, for the last segment of a chapter."""
+    `tail_pause` is silence appended at the very end, for the last segment of a chapter.
+    `respellings` is the book's own pronunciation map, on top of the global one."""
     tmpdir = tempfile.mkdtemp(prefix="book-")
     parts = []
     try:
         for ii, (phrase, pause) in enumerate(intro or []):
             raw = os.path.join(tmpdir, f"intro-{ii}.wav")
             with run_lock:
-                tts_say(voice, respell(phrase), 1.0, raw)
+                tts_say(voice, respell(phrase, respellings), 1.0, raw)
             parts.append(pad_with_silence(raw, pause, os.path.join(tmpdir, f"intro-{ii}-pad.wav")))
         for ci, chunk in enumerate(split_chunks(text)):
             wav = os.path.join(tmpdir, f"{ci:04d}.wav")
             with run_lock:
-                tts_say(voice, respell(chunk), 1.0, wav)
+                tts_say(voice, respell(chunk, respellings), 1.0, wav)
             parts.append(wav)
         if not parts:
             raise RuntimeError("nothing to say in this segment")
@@ -869,6 +975,79 @@ def api_book_update():
     if renamed:
         threading.Thread(target=render_chapter, args=(book["id"], opens), daemon=True).start()
     return jsonify(ok=True, book=find_book(book["id"]), resume=resume, renamed=renamed)
+
+def apply_respell_repair(book_id, plan):
+    """Delete the audio a map change invalidated, and put its chapters back to pending.
+
+    The deletion is the work list: render_chapter re-makes a segment exactly when its file is
+    missing, which is the same path a resumed render takes. So nothing here needs to record what
+    to redo — the gap in the directory says it.
+
+    What each chapter keeps matters as much as what it loses. `segments` is re-read from disk
+    rather than emptied, so the parts that are still current stay playable and stay in an export;
+    `intro` is left alone, because it records what the opening on disk was made with and
+    refreshing it would hide the very staleness this is repairing; `total` is republished by the
+    render; `position` survives, since the re-made file has the same name and a length that
+    differs by a fraction of a second, and clamping it would lose the reader's place in a
+    twenty-hour book over one word. `gen` is not bumped: that means "everything for this book is
+    invalid" and pairs with deleting the whole audio directory.
+    """
+    for i, segs in plan.items():
+        for si in segs:
+            path = book_dir(book_id, "audio", f"ch{i:03d}-s{si:02d}.opus")
+            if os.path.exists(path):
+                os.remove(path)
+        kept = segments_on_disk(book_id, i)
+        update_book(book_id, lambda b, n=i, k=kept: b["chapters"][n].update(
+            state="pending", error=None, segments=k, done=len(k), seconds=None))
+
+@app.post("/api/books/respell")
+def api_book_respell():
+    """Set a book's own pronunciations, and re-narrate only what that changes.
+
+    Neither engine takes a pronunciation override, so a name it says wrong can only be fixed by
+    respelling it — and the audio already on disk says the old way. Which audio, exactly, is
+    what stale_segments answers: usually one segment per occurrence, out of a book of hundreds.
+    """
+    d = request.get_json(force=True, silent=True) or {}
+    book = find_book(d.get("id") or "")
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    old = clean_respell(book.get("respell") or {})
+    new = clean_respell(d.get("respell") if isinstance(d.get("respell"), dict) else {})
+    added, edited, removed = respell_diff(old, new)
+    if not (added or edited or removed):
+        # Nothing to say differently, so nothing to re-make — and no write, which would only
+        # move `updated` and make the page think something happened.
+        return jsonify(ok=True, unchanged=True, book=book)
+    plan = respell_repair_plan(book, old, new)
+    parts = sum(len(v) for v in plan.values())
+    # One common word — "the" — makes every segment of every chapter stale. That's correct, and
+    # it would silently delete a whole narration, so anything past a couple of chapters says what
+    # it's about to cost first. Same shape as the voice change and the rescan.
+    if len(plan) > RESPELL_CONFIRM_AT and not d.get("confirm"):
+        return jsonify(ok=False, needs_confirm=True, chapters=len(plan), parts=parts,
+                       msg=(f"{parts} part(s) across {len(plan)} chapters were narrated with the"
+                            f" old pronunciation and get re-made")), 409
+    apply_respell_repair(book["id"], plan)
+    # The stamp is what marks an older export as saying a word the old way, so it only moves when
+    # audio actually went — adding a respelling for a word nothing narrated has yet said changes
+    # no existing file, and flagging every export over it would be crying wolf.
+    # Kept as a float, and compared against the raw mtime: whole seconds would miss an export
+    # built and then invalidated inside the same second, the way cover_version uses milliseconds
+    # for two covers replaced in one.
+    stamp = {"respell_changed": time.time()} if plan else {}
+    update_book(book["id"], lambda b: b.update(respell=new, **stamp))
+    # Every affected chapter, not only the one you're at: each is usually a single segment, and
+    # leaving the rest pending would take a finished book back to half-narrated over one word.
+    # A chapter left out of the narration is repaired on disk but not re-made — render_chapter
+    # returns early on it — so it can't sit in the queue for ever.
+    fresh = find_book(book["id"]) or {}
+    skipped = {c["i"] for c in fresh.get("chapters") or [] if c.get("skip")}
+    for i in sorted(set(plan) - skipped):
+        threading.Thread(target=render_chapter, args=(book["id"], i), daemon=True).start()
+    return jsonify(ok=True, book=fresh, chapters=sorted(plan), parts=parts,
+                   added=added, edited=edited, removed=removed)
 
 @app.post("/api/books/delete")
 def api_book_delete():

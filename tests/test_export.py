@@ -277,3 +277,31 @@ class TestWhatAnExportSaysAboutItself:
         books.write_export_note("b1", "A Book.m4b", "1 chapters", 12.5)
         client.post("/api/books/export/delete", json={"id": "b1", "file": "A Book.m4b"})
         assert os.listdir(books.book_dir("b1", "export")) == []
+
+
+class TestAnExportThatPredatesAPronunciation:
+    """An export is a snapshot and nothing rewrites it, so one built before a respelling changed
+    still says the old name. Deleting it would be worse — rebuilding is hours of ffmpeg, and the
+    copy already on a phone is fine — so it's flagged instead."""
+
+    def export(self, mtime, name="A Book.m4b"):
+        p = books.book_dir("b1", "export", name)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(b"\0" * 512)
+        os.utime(p, (mtime, mtime))
+        return p
+
+    def test_one_built_before_the_change_is_flagged(self, make_book):
+        make_book(respell_changed=1_700_000_500)
+        self.export(mtime=1_700_000_000)
+        assert books.book_exports("b1")[0]["stale"] is True
+
+    def test_one_built_after_it_is_not(self, make_book):
+        make_book(respell_changed=1_700_000_000)
+        self.export(mtime=1_700_000_500)
+        assert books.book_exports("b1")[0]["stale"] is False
+
+    def test_a_book_that_never_changed_one_flags_nothing(self, make_book):
+        make_book()
+        self.export(mtime=1_700_000_000)
+        assert books.book_exports("b1")[0]["stale"] is False
