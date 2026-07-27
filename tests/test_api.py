@@ -526,7 +526,7 @@ class TestExportPage:
         self.make_export()
         body = client.get("/get/b1/A%20Book.m4b").get_data(as_text=True)
         assert 'href="/export/b1/A%20Book.m4b"' in body
-        assert "3 MB" in body
+        assert "3.0 MB audiobook" in body        # a decimal, since an EPUB is under a megabyte
 
     def test_a_name_with_markup_in_it_is_escaped(self, client, make_book):
         """The name comes from the book's title, which the reader can type."""
@@ -906,3 +906,85 @@ class TestBookRespellings:
         self.post(client, {"Vermeer": "Vermayr"})             # this one does
         assert "respell_changed" in books.find_book("b1")
         assert books.book_exports("b1")[0]["stale"] is True
+
+
+class TestTakingTheEpub:
+    """The book itself, to read on the phone. Which is how you find the exact spelling of a name
+    the narrator gets wrong — easier to copy off the page than off a voice saying it wrongly.
+
+    It rides the same two routes as an export, under the book's own name rather than book.epub."""
+
+    def store(self, book_id="b1", data=b"PK\x03\x04 epub bytes"):
+        p = books.book_dir(book_id, "book.epub")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(data)
+        return p
+
+    def test_the_book_offers_it_under_its_own_name(self, client, make_book):
+        make_book(title="Dark Matter")
+        self.store()
+        got = client.get("/api/books/b1").get_json()["book"]["epub"]
+        assert got["file"] == "Dark Matter.epub"
+        assert got["bytes"] == len(b"PK\x03\x04 epub bytes")
+        assert got["url"] == "/export/b1/Dark%20Matter.epub"
+
+    def test_a_book_without_one_offers_nothing(self, client, make_book):
+        """Nothing on the page to press, rather than a button that 404s."""
+        make_book()
+        assert client.get("/api/books/b1").get_json()["book"]["epub"] is None
+
+    def test_a_punctuated_title_still_makes_a_filename(self, client, make_book):
+        make_book(title="11/22/63: A Novel")
+        self.store()
+        assert client.get("/api/books/b1").get_json()["book"]["epub"]["file"] \
+            == "112263 A Novel.epub"
+
+    def test_it_downloads_as_the_book_not_as_book_epub(self, client, make_book):
+        make_book(title="Dark Matter")
+        self.store()
+        r = client.get("/export/b1/Dark%20Matter.epub")
+        assert r.status_code == 200
+        assert r.get_data() == b"PK\x03\x04 epub bytes"
+        assert "Dark Matter.epub" in r.headers["Content-Disposition"]
+        assert "book.epub" not in r.headers["Content-Disposition"]
+
+    def test_the_wrapper_page_knows_it_is_not_an_audiobook(self, client, make_book):
+        make_book(title="Dark Matter")
+        self.store()
+        body = client.get("/get/b1/Dark%20Matter.epub").get_data(as_text=True)
+        assert "EPUB" in body and "audiobook" not in body
+        assert 'href="/export/b1/Dark%20Matter.epub"' in body
+
+    def test_the_name_is_the_only_way_to_it(self, client, make_book):
+        """Asking for the file on disk by its real name reaches nothing: the resolver only knows
+        the book's exports and its EPUB under the title."""
+        make_book(title="Dark Matter")
+        self.store()
+        assert client.get("/export/b1/book.epub").status_code == 404
+        assert client.get("/get/b1/book.epub").status_code == 404
+
+    def test_no_climbing_out_with_it(self, client, make_book):
+        make_book()
+        self.store()
+        assert client.get("/export/b1/../../books.json").status_code in (301, 400, 404)
+        assert client.get("/export/b1/..%2f..%2fbooks.json").status_code in (301, 400, 404)
+
+    def test_one_book_cannot_ask_for_another_s(self, client, make_book):
+        make_book(book_id="mine", title="Mine")
+        make_book(book_id="theirs", title="Theirs")
+        self.store("theirs")
+        assert client.get("/export/mine/Theirs.epub").status_code == 404
+
+    def test_it_is_not_offered_as_an_export(self, client, make_book):
+        """The list is audiobooks. The EPUB is a different thing in a different place."""
+        make_book(title="Dark Matter")
+        self.store()
+        assert client.get("/api/books/b1").get_json()["exports"] == []
+
+    def test_and_cannot_be_deleted_through_the_export_endpoint(self, client, make_book):
+        make_book(title="Dark Matter")
+        p = self.store()
+        r = client.post("/api/books/export/delete",
+                        json={"id": "b1", "file": "Dark Matter.epub"})
+        assert r.status_code == 404
+        assert os.path.exists(p)

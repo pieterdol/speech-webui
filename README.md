@@ -295,6 +295,14 @@ it — a full book is hours of work.
   what it will cost first: one common word would correctly re-narrate everything. A run in flight
   is not interrupted; if a save lands mid-chapter, that chapter is left pending rather than marked
   ready, and the next pass fills the gap.
+- **The EPUB itself** can be taken off the machine, from under the respellings in ⚙, which is
+  where you'd want it: a name is easier to copy off the page it's printed on than off a narrator
+  saying it wrongly. It downloads, shares or opens in Safari the same three ways an export does,
+  and arrives called *Dark Matter.epub* rather than `book.epub` — one resolver behind
+  `/export/<book>/<name>` answers for both, so the file and the page wrapped around it for iOS
+  can't disagree about what exists. The EPUB is reachable **only** under the book's own name;
+  asking for `book.epub`, or for another book's, is a 404, and it can't be deleted through the
+  export endpoint.
 - **Clear narration** in ⚙ throws away the audio and keeps the book, its text and its cover —
   useful after changing something that should be re-spoken.
 - **Covers** come from the EPUB, in the library grid, beside the title, in the player, and on

@@ -499,6 +499,7 @@
         fixed by spelling it the way it should sound — “Vermeer” as “Vermayr”. ▶ speaks the
         spoken form first, so you can get it right before anything is narrated. Whole words,
         any capitalisation. Saving re-narrates only the parts that said it the old way.</div>
+      <div id="epubRow" style="display:none"></div>
       <label for="bookCoverFile">Replace the cover</label>
       <input type="file" id="bookCoverFile" accept="image/*">
       <div class="hint">Taken from the EPUB when it declares one. Shows in the list and on
@@ -1615,6 +1616,7 @@ async function openBook(id){
   $("#bookSayTitle").value = BOOK.spoken_title || "";
   $("#bookSayTitle").placeholder = BOOK.title || "";
   renderRespellings();
+  renderEpub();
   $("#respellFrom").value = $("#respellTo").value = "";
   $("#bookSkipped").textContent = (BOOK.skipped || []).length
     ? `Left out ${BOOK.skipped.length} sections that look like front or back matter.` : "";
@@ -2200,18 +2202,20 @@ const canShareFiles = (() => {
               && navigator.canShare({files: [new File([""], "a.m4b", {type:"audio/mp4"})]}));
   }catch(e){ return false; }
 })();
-function exportActions(x){
+// Getting one file off this machine — an export, or the EPUB the narration was made from. Same
+// answer either way, so the two share it: `extra` is whatever else that particular file allows.
+function takeActions(x, label, extra=""){
   const share = canShareFiles
-    ? `<button class="shareExp" data-url="${x.url}" data-file="${esc(x.file)}">📤 Share the
-         .m4b</button>` : "";
+    ? `<button class="shareExp" data-url="${x.url}" data-file="${esc(x.file)}">📤 Share
+         ${label}</button>` : "";
   const get = homeScreenApp
     ? `${share}<a href="${x.url.replace("/export/", "/get/")}" target="_blank" rel="noopener">🧭
          Open in Safari</a>`
-    : downloadLink(x.url, "⬇ Download the .m4b");
-  return `<div class="acts">${get}
-      <button class="del delExp" data-file="${esc(x.file)}">🗑 Delete</button></div>
-    <div class="hint expmsg"></div>`;
+    : downloadLink(x.url, `⬇ Download ${label}`);
+  return `<div class="acts">${get}${extra}</div><div class="hint expmsg"></div>`;
 }
+const exportActions = x => takeActions(x, "the .m4b",
+  `<button class="del delExp" data-file="${esc(x.file)}">🗑 Delete</button>`);
 
 // Deleting one export, rather than the whole narration. These are the largest files the app
 // makes — 137 MB for one book — and until now the only button that removed them was *Clear
@@ -2267,7 +2271,7 @@ async function fetchAsFile(url, name, say){
   const res = await fetch(url);
   if(!res.ok) throw new Error("the server said " + res.status);
   const total = +res.headers.get("Content-Length") || 0;
-  if(!res.body) return new File([await res.blob()], name, {type:"audio/mp4"});
+  if(!res.body) return new File([await res.blob()], name, {type: fileType(name)});
   const reader = res.body.getReader(), chunks = [];
   let got = 0;
   for(;;){
@@ -2278,8 +2282,11 @@ async function fetchAsFile(url, name, say){
     say(total ? `Fetching… ${Math.round(got / total * 100)}% of ${mb(total)}`
               : `Fetching… ${mb(got)}`);
   }
-  return new File(chunks, name, {type:"audio/mp4"});
+  return new File(chunks, name, {type: fileType(name)});
 }
+// iOS decides what a shared file can be opened in from its type, so an EPUB handed over as
+// audio/mp4 would offer players rather than readers.
+const fileType = name => name.endsWith(".epub") ? "application/epub+zip" : "audio/mp4";
 // Delegated: the rows are rebuilt on every poll, and a listener per button would be rebound
 // with them — including onto a button holding a file it had already fetched.
 $("#reader").addEventListener("click", e => {
@@ -2616,6 +2623,19 @@ function renderRespellings(){
            <button class="iconbtn dropSay" data-word="${esc(w)}" title="Remove"
                    aria-label="Remove">⊘</button></div>`).join("")
     : `<div class="hint">Nothing yet — a name the narrator gets wrong goes here.</div>`;
+}
+
+// The book itself, to take away and read. It sits under the respellings because that's what it's
+// for: a name is easier to copy off the page it's printed on than off a narrator saying it wrong.
+function renderEpub(){
+  const e = BOOK && BOOK.epub;
+  const el = $("#epubRow");
+  el.style.display = e ? "block" : "none";
+  el.innerHTML = e
+    ? `<div class="exp"><div class="nm">${esc(e.file)}</div>
+         <div class="hint">${mb(e.bytes)} · the book this narration was made from</div>
+         ${takeActions(e, "the EPUB")}</div>`
+    : "";
 }
 
 async function saveRespellings(map){

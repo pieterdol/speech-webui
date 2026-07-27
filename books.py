@@ -68,6 +68,36 @@ def book_summary(b):
             "cover_v": cover_version(b.get("id")),
             "words": sum(c.get("words", 0) for c in chapters)}
 
+def safe_name(text, fallback):
+    """A title as a filename: no separators, no punctuation a player would choke on."""
+    return re.sub(r"[^\w\- ]+", "", text or "").strip()[:80] or fallback
+
+def epub_name(book):
+    """What the book's EPUB is called when you take a copy. On disk every book's is book.epub;
+    the name worth having on a phone is the book's own."""
+    return safe_name(book.get("title"), "book") + ".epub"
+
+def book_file(book_id, name):
+    """A file of this book the page offers to take away, resolved from the name it offered: one
+    of its exports, or the EPUB the narration was made from.
+
+    One resolver because both are served by the same pair of routes — the file, and the page
+    wrapped around it for iOS — and two of them would eventually disagree about what exists."""
+    book = find_book(book_id)
+    if book and name == epub_name(book):
+        src = book_dir(book_id, "book.epub")
+        return src if os.path.isfile(src) else None
+    return safe_path(book_dir(book_id, "export"), name)
+
+def book_epub(book):
+    """What the page needs to offer the EPUB, or None for a book whose file has gone."""
+    name = epub_name(book)
+    src = book_dir(book["id"], "book.epub")
+    if not os.path.isfile(src):
+        return None
+    return {"file": name, "bytes": os.path.getsize(src),
+            "url": f"/export/{book['id']}/{urllib.parse.quote(name)}"}
+
 def export_note_path(book_id, name):
     return book_dir(book_id, "export", name + ".json")
 
@@ -755,8 +785,7 @@ def export_worker(jid, book_id, part=None):
             f.write("\n".join(meta) + "\n")
 
         os.makedirs(book_dir(book_id, "export"), exist_ok=True)
-        safe = re.sub(r"[^\w\- ]+", "", title).strip()[:80] or "audiobook"
-        name = f"{safe}.m4b"
+        name = safe_name(title, "audiobook") + ".m4b"
         out  = book_dir(book_id, "export", name)
         # Encoded under a name the library doesn't recognise and renamed when it's whole, the
         # way the index is written. ffmpeg writing straight to the .m4b put a file that grew as
@@ -902,7 +931,7 @@ def api_book(book_id):
     # The reader polls this every 4 s while anything is rendering, so the queue rides along
     # rather than needing a second request. It's global: renders are serialized across books,
     # so this book can be waiting on another one's chapter.
-    return jsonify(book=b | {"cover_v": cover_version(book_id)},
+    return jsonify(book=b | {"cover_v": cover_version(book_id), "epub": book_epub(b)},
                    parts=book_parts(b), narrating=render_status(),
                    exports=book_exports(book_id))
 
@@ -1291,14 +1320,17 @@ def api_book_export_delete():
 
 @app.get("/export/<book_id>/<path:filename>")
 def book_export(book_id, filename):
-    path = safe_path(book_dir(book_id, "export"), filename)
+    """Any file of this book worth taking away: an export, or the EPUB it was made from. The
+    EPUB is asked for under the book's own name, so it arrives called that rather than
+    book.epub — see book_file."""
+    path = book_file(book_id, filename)
     if not path:
         return jsonify(error="not found"), 404
-    r = send_from_directory(book_dir(book_id, "export"), filename,
-                            as_attachment=True, conditional=True)
+    r = send_from_directory(os.path.dirname(path), os.path.basename(path),
+                            as_attachment=True, download_name=filename, conditional=True)
     # 137 MB over the tailnet to a phone that may or may not keep it — worth a log line saying
     # which it was. See log_transfer.
-    return log_transfer(r, f"export {filename}")
+    return log_transfer(r, f"download {filename}")
 
 @app.get("/get/<book_id>/<path:filename>")
 def book_export_page(book_id, filename):
@@ -1311,12 +1343,16 @@ def book_export_page(book_id, filename):
     buttons live — and a download started in real Safari behaves like any other, landing in
     Files where BookPlayer can take it.
     """
-    path = safe_path(book_dir(book_id, "export"), filename)
+    path = book_file(book_id, filename)
     if not path:
         return jsonify(error="not found"), 404
     name = html.escape(filename)
     href = html.escape(f"/export/{book_id}/{urllib.parse.quote(filename)}")
     mb = os.path.getsize(path) / 1e6
+    epub = filename.endswith(".epub")
+    what = "EPUB" if epub else "audiobook"
+    opens = ("Books, or whatever you read EPUBs in, opens it from there."
+             if epub else "BookPlayer opens it from the share sheet.")
     page = f"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1332,10 +1368,10 @@ def book_export_page(book_id, filename):
  p {{ color:#9a97b8; font-size:14px; margin-top:22px; }}
 </style>
 <h1>{name}</h1>
-<div class="sz">{mb:.0f} MB audiobook</div>
+<div class="sz">{mb:.1f} MB {what}</div>
 <a class="dl" href="{href}" download>⬇ Download it</a>
 <p>If nothing happens, tap the compass at the bottom right to open this in Safari and
-download it there. The file lands in Files, and BookPlayer opens it from the share sheet.</p>
+download it there. The file lands in Files, and {opens}</p>
 """
     return Response(page, mimetype="text/html")
 
