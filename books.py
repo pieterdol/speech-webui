@@ -57,6 +57,54 @@ def find_book(book_id):
 def book_dir(book_id, *parts):
     return os.path.join(BOOKS_DIR, book_id, *parts)
 
+# ---- where a chapter's files live ----
+# A chapter's number *is* its position in book["chapters"] — `i`, which the page, the saved
+# position, every count and about forty-five places on the server all assume. That was also its
+# filename, and the two can't both be true once a section can be put back into the middle of the
+# book: inserting at 1 in a book of 192 would mean renaming 191 text files and some 400 opus
+# files, rewriting the filenames copied into every chapter's `segments`, and having a rollback
+# path for a half-renamed directory.
+#
+# So storage keeps the number a chapter was created with and the list is free to renumber. `key`
+# is that number; absent means the two have never diverged, which is every book nothing has been
+# inserted into. Nothing else about a key means anything — it is not an order and not an id to
+# show anyone, only the name its files are under.
+
+def chapter_key(chapter):
+    return chapter.get("key", chapter["i"])
+
+def key_at(book, index):
+    """The storage number of the chapter at a position, for the callers that have an index and
+    the book but not the chapter. Out of range answers the index, which keeps the paths of a
+    chapter that isn't there pointing at files that aren't there either."""
+    chapters = (book or {}).get("chapters") or []
+    return chapter_key(chapters[index]) if 0 <= index < len(chapters) else index
+
+def text_file(book_id, key):
+    return book_dir(book_id, "text", f"ch{key:03d}.txt")
+
+def audio_file(book_id, key, si):
+    return book_dir(book_id, "audio", audio_name(key, si))
+
+def audio_name(key, si):
+    """What one part is called. Stored in the chapter's `segments` and asked for by the page, so
+    it survives a renumbering the way the files themselves do."""
+    return f"ch{key:03d}-s{si:02d}.opus"
+
+def renumber(chapters):
+    """Make every chapter's `i` its position again, in place, keeping its storage number.
+
+    `key` is dropped where the two agree, so a book nothing has been put back into carries no
+    trace of any of this and reads exactly as it did before."""
+    for i, c in enumerate(chapters):
+        key = chapter_key(c)
+        c["i"] = i
+        if key == i:
+            c.pop("key", None)
+        else:
+            c["key"] = key
+    return chapters
+
 def book_summary(b):
     """Enough for the library list without shipping every chapter. Counted over what will be
     narrated, so a book left out of nothing reads the same as before and one with apparatus
@@ -72,10 +120,13 @@ def book_summary(b):
 def skipped_index(skipped):
     """What the index keeps about a left-out section: what it was, how long, and why it went.
 
-    Not its text. epub.extract hands the prose over so a section can be read back — see
-    api_book_skipped — but books.json is an index, rewritten after every chapter of every render,
-    and twenty sections of prose in it would be paid for on every write."""
-    return [{k: s[k] for k in ("name", "words", "why")} for s in skipped[:40]]
+    Not its text. epub.extract hands the prose over so a section can be read back or put in as a
+    chapter — see api_book_skipped and api_book_insert — but books.json is an index, rewritten
+    after every chapter of every render, and twenty sections of prose in it would be paid for on
+    every write. `at` is where the section would sit if it were kept, which is what makes putting
+    one back a single tap; a book added before it existed simply hasn't got it, and the EPUB is
+    re-read anyway before anything is put back."""
+    return [{k: s[k] for k in ("name", "words", "why", "at") if k in s} for s in skipped[:40]]
 
 def safe_name(text, fallback):
     """A title as a filename: no separators, no punctuation a player would choke on."""
@@ -277,7 +328,7 @@ def chapter_segments(book, index):
     if not (0 <= index < len(chapters)):
         return []
     try:
-        with open(book_dir(book["id"], "text", f"ch{index:03d}.txt")) as f:
+        with open(text_file(book["id"], key_at(book, index))) as f:
             text = f.read()
     except OSError:
         return []               # render_chapter turns this into an error; nothing to repair
@@ -314,7 +365,7 @@ def find_in_book(book, q, limit=FIND_FORMS):
     seen = {}
     for c in book.get("chapters") or []:
         try:
-            with open(book_dir(book["id"], "text", f"ch{c['i']:03d}.txt")) as f:
+            with open(text_file(book["id"], chapter_key(c))) as f:
                 text = f.read()
         except OSError:
             continue
@@ -393,8 +444,7 @@ def respell_repair_plan(book, old, new):
     for c in book.get("chapters") or []:
         i = c["i"]
         gone = sorted(si for si in stale_segments(book, i, old, new)
-                      if os.path.exists(book_dir(book["id"], "audio",
-                                                 f"ch{i:03d}-s{si:02d}.opus")))
+                      if os.path.exists(audio_file(book["id"], chapter_key(c), si)))
         if gone:
             plan[i] = gone
     return plan
@@ -496,6 +546,26 @@ def render_depth():
     with render_state_lock:
         return int(bool(render_state["current"])) + len(render_state["waiting"])
 
+def busy_with(book_id):
+    """Why this book can't be renumbered right now, or "" when it can.
+
+    A render decides which chapter it is about after it takes the lock, which it may have been
+    waiting an hour for — so one in flight or queued would survive a renumbering and then narrate
+    whatever had moved into the position it was asked for. Nothing else is in the way: positions
+    belong to one book, so another book narrating, or an export encoding, is no business of this.
+    """
+    book = find_book(book_id) or {}
+    if (book.get("render_all") or {}).get("running"):
+        return "a whole-book run is going — stop it first"
+    if any(c.get("state") == "rendering" for c in book.get("chapters") or []):
+        return "a chapter of this book is being narrated — it has to finish first"
+    with render_state_lock:
+        queued = ([render_state["current"]] if render_state["current"] else []) \
+                 + list(render_state["waiting"])
+    if any(b == book_id for b, _i in queued):
+        return "a chapter of this book is waiting to be narrated — it has to finish first"
+    return ""
+
 def render_chapter(book_id, index):
     """Render one chapter to opus, a segment at a time. Marks progress in books.json as it
     goes so the page can show it."""
@@ -510,6 +580,11 @@ def render_chapter(book_id, index):
         chapter = chapters[index]
         if chapter.get("state") == "ready" or chapter.get("skip"):
             return
+        # Read after the lock, with the rest of the chapter: a queued render can have waited an
+        # hour, and a section put back in the meantime moves every later chapter's position
+        # without moving its files. So which files this render is about is decided from the book
+        # as it is now, not from the index the caller happened to hold.
+        key = chapter_key(chapter)
         voice = book.get("voice") or "af_heart"
         # This book's own pronunciations, on top of the global map. Read here and passed down
         # rather than looked up inside respell(), because the same function serves the studio and
@@ -520,7 +595,7 @@ def render_chapter(book_id, index):
         # you switched would otherwise finish in the old voice and be marked ready, leaving one
         # chapter of the book in the wrong voice with nothing to show for it.
         gen = book.get("gen", 0)
-        txt_path = book_dir(book_id, "text", f"ch{index:03d}.txt")
+        txt_path = text_file(book_id, key)
         try:
             with open(txt_path) as f:
                 text = f.read()
@@ -556,7 +631,7 @@ def render_chapter(book_id, index):
         audio_dir = book_dir(book_id, "audio")
         os.makedirs(audio_dir, exist_ok=True)
         if chapter.get("intro") != spoken:
-            stale = os.path.join(audio_dir, f"ch{index:03d}-s00.opus")
+            stale = audio_file(book_id, key, 0)
             if os.path.exists(stale):
                 os.remove(stale)
         made = []
@@ -567,7 +642,7 @@ def render_chapter(book_id, index):
                 # anything noticed, which on a long chapter is most of an hour.
                 if render_cancelled(book_id, gen):
                     break
-                name = f"ch{index:03d}-s{si:02d}.opus"
+                name = audio_name(key, si)
                 out  = os.path.join(audio_dir, name)
                 if not os.path.exists(out):
                     # the closing pause belongs to the chapter, so only the last part gets it
@@ -693,7 +768,7 @@ def chapter_intro(book, index):
         return []
     name  = chapters[index].get("name") or ""
     part  = part_of(name)
-    label = name.split(PART_SEP, 1)[1] if PART_SEP in name else name
+    label = label_of(name)
     pieces = []
     if index == first_chapter(book):
         # How a published audiobook opens, and it's what the .m4b plays first as well
@@ -724,6 +799,12 @@ def chapter_intro(book, index):
 
 def part_of(name):
     return (name or "").split(PART_SEP)[0] if PART_SEP in (name or "") else ""
+
+def label_of(name):
+    """A chapter's own name without the part it's in: "Chapter 1" out of "The Night Knocker ·
+    Chapter 1". What the announcement reads a number out of, and what a section put back in is
+    recognised by."""
+    return (name or "").split(PART_SEP, 1)[1] if PART_SEP in (name or "") else (name or "")
 
 def chapters_in(book, part=None):
     """Chapters to narrate — of one part of the book, or of all of it when part is None.
@@ -1012,7 +1093,7 @@ def api_book_add():
         shutil.rmtree(book_dir(bid), ignore_errors=True)
         return jsonify(ok=False, msg="no readable chapters in that EPUB"), 400
     for i, c in enumerate(chapters):
-        with open(book_dir(bid, "text", f"ch{i:03d}.txt"), "w") as fh:
+        with open(text_file(bid, i), "w") as fh:
             fh.write(c["text"])
     try:
         raw_cover = epub.cover(src)
@@ -1067,21 +1148,153 @@ def api_book_skipped(book_id, n):
     listed = (book.get("skipped") or [])
     if not 0 <= n < len(listed):
         return jsonify(error="no such section"), 404
-    src = book_dir(book_id, "book.epub")
-    if not os.path.exists(src):
-        return jsonify(error="the original EPUB isn't stored for this book"), 400
-    try:
-        _meta, _chapters, skipped = epub.extract(src)
-    except Exception as e:
-        return jsonify(error=f"couldn't re-read it: {e}"[:200]), 400
-    # The list is positional, so it's only the same list if the same extraction produced it. A
-    # rescan since — or an improved heuristic — could have moved everything along by one, and
-    # reading out the wrong section would be a strange way to find out.
-    if n >= len(skipped) or skipped[n]["name"] != listed[n].get("name") \
-            or skipped[n]["words"] != listed[n].get("words"):
+    skipped, err = epub_sections(book)
+    if err:
+        return jsonify(error=err), 400
+    if not same_section(listed, skipped, n):
         return jsonify(error="the book's sections have changed — re-read the EPUB first"), 409
     return jsonify(name=skipped[n]["name"], words=skipped[n]["words"],
                    why=skipped[n]["why"], text=skipped[n]["text"])
+
+def spine_position(chapters, at):
+    """Where a section belongs in the list, given that it belongs after `at` chapters of the
+    book's own spine.
+
+    Counted in spine chapters rather than positions, because the list may already have sections
+    put back into it and those aren't in the EPUB's count. A section landing on the same boundary
+    as one already put back goes after it, which is the order they were asked for in.
+    """
+    seen = 0
+    for pos, c in enumerate(chapters):
+        if seen >= at and not c.get("inserted"):
+            return pos
+        if not c.get("inserted"):
+            seen += 1
+    return len(chapters)
+
+def epub_sections(book):
+    """(the sections extraction left out, an error to answer with) — re-read from the EPUB.
+
+    The stored list is an index of names and counts; the prose is only ever read back on demand,
+    since books.json is rewritten after every chapter of every render. Positional, so it's only
+    the same list if the same extraction produced it: a rescan since, or an improved heuristic,
+    could have moved everything along by one, and reading out — or putting back — the wrong
+    section would be a strange way to find that out.
+    """
+    src = book_dir(book["id"], "book.epub")
+    if not os.path.exists(src):
+        return None, "the original EPUB isn't stored for this book"
+    try:
+        _meta, _chapters, skipped = epub.extract(src)
+    except Exception as e:
+        return None, f"couldn't re-read it: {e}"[:200]
+    return skipped, None
+
+def same_section(listed, skipped, n):
+    """Whether entry n of the stored list is still entry n of a fresh extraction."""
+    return (0 <= n < len(listed) and n < len(skipped)
+            and skipped[n]["name"] == listed[n].get("name")
+            and skipped[n]["words"] == listed[n].get("words"))
+
+@app.post("/api/books/insert")
+def api_book_insert():
+    """Put a section extraction left out back in, as a chapter of its own, where the book has it.
+
+    *Read this at the start* takes one at the top of the book, which is what a dedication or a
+    notice wants and no use for an afterword, a section that belongs mid-book, or one that wants
+    its own marker in the `.m4b`. This is the other half: the section becomes a real chapter —
+    narrated, exported, playable, left out again with ⊘ — at the position the spine gives it.
+
+    A chapter's position *is* its number to everything else, so three things make that safe:
+
+    * **no file is renamed.** Every chapter keeps the storage number its files are under, so
+      inserting at 1 in a book of 192 rewrites 192 positions in books.json and moves none of the
+      ~400 opus files — which is also why there is nothing to roll back if this fails half way.
+      The text is written before the index mentions the chapter; the worst case is one orphan
+      file that nothing points at.
+    * **it refuses while this book has anything in the engine or queued.** A render reads which
+      chapter it is about after taking the lock, so it would come through the renumbering intact
+      and narrate whatever had moved into the position it was handed. `gen` is bumped as well, for
+      the thread started microseconds ago that hasn't registered as waiting yet: it will throw
+      away whatever it makes.
+    * **the reader's position moves up with the chapters it points at**, and the page remaps the
+      player it owns. A player on *another* device holds the same position in a variable nothing
+      here can reach, so it plays on — its bookmark will be one chapter out until the book is
+      opened again, which is the one rough edge of this and cheaper than stopping the audio on
+      every device that might be listening.
+    """
+    d = request.get_json(force=True, silent=True) or {}
+    book = find_book(d.get("id") or "")
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    try:
+        n = int(d.get("section"))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, msg="which section?"), 400
+    listed = book.get("skipped") or []
+    if not 0 <= n < len(listed):
+        return jsonify(ok=False, msg="no such section"), 404
+    why = busy_with(book["id"])
+    if why:
+        return jsonify(ok=False, msg=why), 409
+    skipped, err = epub_sections(book)
+    if err:
+        return jsonify(ok=False, msg=err), 400
+    if not same_section(listed, skipped, n):
+        return jsonify(ok=False, msg="the book's sections have changed — re-read the EPUB "
+                                     "first"), 409
+    section = skipped[n]
+    if not (section.get("text") or "").strip():
+        return jsonify(ok=False, msg="there's no text in that section to read"), 400
+    chapters = book.get("chapters") or []
+    # A fumbled double tap would otherwise make two chapters of it, and the second is only
+    # removable with ⊘. Matched on the name, which is the section's own and comes from the same
+    # extraction — nothing is stored on the skipped entry, which is positional and can't carry a
+    # mark through a rescan.
+    if any(c.get("inserted") and label_of(c.get("name")) == section["name"] for c in chapters):
+        return jsonify(ok=False, msg=f"“{section['name']}” is already in the book"), 409
+    at = section.get("at")
+    pos = len(chapters) if at is None else spine_position(chapters, max(0, int(at)))
+    # It joins the part it lands in front of, so a notice in the middle of "The Night Knocker"
+    # groups and announces with that part rather than splitting the part in two. Nothing at the
+    # end of the book: an afterword is not part of the last part.
+    part = part_of(chapters[pos].get("name")) if pos < len(chapters) else ""
+    name = f"{part}{PART_SEP}{section['name']}" if part else section["name"]
+    key = max([chapter_key(c) for c in chapters], default=-1) + 1
+    os.makedirs(book_dir(book["id"], "text"), exist_ok=True)
+    with open(text_file(book["id"], key), "w") as f:
+        f.write(section["text"])
+    entry = {"i": pos, "key": key, "inserted": True, "name": name, "words": section["words"],
+             "state": "pending", "segments": [], "seconds": None, "error": None}
+    was = first_chapter(book)
+
+    def apply(b):
+        cs = b.get("chapters") or []
+        cs.insert(min(pos, len(cs)), entry)
+        renumber(cs)
+        b["gen"] = b.get("gen", 0) + 1
+        p = dict(b.get("position") or {})
+        if (p.get("chapter") or 0) >= pos:
+            p["chapter"] = (p.get("chapter") or 0) + 1
+            b["position"] = p
+
+    update_book(book["id"], apply)
+    # Putting a section in above everything hands the title and author to it, so whatever used to
+    # open the book has an opening to lose — it now sits one along. Same move as leaving a chapter
+    # out (see api_book_skip), and only that one part is re-made; the rest stays on disk.
+    after = find_book(book["id"]) or {}
+    opened = was is not None and pos <= was
+    stale = [was + 1] if opened and (after["chapters"][was + 1].get("segments") or []) else []
+
+    def reopen(b):
+        for i in stale:
+            b["chapters"][i].update(state="pending", error=None)
+
+    if stale:
+        update_book(book["id"], reopen)
+        for i in stale:
+            threading.Thread(target=render_chapter, args=(book["id"], i), daemon=True).start()
+    return jsonify(ok=True, book=find_book(book["id"]), at=pos, name=name, reopened=stale)
 
 @app.get("/api/books/<book_id>/find")
 def api_book_find(book_id):
@@ -1122,9 +1335,12 @@ def api_book_preview(book_id, index):
     respellings = book.get("respell") or {}
     intro = chapter_intro(book, index)
     spoken = [respell(p, respellings) for p, _ in intro] + [respell(chunks[0], respellings)]
-    key = hashlib.sha1("\n".join([voice] + spoken).encode()).hexdigest()[:16]
+    digest = hashlib.sha1("\n".join([voice] + spoken).encode()).hexdigest()[:16]
     d = book_dir(book_id, "preview")
-    name = f"ch{index:03d}-{key}.opus"
+    # Under the chapter's storage number, like its parts: keyed on the position, a section put
+    # back in front of it would leave this preview looking like the next chapter's.
+    key = key_at(book, index)
+    name = f"ch{key:03d}-{digest}.opus"
     if not os.path.exists(os.path.join(d, name)):
         os.makedirs(d, exist_ok=True)
         try:
@@ -1133,7 +1349,7 @@ def api_book_preview(book_id, index):
         except Exception as e:
             return jsonify(error=str(e)[:200]), 500
         for old in os.listdir(d):
-            if old.startswith(f"ch{index:03d}-") and old != name:
+            if old.startswith(f"ch{key:03d}-") and old != name:
                 os.remove(os.path.join(d, old))
     r = send_from_directory(d, name, conditional=True)
     # Content-addressed, so unlike a chapter's parts this one can be cached blind.
@@ -1240,12 +1456,16 @@ def apply_respell_repair(book_id, plan):
     twenty-hour book over one word. `gen` is not bumped: that means "everything for this book is
     invalid" and pairs with deleting the whole audio directory.
     """
+    # A plan is keyed by position, which is not the number the files are under once anything has
+    # been put back into the book — so the two are looked up together rather than assumed equal.
+    keys = {c["i"]: chapter_key(c) for c in (find_book(book_id) or {}).get("chapters") or []}
     for i, segs in plan.items():
+        key = keys.get(i, i)
         for si in segs:
-            path = book_dir(book_id, "audio", f"ch{i:03d}-s{si:02d}.opus")
+            path = audio_file(book_id, key, si)
             if os.path.exists(path):
                 os.remove(path)
-        kept = segments_on_disk(book_id, i)
+        kept = segments_on_disk(book_id, key)
         update_book(book_id, lambda b, n=i, k=kept: b["chapters"][n].update(
             state="pending", error=None, segments=k, done=len(k), seconds=None))
 
@@ -1314,8 +1534,9 @@ def drop_chapter_audio(book_id, index):
     For narrating it again from nothing: a render reuses every part still on disk, which is what
     makes resuming cheap and what makes "do it again" a no-op unless the files go first."""
     audio = book_dir(book_id, "audio")
+    key = key_at(find_book(book_id), index)
     for name in sorted(os.listdir(audio)) if os.path.isdir(audio) else []:
-        if name.startswith(f"ch{index:03d}-s") and name.endswith(".opus"):
+        if name.startswith(f"ch{key:03d}-s") and name.endswith(".opus"):
             os.remove(os.path.join(audio, name))
     update_book(book_id, lambda b: b["chapters"][index].update(
         state="pending", segments=[], done=0, seconds=None, error=None))
@@ -1467,6 +1688,11 @@ def api_book_rescan():
     Keeps the narrated audio, but only when the chapters still line up exactly: same count,
     same word counts, in the same order. If anything moved, the existing audio might belong
     to different text, so it refuses rather than quietly mismatching sound and chapter.
+
+    A section put back in by hand isn't in the EPUB, so it can't be compared with it: the spine is
+    matched against the chapters that came from the spine, and the ones put back are spliced in
+    again where they were. If the spine has changed they go with everything else, which the
+    confirmation says out loud — they're one tap each to put back.
     """
     d = request.get_json(force=True, silent=True) or {}
     book = find_book(d.get("id") or "")
@@ -1480,34 +1706,47 @@ def api_book_rescan():
     except Exception as e:
         return jsonify(ok=False, msg=f"couldn't re-read it: {str(e)[:150]}"), 400
     old = book.get("chapters") or []
-    same = (len(chapters) == len(old)
-            and all(c["words"] == o.get("words") for c, o in zip(chapters, old)))
+    spine = [c for c in old if not c.get("inserted")]
+    put_back = [c for c in old if c.get("inserted")]
+    same = (len(chapters) == len(spine)
+            and all(c["words"] == o.get("words") for c, o in zip(chapters, spine)))
     if not same and not d.get("confirm"):
         return jsonify(ok=False, needs_confirm=True,
-                       msg=(f"the chapters changed ({len(old)} → {len(chapters)}), so the "
-                            "narrated audio no longer matches and would be discarded")), 409
-    for i, c in enumerate(chapters):
-        with open(book_dir(book["id"], "text", f"ch{i:03d}.txt"), "w") as fh:
+                       msg=(f"the chapters changed ({len(spine)} → {len(chapters)}), so the "
+                            "narrated audio no longer matches and would be discarded"
+                            + (f", and the {len(put_back)} section(s) you put back in go with it"
+                               if put_back else ""))), 409
+    # Built before anything is written, because where a chapter's text goes is its storage number
+    # and that comes from the chapter it replaces, not from its position in the new list.
+    fresh = [{"i": i, "name": c["name"], "words": c["words"],
+              "key": chapter_key(spine[i]) if same else i,
+              "state": spine[i].get("state", "pending") if same else "pending",
+              "segments": spine[i].get("segments", []) if same else [],
+              "seconds": spine[i].get("seconds") if same else None,
+              # the chapters have to line up for the audio to be kept, and they
+              # line up for what was left out of the narration too
+              "skip": spine[i].get("skip", False) if same else False,
+              "error": spine[i].get("error") if same else None}
+             for i, c in enumerate(chapters)]
+    for c, entry in zip(chapters, fresh):
+        with open(text_file(book["id"], chapter_key(entry)), "w") as fh:
             fh.write(c["text"])
+    if same:
+        for c in sorted(put_back, key=lambda c: c["i"]):
+            fresh.insert(min(c["i"], len(fresh)), dict(c))
+    renumber(fresh)
+
     def apply(b):
         b["title"], b["author"] = meta["title"], meta["author"]
         b["skipped"] = skipped_index(skipped)
-        keep = {o["i"]: o for o in (b.get("chapters") or [])} if same else {}
-        b["chapters"] = [{"i": i, "name": c["name"], "words": c["words"],
-                          "state": keep.get(i, {}).get("state", "pending"),
-                          "segments": keep.get(i, {}).get("segments", []),
-                          "seconds": keep.get(i, {}).get("seconds"),
-                          # the chapters have to line up for the audio to be kept, and they
-                          # line up for what was left out of the narration too
-                          "skip": keep.get(i, {}).get("skip", False),
-                          "error": keep.get(i, {}).get("error")}
-                         for i, c in enumerate(chapters)]
+        b["chapters"] = fresh
         if not same:
             b["position"] = {"chapter": 0, "segment": 0, "offset": 0}
     update_book(book["id"], apply)
     if not same:
         shutil.rmtree(book_dir(book["id"], "audio"), ignore_errors=True)
-    return jsonify(ok=True, kept_audio=same, book=find_book(book["id"]))
+    return jsonify(ok=True, kept_audio=same, book=find_book(book["id"]),
+                   put_back=len(put_back) if same else 0)
 
 @app.post("/api/books/render_all")
 def api_book_render_all():
@@ -1717,7 +1956,7 @@ def clear_stale_state():
             changed = True
         for c in b.get("chapters") or []:
             if c.get("state") == "rendering":
-                kept = segments_on_disk(b["id"], c["i"])
+                kept = segments_on_disk(b["id"], chapter_key(c))
                 c.update(state="pending", segments=kept, error=None, done=len(kept))
                 changed = True
         # An export killed mid-encode leaves its .m4b.part behind. It's never listed, so it
@@ -1730,8 +1969,11 @@ def clear_stale_state():
         write_books(items)
 
 
-def segments_on_disk(book_id, index):
+def segments_on_disk(book_id, key):
     """What a chapter actually has, read from the audio directory rather than from the index.
+
+    Takes the number the files are under rather than the chapter's position, since the caller
+    always has the chapter in hand and the two part company once a section has been put back.
     A render empties the segment list before it starts rebuilding it, so a process killed
     part-way leaves finished files that the index no longer mentions.
 
@@ -1739,7 +1981,7 @@ def segments_on_disk(book_id, index):
     ffprobe can't read a duration out of — that one was being written when the process died."""
     out = []
     for si in range(1000):
-        path = book_dir(book_id, "audio", f"ch{index:03d}-s{si:02d}.opus")
+        path = audio_file(book_id, key, si)
         if not os.path.exists(path):
             break
         seconds = audio_seconds(path)

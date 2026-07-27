@@ -20,6 +20,7 @@ EXPECTED = {
     ("/api/books/delete", "POST"),
     ("/api/books/export", "POST"),
     ("/api/books/export/delete", "POST"),
+    ("/api/books/insert", "POST"),
     ("/api/books/render", "POST"),
     ("/api/books/respell", "POST"),
     ("/api/books/retry", "POST"),

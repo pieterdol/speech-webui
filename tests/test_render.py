@@ -343,6 +343,82 @@ class TestRenderAllWorker:
         assert states == ["error", "ready"]
 
 
+class TestStorageNumbers:
+    """A chapter's position is its number to everything else, and used to be its filename too.
+    Those part company the moment a section is put back into the middle of a book, so what a
+    render, a repair and a rescan address files by is the number the chapter was made with."""
+
+    def keyed(self, make_book, text="word " * 40):
+        """A book whose second chapter has moved along without its files moving — what putting a
+        section back in front of it leaves behind."""
+        make_book(names=["One", "Two"], texts=[text, text])
+        books.update_book("b1", lambda b: b["chapters"][1].update(key=7))
+        with open(books.text_file("b1", 7), "w") as f:
+            f.write(text)
+        return books.find_book("b1")
+
+    def test_renumber_keeps_the_storage_number_and_drops_it_where_it_agrees(self):
+        chapters = [{"i": 0, "key": 4}, {"i": 1}, {"i": 2, "key": 9}]
+        books.renumber([chapters[2], chapters[0], chapters[1]])
+        assert chapters[2] == {"i": 0, "key": 9}
+        assert chapters[0] == {"i": 1, "key": 4}
+        # no key of its own means its files are under the position it used to hold, and that's
+        # what gets written down now the two have parted company
+        assert chapters[1] == {"i": 2, "key": 1}
+
+    def test_a_key_that_becomes_its_position_again_is_dropped(self):
+        chapters = [{"i": 0, "key": 1}, {"i": 1, "key": 0}]
+        books.renumber([chapters[1], chapters[0]])
+        assert chapters == [{"i": 1}, {"i": 0}]
+
+    def test_a_book_nothing_was_inserted_into_carries_no_keys(self, make_book):
+        make_book(names=["One", "Two"])
+        books.renumber(books.find_book("b1")["chapters"])
+        assert all("key" not in c for c in books.find_book("b1")["chapters"])
+
+    def test_the_text_is_read_from_the_chapters_own_number(self, make_book):
+        book = self.keyed(make_book, "the notice itself. ")
+        assert books.chapter_segments(book, 1) == ["the notice itself."]
+
+    def test_a_render_writes_under_the_chapters_own_number(self, make_book, fake_tts):
+        self.keyed(make_book)
+        books.render_chapter("b1", 1)
+        c = chapter("b1", 1)
+        assert c["state"] == "ready"
+        assert [s["file"] for s in c["segments"]] == ["ch007-s00.opus"]
+        assert files("b1") == ["ch007-s00.opus"]
+
+    def test_a_repair_deletes_the_part_that_belongs_to_the_chapter(self, make_book, fake_tts):
+        """Keyed by position, a pronunciation change would delete whatever part happened to be
+        called ch001-s00 — another chapter's, once anything has been put back."""
+        self.keyed(make_book, "Vermeer said so. ")
+        books.render_chapter("b1", 1)
+        assert files("b1") == ["ch007-s00.opus"]
+        plan = books.respell_repair_plan(books.find_book("b1"), {}, {"Vermeer": "Vermayr"})
+        assert plan == {1: [0]}
+        books.apply_respell_repair("b1", plan)
+        assert files("b1") == []
+        assert chapter("b1", 1)["state"] == "pending"
+
+    def test_what_a_restart_finds_is_looked_up_by_the_same_number(self, make_book, monkeypatch):
+        self.keyed(make_book)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 4.0)
+        os.makedirs(books.book_dir("b1", "audio"), exist_ok=True)
+        with open(books.audio_file("b1", 7, 0), "wb") as f:
+            f.write(b"\0" * 16)
+        books.update_book("b1", lambda b: b["chapters"][1].update(state="rendering", segments=[]))
+        books.clear_stale_state()
+        assert chapter("b1", 1)["segments"] == [{"file": "ch007-s00.opus", "seconds": 4.0}]
+
+    def test_narrating_it_again_from_nothing_finds_its_own_parts(self, make_book, fake_tts):
+        self.keyed(make_book)
+        books.render_chapter("b1", 1)
+        books.render_chapter("b1", 0)
+        books.drop_chapter_audio("b1", 1)
+        assert files("b1") == ["ch000-s00.opus"]        # and not the other chapter's
+        assert chapter("b1", 1)["segments"] == []
+
+
 class TestAutoExport:
     """The point of narrating overnight is an .m4b in the morning. A per-book toggle builds it
     at the end of a run, so the run finishing and the file existing aren't two taps apart."""

@@ -5,6 +5,7 @@ files that still exercise what matters: the TOC nesting that turns into "Part ·
 front matter that gets dropped, and a flat TOC that legitimately has no parts to find.
 """
 import os
+import shutil
 import zipfile
 
 import pytest
@@ -178,6 +179,17 @@ class TestSkipping:
         assert [c["name"] for c in chapters] == ["Chapter 1"]
         assert "words" in next(s["why"] for s in skipped if s["name"] == "Tiny")
 
+    def test_a_dropped_section_says_where_it_would_have_gone(self, tmp_path):
+        """What lets one be put back as a chapter where the book has it rather than only at the
+        top: the chapters kept so far are exactly the position it would have held."""
+        docs = [("c1.html", page("Chapter 1", 400)), ("note.html", page("Notice", 28)),
+                ("c2.html", page("Chapter 2", 400))]
+        nav = [("Chapter 1", "c1.html", []), ("Notice", "note.html", []),
+               ("Chapter 2", "c2.html", [])]
+        _meta, chapters, skipped = epub.extract(build(tmp_path, docs, nav))
+        assert [c["name"] for c in chapters] == ["Chapter 1", "Chapter 2"]
+        assert next(s["at"] for s in skipped if s["name"] == "Notice") == 1
+
     def test_a_dropped_section_keeps_its_text(self, tmp_path):
         """Dropped from the narration, not thrown away: a dedication or a notice can be read
         back at the top of the book, and its words are the only place to get it from."""
@@ -271,3 +283,274 @@ class TestReadingBackASkippedSection:
         r = client.get(f"/api/books/{added}/skipped/0")
         assert r.status_code == 409
         assert "changed" in r.get_json()["error"]
+
+
+class TestPuttingASectionBack:
+    """A dropped section back in as a real chapter, where the book has it — an afterword, or a
+    notice that belongs mid-book rather than read out at the top.
+
+    A chapter's position is its number to everything else, so the whole point of these is that
+    inserting renumbers positions and moves no files at all.
+    """
+
+    @pytest.fixture
+    def added(self, client, tmp_path, isolated_books):
+        """Three chapters with a 28-word notice between the first and the second."""
+        docs = [("c1.html", page("Chapter 1", 400)),
+                ("note.html", page("Notice", 28)),
+                ("c2.html", page("Chapter 2", 400)),
+                ("c3.html", page("Chapter 3", 400))]
+        nav = [("Chapter 1", "c1.html", []), ("Notice", "note.html", []),
+               ("Chapter 2", "c2.html", []), ("Chapter 3", "c3.html", [])]
+        path = build(tmp_path, docs, nav)
+        with open(path, "rb") as f:
+            r = client.post("/api/books", data={"file": (f, "t.epub")},
+                            content_type="multipart/form-data")
+        return r.get_json()["book"]["id"]
+
+    def put(self, client, bid, n=0):
+        return client.post("/api/books/insert", json={"id": bid, "section": n})
+
+    def names(self, bid):
+        return [c["name"] for c in books.find_book(bid)["chapters"]]
+
+    def test_it_lands_where_the_book_has_it(self, client, added):
+        r = self.put(client, added)
+        assert r.get_json()["at"] == 1
+        assert self.names(added) == ["Chapter 1", "Notice", "Chapter 2", "Chapter 3"]
+        # positions are what the page, the counts and the saved position all mean by a chapter
+        assert [c["i"] for c in books.find_book(added)["chapters"]] == [0, 1, 2, 3]
+
+    def test_no_file_is_renamed(self, client, added, isolated_books):
+        """The reason this is affordable at all. Inserting at 1 in a book of 192 would otherwise
+        move 191 text files and some 400 opus files, with a rollback path for a half-done job."""
+        before = sorted(os.listdir(books.book_dir(added, "text")))
+        self.put(client, added)
+        after = sorted(os.listdir(books.book_dir(added, "text")))
+        assert before == ["ch000.txt", "ch001.txt", "ch002.txt"]
+        assert after == before + ["ch003.txt"]        # the new one, nothing moved
+        keys = [books.chapter_key(c) for c in books.find_book(added)["chapters"]]
+        assert keys == [0, 3, 1, 2]
+
+    def test_the_section_s_words_are_what_gets_narrated(self, client, added):
+        self.put(client, added)
+        book = books.find_book(added)
+        text = books.chapter_segments(book, 1)
+        assert text and text[0].split() == [f"word{i}" for i in range(28)]
+        assert book["chapters"][1]["words"] == 28
+
+    def test_a_shifted_chapter_keeps_the_audio_it_had(self, client, added, monkeypatch):
+        """Its parts are named after its storage number, so they neither move nor need finding
+        again — which is what stops this being a re-narration of the whole book."""
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 5.0)
+        segs = [{"file": books.audio_name(1, 0), "seconds": 5.0}]
+        os.makedirs(books.book_dir(added, "audio"), exist_ok=True)
+        with open(books.audio_file(added, 1, 0), "wb") as f:
+            f.write(b"\0" * 32)
+        books.update_book(added, lambda b: b["chapters"][1].update(state="ready", segments=segs,
+                                                                  seconds=5.0))
+        self.put(client, added)
+        moved = books.find_book(added)["chapters"][2]
+        assert moved["name"] == "Chapter 2" and moved["state"] == "ready"
+        assert moved["segments"] == segs
+        assert books.segments_on_disk(added, books.chapter_key(moved)) == segs
+
+    def test_the_saved_position_moves_with_the_chapters(self, client, added):
+        books.update_book(added, lambda b: b.update(
+            position={"chapter": 2, "segment": 1, "offset": 30}))
+        self.put(client, added)
+        assert books.find_book(added)["position"] == {"chapter": 3, "segment": 1, "offset": 30}
+
+    def test_a_position_above_the_insert_stays_where_it_is(self, client, added):
+        books.update_book(added, lambda b: b.update(
+            position={"chapter": 0, "segment": 0, "offset": 12}))
+        self.put(client, added)
+        assert books.find_book(added)["position"]["chapter"] == 0
+
+    def test_anything_mid_render_is_invalidated(self, client, added):
+        """A render thread started in the microsecond before this can't be found to be stopped,
+        so the generation moves under it and it throws away whatever it makes."""
+        was = books.find_book(added).get("gen", 0)
+        self.put(client, added)
+        assert books.find_book(added)["gen"] == was + 1
+
+    def test_it_refuses_while_a_chapter_of_this_book_is_narrating(self, client, added):
+        books.update_book(added, lambda b: b["chapters"][0].update(state="rendering"))
+        r = self.put(client, added)
+        assert r.status_code == 409 and "narrated" in r.get_json()["msg"]
+        assert len(self.names(added)) == 3
+
+    def test_it_refuses_while_a_run_is_going(self, client, added):
+        books.update_book(added, lambda b: b.update(render_all={"running": True}))
+        assert self.put(client, added).status_code == 409
+
+    def test_it_refuses_while_a_chapter_of_this_book_is_queued(self, client, added,
+                                                               monkeypatch):
+        """A queued render has already been handed a position and only reads the book when the
+        lock reaches it, so it would narrate whatever had moved into that position."""
+        monkeypatch.setitem(books.render_state, "waiting", [(added, 2)])
+        assert self.put(client, added).status_code == 409
+
+    def test_another_book_in_the_engine_is_no_business_of_this(self, client, added,
+                                                              monkeypatch):
+        monkeypatch.setitem(books.render_state, "waiting", [("someone-else", 2)])
+        assert self.put(client, added).get_json()["ok"] is True
+
+    def test_the_same_section_twice_is_refused(self, client, added):
+        assert self.put(client, added).get_json()["ok"] is True
+        r = self.put(client, added)
+        assert r.status_code == 409 and "already" in r.get_json()["msg"]
+        assert self.names(added).count("Notice") == 1
+
+    def test_a_list_that_has_moved_on_is_refused(self, client, added):
+        books.update_book(added, lambda b: b.update(
+            skipped=[{"name": "Something else", "words": 3, "why": "x"}] + b["skipped"]))
+        r = self.put(client, added)
+        assert r.status_code == 409 and "changed" in r.get_json()["msg"]
+
+    def test_no_such_section(self, client, added):
+        assert self.put(client, added, 9).status_code == 404
+
+    def test_which_section_is_required(self, client, added):
+        assert client.post("/api/books/insert", json={"id": added}).status_code == 400
+
+    def test_unknown_book(self, client):
+        assert self.put(client, "nope").status_code == 404
+
+    def test_it_can_be_narrated_under_its_own_number(self, client, added, fake_tts):
+        self.put(client, added)
+        books.render_chapter(added, 1)
+        c = books.find_book(added)["chapters"][1]
+        assert c["state"] == "ready"
+        assert [s["file"] for s in c["segments"]] == [books.audio_name(3, 0)]
+        assert os.path.basename(fake_tts[0]["out"]) == "ch003-s00.opus"
+
+    def test_leaving_it_out_again_costs_nothing(self, client, added):
+        """It's a chapter like any other once it's in, ⊘ included — which is the way back if the
+        position turns out to be wrong."""
+        self.put(client, added)
+        assert client.post("/api/books/skip",
+                           json={"id": added, "chapter": 1}).get_json()["ok"]
+        assert books.chapters_in(books.find_book(added)) == [
+            c for c in books.find_book(added)["chapters"] if c["name"] != "Notice"]
+
+
+class TestRescanWithASectionPutBack:
+    """Re-reading the EPUB can't compare a section you put back with anything in the book, since
+    it isn't in the book. The spine is matched against the chapters that came from the spine."""
+
+    @pytest.fixture
+    def added(self, client, tmp_path, isolated_books):
+        self.docs = [("c1.html", page("Chapter 1", 400)),
+                     ("note.html", page("Notice", 28)),
+                     ("c2.html", page("Chapter 2", 400))]
+        nav = [("Chapter 1", "c1.html", []), ("Notice", "note.html", []),
+               ("Chapter 2", "c2.html", [])]
+        self.tmp = tmp_path
+        path = build(tmp_path, self.docs, nav)
+        with open(path, "rb") as f:
+            r = client.post("/api/books", data={"file": (f, "t.epub")},
+                            content_type="multipart/form-data")
+        bid = r.get_json()["book"]["id"]
+        client.post("/api/books/insert", json={"id": bid, "section": 0})
+        return bid
+
+    def test_it_survives_where_it_was(self, client, added):
+        r = client.post("/api/books/rescan", json={"id": added})
+        d = r.get_json()
+        assert d["ok"] and d["kept_audio"] and d["put_back"] == 1
+        assert [c["name"] for c in books.find_book(added)["chapters"]] == [
+            "Chapter 1", "Notice", "Chapter 2"]
+        assert [c["i"] for c in books.find_book(added)["chapters"]] == [0, 1, 2]
+
+    def test_and_every_chapter_keeps_the_number_its_files_are_under(self, client, added):
+        """The text is rewritten by the rescan, so writing it by position would put chapter 2's
+        prose into the notice's file."""
+        client.post("/api/books/rescan", json={"id": added})
+        chapters = books.find_book(added)["chapters"]
+        assert [books.chapter_key(c) for c in chapters] == [0, 2, 1]
+        with open(books.text_file(added, books.chapter_key(chapters[1]))) as f:
+            assert f.read().split() == [f"word{i}" for i in range(28)]
+        with open(books.text_file(added, books.chapter_key(chapters[2]))) as f:
+            assert len(f.read().split()) == 400
+
+    def test_a_book_that_has_changed_says_the_section_goes_with_it(self, client, added):
+        """Then there's nothing to splice it into: the confirmation says so rather than dropping
+        it quietly. It's one tap to put back."""
+        other = build(self.tmp, [("c1.html", page("Chapter 1", 500)),
+                                 ("c2.html", page("Chapter 2", 500))],
+                      [("Chapter 1", "c1.html", []), ("Chapter 2", "c2.html", [])], "other.epub")
+        shutil.copy(other, books.book_dir(added, "book.epub"))
+        r = client.post("/api/books/rescan", json={"id": added})
+        assert r.status_code == 409
+        assert "put back" in r.get_json()["msg"]
+        r = client.post("/api/books/rescan", json={"id": added, "confirm": True})
+        assert r.get_json()["put_back"] == 0
+        assert [c["name"] for c in books.find_book(added)["chapters"]] == ["Chapter 1",
+                                                                          "Chapter 2"]
+
+
+class TestPuttingASectionBackAtTheTop:
+    @pytest.fixture
+    def added(self, client, tmp_path, isolated_books):
+        docs = [("ded.html", page("Dedication", 7)),
+                ("c1.html", page("Chapter 1", 400)),
+                ("c2.html", page("Chapter 2", 400))]
+        nav = [("Dedication", "ded.html", []), ("Chapter 1", "c1.html", []),
+               ("Chapter 2", "c2.html", [])]
+        path = build(tmp_path, docs, nav)
+        with open(path, "rb") as f:
+            r = client.post("/api/books", data={"file": (f, "t.epub")},
+                            content_type="multipart/form-data")
+        return r.get_json()["book"]["id"]
+
+    def test_it_takes_over_the_books_opening(self, client, added, monkeypatch):
+        """The title and author are spoken at the top of the first chapter narrated, so a section
+        put in above everything takes them — and whatever used to open the book has to lose them.
+        Only that chapter's first part is re-made; the rest stays on disk."""
+        started = []
+        monkeypatch.setattr(books, "render_chapter", lambda b, i: started.append((b, i)))
+        books.update_book(added, lambda b: b["chapters"][0].update(
+            state="ready", segments=[{"file": books.audio_name(0, 0), "seconds": 5.0}]))
+        r = client.post("/api/books/insert", json={"id": added, "section": 0})
+        d = r.get_json()
+        assert d["at"] == 0 and d["reopened"] == [1]
+        chapters = books.find_book(added)["chapters"]
+        assert [c["name"] for c in chapters][:2] == ["Dedication", "Chapter 1"]
+        # pending, with its parts kept: render_chapter deletes only the one that went stale
+        assert chapters[1]["state"] == "pending" and chapters[1]["segments"]
+        assert started == [(added, 1)]
+
+    def test_an_unnarrated_book_has_no_opening_to_move(self, client, added, monkeypatch):
+        started = []
+        monkeypatch.setattr(books, "render_chapter", lambda b, i: started.append((b, i)))
+        assert client.post("/api/books/insert",
+                           json={"id": added, "section": 0}).get_json()["reopened"] == []
+        assert started == []
+
+
+class TestASectionBackInsideAPart:
+    @pytest.fixture
+    def added(self, client, tmp_path, isolated_books):
+        docs = [("c1.html", page("Chapter 1", 400)),
+                ("note.html", page("Notice", 28)),
+                ("c2.html", page("Chapter 2", 400))]
+        nav = [("Part One", "c1.html", [("Chapter 1", "c1.html", [])]),
+               ("Notice", "note.html", []),
+               ("Part Two", "c2.html", [("Chapter 1", "c2.html", [])])]
+        path = build(tmp_path, docs, nav)
+        with open(path, "rb") as f:
+            r = client.post("/api/books", data={"file": (f, "t.epub")},
+                            content_type="multipart/form-data")
+        return r.get_json()["book"]["id"]
+
+    def test_it_joins_the_part_it_lands_in_front_of(self, client, added):
+        """Or it would split that part in two in the folded list, and be announced as a part of
+        its own — a section between two parts belongs to the one it introduces."""
+        assert client.post("/api/books/insert",
+                           json={"id": added, "section": 0}).get_json()["ok"]
+        chapters = books.find_book(added)["chapters"]
+        assert [c["name"] for c in chapters] == ["Part One · Chapter 1", "Part Two · Notice",
+                                                 "Part Two · Chapter 1"]
+        assert [p["part"] for p in books.book_parts(books.find_book(added))] == ["Part One",
+                                                                                "Part Two"]

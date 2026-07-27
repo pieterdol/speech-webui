@@ -191,6 +191,35 @@ it — a full book is hours of work.
   **⤒ on a row** puts those words into *Read this at the start* in ⚙, where you can trim them
   before saving — 28 words of front matter often carry a line you'd rather not hear. Nothing is
   narrated until you save.
+
+  **＋ puts the section back as a chapter of its own instead**, where the book has it. The opening
+  note reads one at the top, which is what a dedication wants and no use for an afterword, a
+  notice that belongs mid-book, or anything that should have its own marker in the `.m4b`. Once
+  in, it's a chapter like any other: narrated, exported, playable, and ⊘ takes it out again if the
+  position turns out to be wrong. It lands after the same number of the book's own chapters it
+  followed in the spine, and joins the part it lands in front of — a section between two parts
+  belongs to the one it introduces rather than splitting the one before it in two. A section
+  already back in says so instead of offering ＋ twice.
+
+  Inserting renumbers every chapter after it, and a chapter's number is what the page, the counts
+  and your saved position all mean by "chapter", so:
+
+  - **no file is renamed.** Each chapter keeps the number its files are under, so putting a
+    section in at position 1 of a 192-chapter book rewrites 192 numbers in `books.json` and moves
+    none of the ~400 opus files. Nothing to roll back, and a narrated book stays narrated.
+  - **it refuses while that book has anything in the engine or queued**, and says so. A render
+    reads which chapter it's about after it takes the lock — which it may have waited an hour for
+    — so it would come through the renumbering intact and narrate whatever had moved into the
+    position it was handed.
+  - **your position moves with the chapters**, and the player on the device doing it is remapped
+    rather than stopped. A player on *another* device keeps going and its bookmark is one chapter
+    out until that device opens the book again.
+  - putting one in **at the top** hands it the title and author, so whatever used to open the book
+    has its opening re-recorded — the same move as leaving the front matter out.
+
+  A re-read of the EPUB keeps sections you put back, splicing them in where they were, as long as
+  the book's own chapters still line up. When they don't, the confirmation says the sections go
+  with everything else — they're one tap each to put back.
 - **⊘ leaves a chapter out** of the narration, and **↩** puts it back. For apparatus the rules
   above can't tell from prose: a publisher's list of their own titles is named in the table of
   contents and runs to a few hundred words, which is a chapter as far as any pattern can see.
@@ -459,6 +488,13 @@ switch takes effect within one segment and what that render made is thrown away.
 by a restart instead keeps its finished parts: they're real audio, they play, they can be
 exported, and re-rendering the chapter reuses them.
 
+**A chapter's number and its filename are two different things.** `i` is the position in
+`book["chapters"]` — what everything means by a chapter, including the saved position — and files
+are named after the number the chapter was *created* with, kept in `key` when the two differ. They
+only differ in a book that has had a section put back into it; anywhere else `key` is absent and
+the two are the same number, which is why nothing else in the app had to change. Every path goes
+through `text_file`, `audio_file` and `audio_name` so there's one place to check that.
+
 Storage is `books.json` for the index and `books/<id>/` for the EPUB, extracted text and audio.
 At 32 kbps opus a 20-hour book is ~290 MB of parts, plus the export if you make one. All
 gitignored, as is `*.epub`.
@@ -579,10 +615,12 @@ uv pip install --python .venv/bin/python pytest    # once
 
 Also on every push and pull request, via `.github/workflows/tests.yml`.
 
-**What's covered.** Every module, ~500 tests. The books state machine, which is where the bugs
+**What's covered.** Every module, ~630 tests. The books state machine, which is where the bugs
 actually live: a render cancelled under itself, what survives a restart, which chapters an export
 takes, how a part run scopes its progress, the queue, what leaving a chapter out takes it out of,
-and which audio a changed pronunciation invalidates — including a save landing mid-render.
+and which audio a changed pronunciation invalidates — including a save landing mid-render. What a
+section put back as a chapter renumbers and what it deliberately doesn't move, since a position and
+a filename mean different things only there.
 The pure functions — reading a chapter number out of a heading, cutting text into segments,
 chunks, sentences and phoneme batches, what gets announced before the prose. The stores behind
 clips, presets and chats. And the HTTP contracts, including the cache headers on narration audio.

@@ -2937,20 +2937,74 @@ function renderLeftOut(){
   btn.classList.toggle("open", leftOutOpen);
   list.hidden = !leftOutOpen;
   if(!gone.length) return;
+  // Which of these are already back in the book, so it doesn't offer to put one in twice. Derived
+  // from the chapters rather than remembered on the section: the skipped list is positional, so it
+  // can't carry a mark through a re-read of the EPUB, and the chapter keeps the section's own name.
+  const back = new Set((BOOK.chapters || []).filter(c => c.inserted)
+                                            .map(c => chapterLabel(c, true)));
   list.innerHTML = gone.map((s, n) =>
     `<div class="say"><div class="w">${esc(s.name)}</div>
-       <div class="hint" style="margin:0;flex:none">${s.words}w · ${esc(s.why || "")}</div>
-       <button class="iconbtn readStart" data-n="${n}" title="Read this at the start"
-               aria-label="Read this at the start">⤒</button></div>`).join("")
+       <div class="hint" style="margin:0;flex:none">${s.words}w · ${esc(s.why || "")}${
+         back.has(s.name) ? " · in the book" : ""}</div>
+       ${back.has(s.name) ? "" :
+         `<button class="iconbtn readStart" data-n="${n}" title="Read this at the start"
+                  aria-label="Read this at the start">⤒</button>
+          <button class="iconbtn putBack" data-n="${n}" title="Put this back as a chapter"
+                  aria-label="Put this back as a chapter">＋</button>`}</div>`).join("")
     + `<div class="hint">⤒ puts a section's words into <em>Read this at the start</em> in ⚙, where
-        you can trim it before saving. Nothing is narrated until you do.</div>`;
+        you can trim it before saving. Nothing is narrated until you do.</div>`
+    + `<div class="hint">＋ puts it back as a chapter of its own instead, where the book has it —
+        for an afterword, or a notice that belongs in the middle rather than at the top. It gets
+        its own marker in the .m4b, and ⊘ takes it out again.</div>`;
 }
 $("#leftOutToggle").addEventListener("click", ()=>{
   leftOutOpen = !leftOutOpen;
   renderLeftOut();
 });
+// A section extraction dropped, back in as a chapter of its own, where the book has it. The
+// opening note reads one at the top and is no use for an afterword or a notice that belongs
+// mid-book — this is the other half of that.
+//
+// It asks first because every chapter after it moves up one, which is a real change to a book you
+// may be half way through: the server moves the saved position with them, and the player here is
+// remapped below rather than stopped.
+async function putSectionBack(btn){
+  const n = Number(btn.dataset.n);
+  const s = (BOOK.skipped || [])[n] || {};
+  if(!confirm(`Put “${s.name}” back as a chapter? It goes where the book has it, everything after`
+              + ` it moves up one, and nothing is narrated until you ask for it.`)) return;
+  btn.textContent = "…";
+  try{
+    const r = await fetch("/api/books/insert", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({id: BOOK.id, section: n})});
+    const d = await r.json();
+    if(!d.ok) return toast("❌ " + (d.msg || "couldn't put it back"));
+    BOOK = d.book;
+    // The player holds which chapter it is on as a position in this same list, and the list has
+    // just grown above it. Remapping is exact, and stopping the audio over an insert would be
+    // rude; a player on another device can't be reached and will be one chapter out until the
+    // book is opened there again.
+    if(NP && NP.id === BOOK.id){
+      NP.chapters = BOOK.chapters;
+      if(PLAY.chapter >= d.at) PLAY.chapter++;
+    }
+    renderChapterList();
+    renderLeftOut();
+    if((d.reopened || []).length){
+      toast('<span class="spin"></span>Put it back at the top of the book — re-recording the'
+            + ' opening, since the title and author belong to it now.', 7000);
+      watchRenders();
+    } else toast(`＋ “${esc(d.name)}” is chapter ${d.at + 1} now. 📖 narrates it.`);
+  }finally{
+    btn.textContent = "＋";
+  }
+}
+
 // Delegated: the rows are rebuilt whenever the panel opens or the book changes.
 $("#leftOutList").addEventListener("click", async e => {
+  const add = e.target.closest(".putBack");
+  if(add && BOOK) return putSectionBack(add);
   const take = e.target.closest(".readStart");
   if(!take || !BOOK) return;
   take.textContent = "…";

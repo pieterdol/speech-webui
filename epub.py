@@ -92,9 +92,10 @@ def extract(path):
     """-> (meta, chapters, skipped).
 
     chapters: [{name, words, text}] in reading order.
-    skipped:  [{name, words, why, text}] so the UI can show what was left out — and so a piece of
-              it can be read back, which is why it keeps its text. The index only stores the first
-              three: prose belongs in text/, not in books.json.
+    skipped:  [{name, words, why, at, text}] so the UI can show what was left out — and so a piece
+              of it can be read back or put in as a chapter, which is why it keeps its text and
+              the position it would have had. The index stores all but the text: prose belongs in
+              text/, not in books.json.
     """
     z = zipfile.ZipFile(path)
     opf = _opf_path(z)
@@ -162,7 +163,12 @@ def extract(path):
                    else f"only {words} words" if words < MIN_WORDS and not titled
                    else "no text in it" if not words else None)
             if why:
-                skipped.append({"name": name, "words": words, "why": why, "text": body})
+                # Where it would have gone: the number of chapters kept so far is exactly the
+                # position it would hold. That's what lets a section be put back where the book
+                # has it rather than only at the top or the end — and it's free here, where the
+                # spine is being walked in order anyway.
+                skipped.append({"name": name, "words": words, "why": why, "text": body,
+                                "at": len(chapters)})
                 continue
             chapters.append({"name": name, "words": words, "text": body})
     return meta, chapters, skipped
