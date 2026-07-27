@@ -185,6 +185,11 @@
   .pickrow { display:flex; gap:8px; align-items:center; }
   .pickrow select { flex:1; min-width:0; }
   .pickrow input[type=text] { flex:1; min-width:0; margin:0; }
+  /* The ▶ sits beside a note of a few lines, so it lines up with the top of it rather than
+     stretching down the side. */
+  .pickrow textarea { flex:1; min-width:0; margin:0; min-height:64px; }
+  .pickrow { align-items:flex-start; }
+  .pickrow select, .pickrow input[type=text] { align-self:center; }
   /* What the book calls a word, offered to be tapped into the field above. */
   .found { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
   .found button { padding:7px 10px; font-size:13.5px; border-radius:8px; border:1px solid var(--line);
@@ -491,6 +496,16 @@
       <div class="hint">For a title written to be read rather than heard. “11/22/63: A Novel”
         wants “eleven, twenty-two, sixty-three”. Only the announcement changes — the written
         title, the library and the .m4b keep the real one. Empty means say it as written.</div>
+      <label for="bookOpening">Read this at the start</label>
+      <div class="pickrow">
+        <textarea id="bookOpening" rows="3"></textarea>
+        <button id="bookOpeningPlay" class="iconbtn" title="Hear it in this book's voice"
+                aria-label="Hear it">▶</button>
+      </div>
+      <div class="hint">Spoken after the title and author, before the first chapter — for a
+        dedication or a notice that extraction dropped. Fill it from <em>Left out of the
+        narration</em> at the foot of the page, or write your own. It has no chapter of its own in
+        the .m4b, and changing it re-records only the book's opening.</div>
       <label>Say these words differently</label>
       <div id="respellList"></div>
       <div class="pickrow" style="margin-top:8px">
@@ -572,6 +587,14 @@
          to its chapters; a book without parts is the same list with the outer level missing. -->
     <h2>Chapters</h2>
     <div class="card" id="chapterList"></div>
+
+    <!-- What extraction threw away, at the foot of the page and shut: apparatus almost always,
+         and once in a while a dedication or a notice worth hearing. Hidden entirely for a book
+         that lost nothing. -->
+    <div id="leftOut" style="display:none;margin-top:18px">
+      <button id="leftOutToggle" class="segtoggle"></button>
+      <div class="card" id="leftOutList" hidden></div>
+    </div>
   </div>
   <div id="bookStatus"></div>
 </main>
@@ -1645,10 +1668,14 @@ async function openBook(id){
   RESPELL = {...(BOOK.respell || {})};
   renderRespellings();
   renderEpub();
+  $("#bookOpening").value = BOOK.opening || "";
   $("#respellFrom").value = $("#respellTo").value = $("#respellFind").value = "";
   $("#respellFound").innerHTML = "";
+  // The count says there is something to see; the panel at the foot of the page says what.
   $("#bookSkipped").textContent = (BOOK.skipped || []).length
-    ? `Left out ${BOOK.skipped.length} sections that look like front or back matter.` : "";
+    ? `Left out ${BOOK.skipped.length} sections that look like front or back matter —`
+      + ` listed at the foot of the page.` : "";
+  renderLeftOut();
   // Nothing folded open carries across books. What opens unasked: the part you're reading,
   // and any chapter in motion or left half-done — the rest stay shut.
   OPEN_PARTS.clear();
@@ -2600,6 +2627,11 @@ $("#bookVoice").addEventListener("change", ()=> changeBook({voice: $("#bookVoice
 $("#bookHeadings").addEventListener("change", ()=> changeBook({announce: $("#bookHeadings").checked}));
 // On change, not on every keystroke: each save can re-make the book's opening.
 $("#bookSayTitle").addEventListener("change", ()=> changeBook({spoken_title: $("#bookSayTitle").value}));
+// Same deal for the opening note: on change, since each save can re-record the book's opening.
+$("#bookOpening").addEventListener("change", ()=> changeBook({opening: $("#bookOpening").value}));
+$("#bookOpeningPlay").addEventListener("click", e =>
+  previewSaying($("#bookOpening").value.trim().slice(0, 200), $("#bookVoice").value,
+                e.currentTarget));
 // Changing narrator or heading handling makes the existing audio wrong, so the server asks
 // before throwing it away.
 async function changeBook(patch){
@@ -2619,6 +2651,9 @@ async function changeBook(patch){
   }
   if(!d.ok){ setStatus("❌ " + (d.msg || "couldn't change that"), true); return; }
   BOOK = d.book;
+  // Back from what was stored, not from what was typed: the note is capped, and a field showing
+  // more than the book kept would be lying about what gets read out.
+  $("#bookOpening").value = BOOK.opening || "";
   // A rename re-makes one file, the opening of chapter 1 — so only somebody listening to that
   // has the ground moved under them. Stopping the player halfway through chapter forty over a
   // spelling change would be gratuitous.
@@ -2669,6 +2704,53 @@ function renderRespellings(){
   btn.textContent = n ? `Save ${n} change${n === 1 ? "" : "s"} and re-narrate`
                       : "Saved";
 }
+
+// ---- what extraction left out ----
+// Apparatus almost always — covers, colophons, part-title pages — and once in a while something
+// worth hearing: The Institute drops 28 words about missing children for being 28 words. The list
+// is what the index kept; the words themselves are re-read from the EPUB only when asked for,
+// since books.json is rewritten after every chapter of every render.
+let leftOutOpen = false;
+function renderLeftOut(){
+  const gone = (BOOK && BOOK.skipped) || [];
+  $("#leftOut").style.display = gone.length ? "block" : "none";
+  const btn = $("#leftOutToggle"), list = $("#leftOutList");
+  btn.innerHTML = `<span class="caret">▸</span> Left out of the narration · ${gone.length}`;
+  btn.classList.toggle("open", leftOutOpen);
+  list.hidden = !leftOutOpen;
+  if(!gone.length) return;
+  list.innerHTML = gone.map((s, n) =>
+    `<div class="say"><div class="w">${esc(s.name)}</div>
+       <div class="hint" style="margin:0;flex:none">${s.words}w · ${esc(s.why || "")}</div>
+       <button class="iconbtn readStart" data-n="${n}" title="Read this at the start"
+               aria-label="Read this at the start">⤒</button></div>`).join("")
+    + `<div class="hint">⤒ puts a section's words into <em>Read this at the start</em> in ⚙, where
+        you can trim it before saving. Nothing is narrated until you do.</div>`;
+}
+$("#leftOutToggle").addEventListener("click", ()=>{
+  leftOutOpen = !leftOutOpen;
+  renderLeftOut();
+});
+// Delegated: the rows are rebuilt whenever the panel opens or the book changes.
+$("#leftOutList").addEventListener("click", async e => {
+  const take = e.target.closest(".readStart");
+  if(!take || !BOOK) return;
+  take.textContent = "…";
+  try{
+    const r = await fetch(`/api/books/${BOOK.id}/skipped/${take.dataset.n}`);
+    const d = await r.json();
+    if(!r.ok) return toast("❌ " + (d.error || "couldn't read that section"));
+    // Into the field, not into the book: 28 words of front matter often carry a line you'd
+    // rather not hear, so it's yours to trim and then save deliberately.
+    $("#bookOpening").value = d.text;
+    if($("#bookSettings").style.display === "none") $("#bookCog").click();
+    $("#bookOpening").scrollIntoView({behavior:"smooth", block:"center"});
+    $("#bookOpening").focus();
+    toast(`“${esc(d.name)}” is in the opening note — trim it, then save.`);
+  }finally{
+    take.textContent = "⤒";
+  }
+});
 
 // The book itself, to take away and read. It sits under the respellings because that's what it's
 // for: a name is easier to copy off the page it's printed on than off a narrator saying it wrong.
@@ -2805,6 +2887,7 @@ $("#bookRescan").addEventListener("click", async ()=>{
   if(!d.ok){ setStatus("❌ " + (d.msg || "couldn't re-read it"), true); return; }
   BOOK = d.book;
   renderChapterList();
+  renderLeftOut();          // a re-read can leave out a different set, or fewer
   setStatus(d.kept_audio ? "✅ Re-read, and the narration was kept."
                          : "✅ Re-read. The chapters changed, so the audio was cleared.");
 });

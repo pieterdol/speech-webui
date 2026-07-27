@@ -181,6 +181,16 @@ it — a full book is hours of work.
   addresses each from its table of contents by anchor — `Section0001.xhtml#heading_id_3` — is cut
   at those anchors, so twenty chapters stay twenty chapters. A chapter the TOC names is kept
   however short it is; the length rule that drops part-title pages applies to untitled sections.
+- **Left out of the narration**, at the foot of the reader and shut by default, lists what
+  extraction dropped and why — *Cover · 2w · looks like front or back matter*, *According to the
+  National Center for… · 28w · only 28 words*. The Institute loses 21 sections that way, and
+  almost all of them should be lost. The list is what the index keeps; a section's words are
+  re-read from the stored EPUB only when you ask for them, since `books.json` is rewritten after
+  every chapter of every render and twenty sections of prose would be paid for on each write.
+
+  **⤒ on a row** puts those words into *Read this at the start* in ⚙, where you can trim them
+  before saving — 28 words of front matter often carry a line you'd rather not hear. Nothing is
+  narrated until you save.
 - **⊘ leaves a chapter out** of the narration, and **↩** puts it back. For apparatus the rules
   above can't tell from prose: a publisher's list of their own titles is named in the table of
   contents and runs to a few hundred words, which is a chapter as far as any pattern can see.
@@ -265,12 +275,21 @@ it — a full book is hours of work.
   title rather than a number gets no number: an epigraph shouldn't be introduced as "chapter
   seven".
 
+  **Read this at the start** in ⚙ is spoken after the author and before the first chapter: a
+  dedication or a notice extraction dropped, filled from the *Left out* panel or typed. It's
+  chunked like any other text, so a few sentences are a few ordinary calls to the engine rather
+  than one long utterance, with a beat between them and a longer pause before the book begins.
+  Capped at 1000 characters — it rides the announcement rather than being a chapter, so it has no
+  marker of its own in the `.m4b`, and it's no use for something that belongs at the end.
+
   A title is written to be read, not heard — *11/22/63: A Novel* has a subtitle no narrator says
   out loud — so ⚙ has a **Say the title as** field that only the announcement uses; the library,
   the chapter marks and the `.m4b` keep the written one. The announcement lives in a chapter's
   first part, and what it says is recorded with the chapter as the engine hears it, so renaming
-  the book, changing the narrator or changing how a word is pronounced re-makes that one part
-  rather than leaving an opening that no longer matches.
+  the book, changing the narrator, adding an opening note or changing how a word is pronounced
+  re-makes that one part rather than leaving an opening that no longer matches. What counts as a
+  change is asked as *would the opening sound different?* — the same comparison the render makes
+  against that record, so the two can't drift, and a book with announcements off answers no.
 
   The book's own opening belongs to the first chapter it *narrates*, not to chapter 1 — leaving
   the front matter out moves the title and author onto whatever comes first now, and the chapter

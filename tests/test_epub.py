@@ -4,6 +4,7 @@ Real books are gitignored — they're copyrighted and large — so the fixtures 
 files that still exercise what matters: the TOC nesting that turns into "Part · Chapter", the
 front matter that gets dropped, and a flat TOC that legitimately has no parts to find.
 """
+import os
 import zipfile
 
 import pytest
@@ -177,6 +178,16 @@ class TestSkipping:
         assert [c["name"] for c in chapters] == ["Chapter 1"]
         assert "words" in next(s["why"] for s in skipped if s["name"] == "Tiny")
 
+    def test_a_dropped_section_keeps_its_text(self, tmp_path):
+        """Dropped from the narration, not thrown away: a dedication or a notice can be read
+        back at the top of the book, and its words are the only place to get it from."""
+        docs = [("ded.html", page("Dedication", 7)), ("b.html", page("Chapter 1", 400))]
+        nav = [("Dedication", "ded.html", []), ("Chapter 1", "b.html", [])]
+        _meta, _chapters, skipped = epub.extract(build(tmp_path, docs, nav))
+        got = next(s for s in skipped if s["name"] == "Dedication")
+        assert got["text"].split() == [f"word{i}" for i in range(7)]
+        assert got["words"] == 7
+
 
 class TestChapterBodies:
     def test_each_chapter_carries_its_name_words_and_text(self, tmp_path):
@@ -209,3 +220,54 @@ class TestStripHeading:
     def test_leaves_prose_alone(self):
         text = "It was a bright cold day in April."
         assert epub.strip_heading(text, "Chapter 1") == text
+
+
+class TestReadingBackASkippedSection:
+    """A section extraction dropped can be read at the top of the book, which means fetching its
+    words from the stored EPUB — the index keeps only its name, length and reason."""
+
+    @pytest.fixture
+    def added(self, client, tmp_path, isolated_books):
+        """A book added the way an upload adds one, so its EPUB is on disk to re-read."""
+        docs = [("ded.html", page("Dedication", 7)),
+                ("note.html", page("Notice", 28)),
+                ("c1.html", page("Chapter 1", 400))]
+        nav = [("Dedication", "ded.html", []), ("Notice", "note.html", []),
+               ("Chapter 1", "c1.html", [])]
+        path = build(tmp_path, docs, nav)
+        with open(path, "rb") as f:
+            r = client.post("/api/books", data={"file": (f, "t.epub")},
+                            content_type="multipart/form-data")
+        return r.get_json()["book"]["id"]
+
+    def test_the_index_lists_what_was_left_out_without_the_words(self, client, added):
+        listed = books.find_book(added)["skipped"]
+        assert [s["name"] for s in listed] == ["Dedication", "Notice"]
+        assert all("text" not in s for s in listed)
+
+    def test_the_words_are_fetched_from_the_epub(self, client, added):
+        got = client.get(f"/api/books/{added}/skipped/1").get_json()
+        assert got["name"] == "Notice" and got["words"] == 28
+        assert got["text"].split() == [f"word{i}" for i in range(28)]
+
+    def test_no_such_section(self, client, added):
+        assert client.get(f"/api/books/{added}/skipped/9").status_code == 404
+        assert client.get(f"/api/books/{added}/skipped/0").status_code == 200
+
+    def test_unknown_book(self, client):
+        assert client.get("/api/books/nope/skipped/0").status_code == 404
+
+    def test_without_the_stored_epub(self, client, added):
+        os.remove(books.book_dir(added, "book.epub"))
+        r = client.get(f"/api/books/{added}/skipped/0")
+        assert r.status_code == 400
+        assert "EPUB" in r.get_json()["error"]
+
+    def test_a_list_that_has_moved_on_is_refused(self, client, added):
+        """Positional, so it's only the same list if the same extraction produced it. Reading out
+        the wrong section would be a strange way to find out the heuristics had changed."""
+        books.update_book(added, lambda b: b.update(
+            skipped=[{"name": "Something else", "words": 3, "why": "x"}] + b["skipped"]))
+        r = client.get(f"/api/books/{added}/skipped/0")
+        assert r.status_code == 409
+        assert "changed" in r.get_json()["error"]

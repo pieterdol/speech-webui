@@ -198,3 +198,56 @@ class TestScoping:
         assert parts["A"]["chapters"] == 2 and parts["A"]["ready"] == 1
         assert parts["B"]["chapters"] == 1 and parts["B"]["ready"] == 0
         assert parts[""]["chapters"] == 1        # the standalone section
+
+
+class TestOpeningNote:
+    """Extraction drops apparatus, and now and then one of those sections is worth hearing — The
+    Institute opens with 28 words about missing children that no length rule was going to keep.
+    The note is read at the top of the book, after the title and author."""
+
+    def book(self, **extra):
+        b = {"id": "b1", "title": "A Book", "author": "An Author", "language": "en",
+             "announce": True,
+             "chapters": [{"i": 0, "name": "Chapter One"}, {"i": 1, "name": "Chapter Two"}]}
+        b.update(extra)
+        return b
+
+    def said(self, book, index=0):
+        return [p for p, _pause in books.chapter_intro(book, index)]
+
+    def test_it_comes_after_the_author_and_before_the_number(self):
+        got = self.said(self.book(opening="A note about something."))
+        assert got == ["A Book", "by An Author", "A note about something.", "1"]
+
+    def test_only_at_the_top_of_the_book(self):
+        """It's the book's opening, not every chapter's."""
+        assert self.said(self.book(opening="A note."), index=1) == ["2"]
+
+    def test_nothing_when_announcements_are_off(self):
+        assert self.said(self.book(opening="A note.", announce=False)) == []
+
+    def test_a_book_without_one_is_unchanged(self):
+        assert self.said(self.book()) == ["A Book", "by An Author", "1"]
+        assert self.said(self.book(opening="   ")) == ["A Book", "by An Author", "1"]
+
+    def test_several_sentences_become_several_pieces(self):
+        """One piece per chunk, so a note of a few sentences is a few ordinary calls to the
+        engine rather than one long utterance."""
+        # Comfortably inside OPENING_CHARS, which has its own test — a note over the cap is
+        # trimmed, and the point here is that nothing is dropped by the chunking.
+        note = " ".join(f"This is sentence number {i}, which runs on a while." for i in range(15))
+        assert len(note) < books.OPENING_CHARS
+        got = self.said(self.book(opening=note))
+        pieces = got[2:-1]
+        assert len(pieces) > 1
+        assert " ".join(pieces).split() == note.split()
+
+    def test_the_last_piece_gets_the_longer_pause(self):
+        """So the note doesn't run straight into chapter one."""
+        pauses = [pause for _p, pause in books.chapter_intro(
+            self.book(opening="One sentence here. And a second one here."), 0)]
+        assert pauses[-2] == books.OPENING_PAUSE       # the note's last piece
+        assert pauses[-1] == books.CHAPTER_PAUSE      # then the chapter number
+
+    def test_it_is_capped(self):
+        assert len(books.opening_note({"opening": "x " * 2000})) == books.OPENING_CHARS

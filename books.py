@@ -68,6 +68,14 @@ def book_summary(b):
             "cover_v": cover_version(b.get("id")),
             "words": sum(c.get("words", 0) for c in chapters)}
 
+def skipped_index(skipped):
+    """What the index keeps about a left-out section: what it was, how long, and why it went.
+
+    Not its text. epub.extract hands the prose over so a section can be read back — see
+    api_book_skipped — but books.json is an index, rewritten after every chapter of every render,
+    and twenty sections of prose in it would be paid for on every write."""
+    return [{k: s[k] for k in ("name", "words", "why")} for s in skipped[:40]]
+
 def safe_name(text, fallback):
     """A title as a filename: no separators, no punctuation a player would choke on."""
     return re.sub(r"[^\w\- ]+", "", text or "").strip()[:80] or fallback
@@ -599,6 +607,11 @@ CHAPTER_PAUSE = 0.9
 # And the very top of the book gets its title and author, the way a published audiobook opens.
 TITLE_PAUSE   = 0.7
 AUTHOR_PAUSE  = 1.6
+# An opening note — a dedication, a notice — read after the author. A beat between its sentences
+# and a longer one before the book itself starts, so it doesn't run into chapter one.
+CHUNK_PAUSE   = 0.5
+OPENING_PAUSE = 1.8
+OPENING_CHARS = 1000
 # "by" in the book's own language. Everything else in the announcement is the book's own words;
 # this one is ours, and read out by a Dutch voice the English word comes out as "bie".
 BY = {"nl": "van"}
@@ -652,11 +665,21 @@ def spoken_title(book):
     empty the written title is already what you'd say."""
     return (book.get("spoken_title") or "").strip() or (book.get("title") or "")
 
+def opening_note(book):
+    """Something to read at the top of the book, after the title and author.
+
+    Extraction drops apparatus — a dedication, a notice, a page of praise — and now and then one
+    of those is worth hearing: The Institute opens with 28 words about missing children that no
+    length rule was ever going to keep. This is where such a section goes. Capped, because it
+    rides the announcement rather than being a chapter of its own: a dedication or a notice, not
+    a chapter's worth of prose."""
+    return (book.get("opening") or "").strip()[:OPENING_CHARS]
+
 def chapter_intro(book, index):
     """[(phrase, pause_after)] to speak before the chapter — the book's title and author at
-    the very top, the part's name when this chapter opens a new part, then the chapter
-    number. Empty when announcements are off, and for a section that is neither numbered nor
-    inside a part (an epigraph, say)."""
+    the very top, then the opening note if it has one, the part's name when this chapter opens a
+    new part, then the chapter number. Empty when announcements are off, and for a section that
+    is neither numbered nor inside a part (an epigraph, say)."""
     if not book.get("announce", True):
         return []
     chapters = book.get("chapters") or []
@@ -674,6 +697,12 @@ def chapter_intro(book, index):
         if book.get("author"):
             by = BY.get((book.get("language") or "")[:2], "by")
             pieces.append((f"{by} {book['author']}", AUTHOR_PAUSE))
+        # A chunk at a time, so a note of a few sentences is a few ordinary TTS calls rather than
+        # one long utterance — the same reason a chapter's segments are chunked. A short beat
+        # between them and a proper pause before the book starts.
+        note = split_chunks(opening_note(book))
+        for ni, chunk in enumerate(note):
+            pieces.append((chunk, OPENING_PAUSE if ni == len(note) - 1 else CHUNK_PAUSE))
     # Only when the part actually starts — and a chapter left out doesn't start it, or leaving
     # out the first chapter of a part would take the part's name out of the book with it.
     earlier = [c for c in chapters[:index] if not c.get("skip")]
@@ -958,7 +987,7 @@ def api_book_add():
              "language": meta["language"], "voice": voice, "announce": True,
              "added": int(time.time()), "updated": int(time.time()),
              "position": {"chapter": 0, "segment": 0, "offset": 0},
-             "skipped": skipped[:40],
+             "skipped": skipped_index(skipped),
              "chapters": [{"i": i, "name": c["name"], "words": c["words"],
                            "state": "pending", "segments": [], "error": None}
                           for i, c in enumerate(chapters)]}
@@ -983,6 +1012,36 @@ def api_book(book_id):
     return jsonify(book=b | {"cover_v": cover_version(book_id), "epub": book_epub(b)},
                    parts=book_parts(b), narrating=render_status(),
                    exports=book_exports(book_id))
+
+@app.get("/api/books/<book_id>/skipped/<int:n>")
+def api_book_skipped(book_id, n):
+    """The words of a section extraction left out, so one can be read at the top of the book.
+
+    Re-read from the stored EPUB rather than kept in the index: books.json is rewritten after
+    every chapter of every render, and twenty sections of prose would be paid for on each. About
+    a second for a long book, which is why the page shows a spinner.
+    """
+    book = find_book(book_id)
+    if not book:
+        return jsonify(error="unknown book"), 404
+    listed = (book.get("skipped") or [])
+    if not 0 <= n < len(listed):
+        return jsonify(error="no such section"), 404
+    src = book_dir(book_id, "book.epub")
+    if not os.path.exists(src):
+        return jsonify(error="the original EPUB isn't stored for this book"), 400
+    try:
+        _meta, _chapters, skipped = epub.extract(src)
+    except Exception as e:
+        return jsonify(error=f"couldn't re-read it: {e}"[:200]), 400
+    # The list is positional, so it's only the same list if the same extraction produced it. A
+    # rescan since — or an improved heuristic — could have moved everything along by one, and
+    # reading out the wrong section would be a strange way to find out.
+    if n >= len(skipped) or skipped[n]["name"] != listed[n].get("name") \
+            or skipped[n]["words"] != listed[n].get("words"):
+        return jsonify(error="the book's sections have changed — re-read the EPUB first"), 409
+    return jsonify(name=skipped[n]["name"], words=skipped[n]["words"],
+                   why=skipped[n]["why"], text=skipped[n]["text"])
 
 @app.get("/api/books/<book_id>/find")
 def api_book_find(book_id):
@@ -1026,19 +1085,25 @@ def api_book_update():
                        msg=(f"the audio for {rendered} chapter(s) was made with the old voice "
                             f"and gets discarded — only “{name}” is re-made now"), ), 409
     def rename(b):
-        """The two fields the opening announcement is made of, applied to whichever copy of the
-        book asks — the real one, or a throwaway to see what the announcement would become."""
+        """The fields the opening announcement is made of, applied to whichever copy of the book
+        asks — the real one, or a throwaway to see what the announcement would become."""
         if d.get("title"): b["title"] = d["title"][:200]
         if "spoken_title" in d: b["spoken_title"] = (d["spoken_title"] or "").strip()[:200]
+        if "opening" in d: b["opening"] = (d["opening"] or "").strip()[:OPENING_CHARS]
         return b
     # The opening announcement lives inside the first segment of whichever chapter opens the
     # book, so renaming it leaves that one file saying the old name. Re-making it costs a few
     # seconds and throws nothing away — the chapter's other segments stay on disk and the
     # render skips them — so unlike a voice change this doesn't need confirming, it happens.
+    #
+    # Asked as "would the opening sound different?" rather than field by field: that's the
+    # comparison render_chapter itself makes against the record on the chapter, so it can't drift
+    # from it, and one expression covers the title, the spoken title and the opening note.
     opens = first_chapter(book)
-    renamed = bool(spoken_title(rename(dict(book))) != spoken_title(book)
-                   and not resets and opens is not None
-                   and chapters[opens].get("state") == "ready")
+    said = lambda b: [respell(p, b.get("respell") or {}) for p, _ in chapter_intro(b, opens)]
+    renamed = bool(opens is not None and not resets
+                   and chapters[opens].get("state") == "ready"
+                   and said(rename(dict(book))) != said(book))
 
     def apply(b):
         rename(b)
@@ -1268,7 +1333,7 @@ def api_book_rescan():
             fh.write(c["text"])
     def apply(b):
         b["title"], b["author"] = meta["title"], meta["author"]
-        b["skipped"] = skipped[:40]
+        b["skipped"] = skipped_index(skipped)
         keep = {o["i"]: o for o in (b.get("chapters") or [])} if same else {}
         b["chapters"] = [{"i": i, "name": c["name"], "words": c["words"],
                           "state": keep.get(i, {}).get("state", "pending"),

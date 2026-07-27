@@ -92,7 +92,9 @@ def extract(path):
     """-> (meta, chapters, skipped).
 
     chapters: [{name, words, text}] in reading order.
-    skipped:  [{name, words, why}] so the UI can show what was left out and let it back in.
+    skipped:  [{name, words, why, text}] so the UI can show what was left out — and so a piece of
+              it can be read back, which is why it keeps its text. The index only stores the first
+              three: prose belongs in text/, not in books.json.
     """
     z = zipfile.ZipFile(path)
     opf = _opf_path(z)
@@ -160,7 +162,7 @@ def extract(path):
                    else f"only {words} words" if words < MIN_WORDS and not titled
                    else "no text in it" if not words else None)
             if why:
-                skipped.append({"name": name, "words": words, "why": why})
+                skipped.append({"name": name, "words": words, "why": why, "text": body})
                 continue
             chapters.append({"name": name, "words": words, "text": body})
     return meta, chapters, skipped

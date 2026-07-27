@@ -111,7 +111,7 @@ class TestSpokenTitle:
         assert books.spoken_title(books.find_book("b1")) == "A Book"
 
     def test_a_narrated_opening_is_remade(self, client, make_book, no_background_work):
-        make_book()
+        make_book(announce=True)                     # or there's no announcement to re-make
         books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
         r = client.post("/api/books/update", json={"id": "b1", "spoken_title": "Said aloud"})
         assert r.get_json()["renamed"] is True
@@ -121,14 +121,24 @@ class TestSpokenTitle:
 
     def test_renaming_the_written_title_counts_too(self, client, make_book, no_background_work):
         """With no spoken form set, the written title is what gets said."""
-        make_book()
+        make_book(announce=True)
         books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
         r = client.post("/api/books/update", json={"id": "b1", "title": "Another Book"})
         assert r.get_json()["renamed"] is True
         assert no_background_work["chapters"] == [("b1", 0)]
 
+    def test_nothing_is_remade_when_nothing_is_announced(self, client, make_book,
+                                                        no_background_work):
+        """A book with announcements off speaks no title, so renaming it changes no audio. The
+        old check compared the title's text and re-recorded the opening regardless."""
+        make_book(announce=False)
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        r = client.post("/api/books/update", json={"id": "b1", "title": "Another Book"})
+        assert r.get_json()["renamed"] is False
+        assert no_background_work["chapters"] == []
+
     def test_but_not_when_the_wording_is_unchanged(self, client, make_book, no_background_work):
-        make_book(spoken_title="Said aloud")
+        make_book(announce=True, spoken_title="Said aloud")
         books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
         r = client.post("/api/books/update", json={"id": "b1", "spoken_title": "Said aloud"})
         assert r.get_json()["renamed"] is False
@@ -1105,3 +1115,72 @@ class TestFindingAPhrase:
         make_book(names=["One"], texts=[self.TEXT])
         word = self.find(client, "Judges,%20Chapter%2016")[0]["word"]
         assert textprep.respell(self.TEXT, {word: "SAID"}).count("SAID") == 2
+
+
+class TestWhatTheIndexKeepsAboutSkippedSections:
+    """extract hands over a dropped section's prose so it can be read back, but books.json is an
+    index — rewritten after every chapter of every render — and twenty sections of prose in it
+    would be paid for on every one of those writes."""
+
+    def test_the_index_keeps_what_it_was_and_why_but_not_the_words(self):
+        got = books.skipped_index([{"name": "Dedication", "words": 7, "why": "front matter",
+                                    "text": "for someone in particular"}])
+        assert got == [{"name": "Dedication", "words": 7, "why": "front matter"}]
+
+    def test_it_is_capped(self):
+        many = [{"name": f"s{i}", "words": 1, "why": "x", "text": "y"} for i in range(60)]
+        assert len(books.skipped_index(many)) == 40
+
+
+class TestSettingTheOpeningNote:
+    """It lives in the opening announcement, so setting one re-makes exactly the file that
+    carries the announcement — the same path a rename takes."""
+
+    def test_a_narrated_opening_is_remade(self, client, make_book, no_background_work):
+        make_book(announce=True)
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        r = client.post("/api/books/update",
+                        json={"id": "b1", "opening": "According to a notice at the front."})
+        assert r.get_json()["renamed"] is True
+        c = books.find_book("b1")["chapters"][0]
+        assert c["state"] == "pending"
+        assert c["segments"] == []      # this fixture has none; the point is they're not cleared
+        assert no_background_work["chapters"] == [("b1", 0)]
+
+    def test_it_is_stored_on_the_book(self, client, make_book):
+        make_book()
+        client.post("/api/books/update", json={"id": "b1", "opening": "  A notice.  "})
+        assert books.find_book("b1")["opening"] == "A notice."
+
+    def test_clearing_it_also_remakes_the_opening(self, client, make_book, no_background_work):
+        make_book(announce=True, opening="A notice.")
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        r = client.post("/api/books/update", json={"id": "b1", "opening": ""})
+        assert r.get_json()["renamed"] is True
+        assert books.find_book("b1")["opening"] == ""
+
+    def test_setting_the_same_note_again_remakes_nothing(self, client, make_book,
+                                                        no_background_work):
+        make_book(announce=True, opening="A notice.")
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        r = client.post("/api/books/update", json={"id": "b1", "opening": "A notice."})
+        assert r.get_json()["renamed"] is False
+        assert no_background_work["chapters"] == []
+
+    def test_it_is_capped(self, client, make_book):
+        make_book()
+        client.post("/api/books/update", json={"id": "b1", "opening": "x " * 2000})
+        assert len(books.find_book("b1")["opening"]) == books.OPENING_CHARS
+
+    def test_a_respelling_of_it_counts_as_a_change(self, client, make_book, no_background_work):
+        """The record on the chapter is the spoken form, so how the note is pronounced is part
+        of whether the opening on disk is current."""
+        make_book(announce=True, opening="About Vermeer.")
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="ready"))
+        before = books.chapter_intro(books.find_book("b1"), 0)
+        books.update_book("b1", lambda b: b.update(respell={"Vermeer": "Vermayr"}))
+        after = books.chapter_intro(books.find_book("b1"), 0)
+        assert before == after                                  # the written form is the same…
+        b = books.find_book("b1")
+        assert [books.respell(p, b["respell"]) for p, _ in after] \
+            != [books.respell(p, {}) for p, _ in before]        # …and the spoken one isn't
