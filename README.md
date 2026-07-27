@@ -216,6 +216,13 @@ it — a full book is hours of work.
   and it's cached under what it actually says — a second tap is instant, and changing the voice,
   the title, the note or a pronunciation makes a new one rather than replaying the old. The
   button is on chapters with nothing to play yet; where there's audio, tapping the row plays it.
+
+  **Tapping it again stops it** — during the render, which abandons it, as well as during the
+  minute of audio. The button carries the state: a spinner while the engine is working, **⏹**
+  once there's sound. It survives the 4-second refresh, which rebuilds the row it lives on and
+  would otherwise strand the only control that could stop it, and it stops itself if the row goes
+  altogether — the chapter went into the engine, or you left the book. Starting a voice sample or
+  a respelling ▶ ends it too: there's one `<audio>` element behind all three.
 - **Rendering** is per chapter, in **~10-minute parts**, and each part appears as soon as it's
   finished — you can start on part 1 while part 2 is still being made. At the measured 2.4×
   realtime, a 5-minute chapter takes ~2 minutes.

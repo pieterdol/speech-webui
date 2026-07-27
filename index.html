@@ -1520,6 +1520,9 @@ function previewVoice(sel, btn){
   const voice = sel.value;
   if(!voice) return;
   if(!sampleAudio) sampleAudio = new Audio();
+  // One element, so taking it over ends whatever had it. A chapter preview left marked as
+  // playing would keep a ⏹ on its row over a sample of a voice.
+  stopPreview();
   sampleAudio.src = "/api/sample/" + encodeURIComponent(voice);
   const label = btn.textContent;
   btn.textContent = "…";
@@ -1537,6 +1540,7 @@ $("#chatVoicePlay").addEventListener("click", e => previewVoice($("#chatVoice"),
 function previewSaying(text, voice, btn){
   if(!text || !voice) return;
   if(!sampleAudio) sampleAudio = new Audio();
+  stopPreview();                       // same shared element — see previewVoice
   sampleAudio.src = "/api/say?voice=" + encodeURIComponent(voice)
                   + "&text=" + encodeURIComponent(text);
   const label = btn.textContent;
@@ -1555,21 +1559,75 @@ function previewSaying(text, voice, btn){
 // Same rule as the two above — src and play() inside the tap, since iOS won't play audio after an
 // await — so the wait happens with the audio element already pointed at it. The server caches
 // what it made, so tapping the same chapter again is instant.
+// Which chapter's preview the shared <audio> is on, so it can be stopped. Fifteen seconds of
+// rendering and forty-five of audio is long enough to change your mind twice, and the button was
+// already turning into a stop icon with nothing behind it.
+//
+// `playing` is what the button should show — the spinner while the server is still rendering,
+// ⏹ once there's sound — and it's kept here rather than read off the element because the 4-second
+// refresh replaces the button mid-preview and the new one has to be able to draw itself.
+let PREVIEW = null;              // {i, btn, label, title, playing}
+
+function stopPreview(){
+  const p = PREVIEW;
+  if(!p) return;
+  PREVIEW = null;
+  p.btn.innerHTML = p.label;
+  p.btn.title = p.title;
+  sampleAudio.pause();
+  // The src goes too, not just a pause: stopped during the ~15 s render there is nothing to
+  // pause yet, and dropping the source is what abandons the request. removeAttribute rather than
+  // src="" — an empty string resolves against the page and would fetch the page itself.
+  sampleAudio.removeAttribute("src");
+  sampleAudio.load();
+}
+
+// What the button of a preview in progress looks like. Called on a fresh element too — see
+// adoptPreview — so it never assumes the one it's drawing is the one that started.
+function markPreview(){
+  PREVIEW.btn.innerHTML = PREVIEW.playing ? "⏹" : '<span class="spin"></span>';
+  PREVIEW.btn.title = "Stop the preview";
+}
+
+// The chapter list is rebuilt every 4 seconds while anything is narrating, which is exactly when
+// you'd be previewing — deciding what else to queue. Without this the tap that stops it would be
+// stranded on a button no longer in the page, and a fresh 🎧 would sit there looking idle over
+// audio that was still playing.
+function adoptPreview(btn){
+  PREVIEW.btn = btn;
+  PREVIEW.label = btn.innerHTML;
+  PREVIEW.title = btn.title;
+  markPreview();
+}
+
 function previewChapter(i, btn){
   if(!BOOK) return;
   if(!sampleAudio) sampleAudio = new Audio();
+  // A second tap on the same button stops it; a tap on another chapter's replaces it, since
+  // there is one audio element and two previews at once would be noise.
+  const mine = PREVIEW && PREVIEW.btn === btn;
+  stopPreview();
+  if(mine) return;
+  // The book as well as the chapter: matched on the index alone, opening another book would
+  // hand the preview to whatever its chapter 40 happens to be.
+  PREVIEW = {book: BOOK.id, i, btn, label: btn.innerHTML, title: btn.title, playing: false};
+  const p = PREVIEW;
+  markPreview();
   sampleAudio.src = `/api/books/${BOOK.id}/preview/${i}`;
-  const label = btn.innerHTML;
-  const done = ()=>{ btn.innerHTML = label; };
-  btn.innerHTML = '<span class="spin"></span>';
+  // Every handler ignores what isn't its own preview: the element is shared with the voice
+  // samples, and a late error from an abandoned one would otherwise reset the live one's button.
+  const done = ()=>{ if(PREVIEW === p) stopPreview(); };
   sampleAudio.onended = done;
-  sampleAudio.onerror = ()=>{ done();
+  sampleAudio.onerror = ()=>{
+    if(PREVIEW !== p) return;
+    done();
     toast("❌ Couldn't make a preview of that chapter. If something is narrating, its part has"
           + " to finish first — try again in a moment."); };
-  sampleAudio.onplaying = ()=>{ btn.innerHTML = "⏸"; };
+  sampleAudio.onplaying = ()=>{ if(PREVIEW === p){ p.playing = true; markPreview(); } };
   sampleAudio.play().catch(()=>{ done(); toast("Tap again to hear it."); });
   // It is not silence for fifteen seconds, and nothing else on the row would say so.
-  toast("🎧 Rendering the first minute — about 15 seconds, then it plays.", 6000);
+  toast("🎧 Rendering the first minute — about 15 seconds, then it plays."
+        + " Tap the button again to stop.", 6000);
 }
 
 function waitForJob(job, labels = GEN_LABELS, report = setStatus){
@@ -1692,6 +1750,7 @@ $("#bookFile").addEventListener("change", async e => {
 });
 
 async function openBook(id){
+  stopPreview();                  // a taste of the book you're leaving, like the ⚙ draft
   const r = await fetch("/api/books/" + id);
   if(!r.ok) return loadBooks();
   const d = await r.json();
@@ -1744,6 +1803,9 @@ async function openBook(id){
 }
 $("#bookBack").addEventListener("click", ()=>{
   stopWatching();
+  // Unlike the narration, a preview belongs to the page you're on: leaving the book would take
+  // away the only button that could stop it.
+  stopPreview();
   BOOK = null;
   $("#reader").hidden = true;
   $("#library").hidden = false;
@@ -1982,6 +2044,9 @@ function renderChapterList(){
     else g.chapters.forEach(c => box.appendChild(chapterRow(c, false)));
   });
   markPlayingPart();
+  // A preview whose 🎧 didn't come back — the chapter went into the engine, or got left out —
+  // has nothing left that could stop it, so it stops itself rather than playing on unreachably.
+  if(PREVIEW && !PREVIEW.btn.isConnected) stopPreview();
 }
 
 // A part: its own progress, its own narrate/download buttons, and its chapters underneath.
@@ -2117,7 +2182,10 @@ function chapterRow(c, grouped){
   const again = el.querySelector(".redo");
   if(again) again.addEventListener("click", e => { e.stopPropagation(); redoChapter(c.i); });
   const hear = el.querySelector(".taste");
-  if(hear) hear.addEventListener("click", e => { e.stopPropagation(); previewChapter(c.i, hear); });
+  if(hear){
+    hear.addEventListener("click", e => { e.stopPropagation(); previewChapter(c.i, hear); });
+    if(PREVIEW && PREVIEW.book === BOOK.id && PREVIEW.i === c.i) adoptPreview(hear);
+  }
   const nar = el.querySelector(".narrow");
   if(nar) nar.addEventListener("click", e => { e.stopPropagation(); narrateChapter(c.i); });
   if(segs.length || c.state === "rendering") el.appendChild(partsPanel(c));

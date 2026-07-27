@@ -150,6 +150,21 @@ def test_the_running_hint_says_what_time_it_will_be_done(script):
     assert "byNote(" in script[start:script.index(";", start)]
 
 
+def test_every_preview_releases_the_one_it_takes_over(script):
+    """The voice samples, the respelling ▶ and the chapter 🎧 share one <audio> element, and only
+    the chapter preview keeps state about it — which button is its stop button.
+
+    So anything that points that element somewhere else has to end the chapter preview first.
+    Otherwise a ⏹ stays on a chapter row over a two-second sample of a voice, and the handlers
+    that would have put the button back have been reassigned to the new sound.
+    """
+    for fn in ("previewVoice", "previewSaying", "previewChapter"):
+        start = script.index(f"function {fn}(")
+        body = script[start:script.index("\n}", start)]
+        assert "sampleAudio.src" in body, fn         # it does take the element over
+        assert "stopPreview()" in body, fn
+
+
 def helper(script):
     """The text of the downloadLink definition, up to the semicolon that ends it."""
     start = script.index("const downloadLink")
