@@ -988,3 +988,120 @@ class TestTakingTheEpub:
                         json={"id": "b1", "file": "Dark Matter.epub"})
         assert r.status_code == 404
         assert os.path.exists(p)
+
+
+class TestFindingAWordInTheBook:
+    """Typing a respelling needs the written form exactly, which is the one thing a narrator
+    saying it wrongly can't tell you. The text is already on disk, so it can be asked."""
+
+    # Invented prose with the shapes that matter: a name, its possessive, a capitalised variant,
+    # and a word that merely contains the same letters.
+    TEXT = ("Vermeer stood by the window. Vermeer's coat was wet.\n"
+            "The gallery on Vermeerkade was shut, and VERMEER was painted over the door.\n"
+            "Nobody mentioned Vermeer again.")
+
+    def find(self, client, q, book="b1"):
+        return client.get(f"/api/books/{book}/find?q={q}").get_json()
+
+    def test_it_answers_with_the_spellings_that_are_printed(self, client, make_book):
+        make_book(names=["One"], texts=[self.TEXT])
+        got = {f["word"]: f["count"] for f in self.find(client, "verme")["forms"]}
+        assert got == {"Vermeer": 3, "Vermeerkade": 1, "VERMEER": 1}
+
+    def test_a_possessive_is_the_word_not_a_form_of_its_own(self, client, make_book):
+        """A respelling is keyed on the word and matches the possessive anyway, so offering
+        "Vermeer's" as a separate spelling would only be something wrong to type."""
+        make_book(names=["One"], texts=[self.TEXT])
+        assert "Vermeer's" not in [f["word"] for f in self.find(client, "verme")["forms"]]
+
+    def test_it_says_how_much_of_the_book_says_it(self, client, make_book):
+        make_book(names=["One", "Two", "Three"],
+                  texts=[self.TEXT, "Vermeer once more.", "Nothing here."])
+        top = self.find(client, "Vermeer")["forms"][0]
+        assert top["word"] == "Vermeer"
+        assert top["count"] == 4 and top["chapters"] == 2
+
+    def test_it_shows_the_word_in_a_phrase(self, client, make_book):
+        make_book(names=["One"], texts=[self.TEXT])
+        line = self.find(client, "Vermeerkade")["forms"][0]["line"]
+        assert "Vermeerkade" in line
+        assert "\n" not in line                      # collapsed, not a wall of text
+
+    def test_the_commonest_spelling_comes_first(self, client, make_book):
+        make_book(names=["One"], texts=[self.TEXT])
+        assert [f["word"] for f in self.find(client, "verme")["forms"]][0] == "Vermeer"
+
+    def test_case_is_ignored_when_searching(self, client, make_book):
+        make_book(names=["One"], texts=[self.TEXT])
+        assert self.find(client, "VERMEER")["forms"] == self.find(client, "vermeer")["forms"]
+
+    def test_one_letter_is_not_a_search(self, client, make_book):
+        """It would match most of the book and answer nothing useful."""
+        make_book(names=["One"], texts=[self.TEXT])
+        assert self.find(client, "v")["forms"] == []
+
+    def test_a_word_that_is_not_there(self, client, make_book):
+        make_book(names=["One"], texts=[self.TEXT])
+        assert self.find(client, "Rembrandt")["forms"] == []
+
+    def test_a_chapter_with_no_text_file_is_skipped(self, client, make_book):
+        make_book(names=["One", "Two"], texts=[self.TEXT, "Vermeer here too."])
+        os.remove(books.book_dir("b1", "text", "ch000.txt"))
+        assert self.find(client, "Vermeer")["forms"][0]["count"] == 1
+
+    def test_it_answers_with_a_handful_at_most(self, client, make_book):
+        make_book(names=["One"], texts=[" ".join(f"word{i}" for i in range(60))])
+        assert len(self.find(client, "word")["forms"]) == books.FIND_FORMS
+
+    def test_unknown_book(self, client):
+        assert client.get("/api/books/nope/find?q=hello").status_code == 404
+
+    def test_one_book_is_not_searched_for_another(self, client, make_book):
+        make_book(book_id="mine", names=["One"], texts=["Nothing of note."])
+        make_book(book_id="theirs", names=["One"], texts=[self.TEXT])
+        assert self.find(client, "Vermeer", book="mine")["forms"] == []
+
+
+class TestFindingAPhrase:
+    """Several words are looked for as written, through the same pattern a rule uses — so what
+    comes back is something you can respell. The Institute opens with a scripture reference that
+    carries no full stop, and a narrator reads straight on into the next sentence."""
+
+    TEXT = ("that he slew in his life.\nJudges, Chapter 16\nBut whoso shall offend one of "
+            "these little ones.\nA second Judges, Chapter 16 later on.")
+
+    def find(self, client, q):
+        return client.get(f"/api/books/b1/find?q={q}").get_json()["forms"]
+
+    def test_a_phrase_is_found_as_written(self, client, make_book):
+        make_book(names=["One"], texts=[self.TEXT])
+        got = self.find(client, "Judges,%20Chapter%2016")
+        assert [(f["word"], f["count"]) for f in got] == [("Judges, Chapter 16", 2)]
+
+    def test_a_line_break_inside_it_is_still_the_phrase(self, client, make_book):
+        """And it comes back with single spaces, which is what a rule is keyed on."""
+        make_book(names=["One"], texts=["a Judges,\nChapter 16 b"])
+        assert [f["word"] for f in self.find(client, "Judges,%20Chapter%2016")] \
+            == ["Judges, Chapter 16"]
+
+    def test_part_of_a_phrase_answers_the_part(self, client, make_book):
+        make_book(names=["One"], texts=[self.TEXT])
+        assert [f["word"] for f in self.find(client, "Judges,%20Chapter")] == ["Judges, Chapter"]
+
+    def test_a_phrase_that_is_not_there(self, client, make_book):
+        make_book(names=["One"], texts=[self.TEXT])
+        assert self.find(client, "Kings,%20Chapter%202") == []
+
+    def test_a_single_word_is_still_searched_inside_words(self, client, make_book):
+        """The two modes answer different questions: a word you can't spell, or a phrase you
+        can. Only the phrase is matched as written."""
+        make_book(names=["One"], texts=["Daniela and Danielle"])
+        assert sorted(f["word"] for f in self.find(client, "danie")) == ["Daniela", "Danielle"]
+
+    def test_what_it_offers_is_something_a_rule_would_match(self, client, make_book):
+        """The point of one shared pattern: a spelling the search hands you must be a key that
+        then fires on the same text."""
+        import textprep
+        make_book(names=["One"], texts=[self.TEXT])
+        word = self.find(client, "Judges,%20Chapter%2016")[0]["word"]
+        assert textprep.respell(self.TEXT, {word: "SAID"}).count("SAID") == 2

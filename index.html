@@ -185,6 +185,13 @@
   .pickrow { display:flex; gap:8px; align-items:center; }
   .pickrow select { flex:1; min-width:0; }
   .pickrow input[type=text] { flex:1; min-width:0; margin:0; }
+  /* What the book calls a word, offered to be tapped into the field above. */
+  .found { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .found button { padding:7px 10px; font-size:13.5px; border-radius:8px; border:1px solid var(--line);
+                  background:#2a2640; color:var(--text); max-width:100%; }
+  .found button .n { color:var(--muted); font-size:12px; margin-left:5px; }
+  .foundline { font-size:12.5px; color:var(--muted); margin-top:6px; line-height:1.45;
+               -webkit-user-select:text; user-select:text; }
   /* One respelling: the written word, how it should sound, and the two buttons. Wraps rather
      than squeezing, since either side can be a long name on a narrow phone. */
   .say { display:flex; gap:8px; align-items:center; padding:7px 0; font-size:14px;
@@ -493,8 +500,26 @@
                spellcheck="false">
         <button id="respellHear" class="iconbtn" title="Hear it in this book's voice"
                 aria-label="Hear it">▶</button>
-        <button id="respellAdd" class="iconbtn" title="Add" aria-label="Add">＋</button>
+        <button id="respellAdd" class="iconbtn" title="Add to the list"
+                aria-label="Add to the list">＋</button>
       </div>
+      <div class="pickrow" style="margin-top:8px">
+        <input type="text" id="respellFind" placeholder="how does the book spell it?"
+               autocapitalize="off" spellcheck="false">
+        <button id="respellFindGo" class="iconbtn" title="Look in the book"
+                aria-label="Look in the book">🔍</button>
+      </div>
+      <div class="hint">Part of a word finds the spellings around it — “danie” answers
+        “Daniela”. Several words are looked for as written, which is how you buy a pause the text
+        never asked for: search “Judges, Chapter 16”, then say it as “Judges, Chapter 16.” so the
+        narrator stops before the next sentence.</div>
+      <div id="respellFound"></div>
+      <div class="acts" style="margin-top:10px">
+        <button id="respellSave" class="btn" disabled>Saved</button>
+      </div>
+      <div class="hint">Editing the list changes nothing on its own — one save applies the lot, so
+        fixing three names is one round of re-narrating rather than three. Leaving the book
+        forgets what hasn't been saved.</div>
       <div class="hint">Neither engine takes a pronunciation override, so a name it says wrong is
         fixed by spelling it the way it should sound — “Vermeer” as “Vermayr”. ▶ speaks the
         spoken form first, so you can get it right before anything is narrated. Whole words,
@@ -1615,9 +1640,13 @@ async function openBook(id){
   $("#bookHeadings").checked = BOOK.announce !== false;
   $("#bookSayTitle").value = BOOK.spoken_title || "";
   $("#bookSayTitle").placeholder = BOOK.title || "";
+  // A fresh draft per book: an edit is only ever about the book in front of you, and carrying one
+  // across would be a change you'd forgotten you were making.
+  RESPELL = {...(BOOK.respell || {})};
   renderRespellings();
   renderEpub();
-  $("#respellFrom").value = $("#respellTo").value = "";
+  $("#respellFrom").value = $("#respellTo").value = $("#respellFind").value = "";
+  $("#respellFound").innerHTML = "";
   $("#bookSkipped").textContent = (BOOK.skipped || []).length
     ? `Left out ${BOOK.skipped.length} sections that look like front or back matter.` : "";
   // Nothing folded open carries across books. What opens unasked: the part you're reading,
@@ -2611,18 +2640,34 @@ $("#bookVoicePlay").addEventListener("click", e => previewVoice($("#bookVoice"),
 // respelling it. The list belongs to the book — the names in one novel are nobody else's problem
 // — and saving it re-narrates only the parts that said the word the old way, which is what makes
 // fixing one on chapter forty affordable.
+// Edited here and saved on purpose, rather than a save per ＋ and ⊘. Each save deletes audio and
+// queues chapters, so three names fixed in one sitting were three repairs and three bursts of
+// work; now they're one. The draft only lives as long as the panel does — leaving the book is
+// leaving the edit, which is two taps to redo and cheaper than a stale copy on disk.
+let RESPELL = {};
+// How many entries the draft differs by — added, changed or taken out. The button says it, so
+// what's waiting is visible without having to remember what you typed.
+function respellPending(){
+  const now = (BOOK && BOOK.respell) || {};
+  const keys = new Set([...Object.keys(now), ...Object.keys(RESPELL)]);
+  return [...keys].filter(k => now[k] !== RESPELL[k]).length;
+}
 function renderRespellings(){
-  const map = (BOOK && BOOK.respell) || {};
-  const words = Object.keys(map).sort((a, b) => a.localeCompare(b));
+  const words = Object.keys(RESPELL).sort((a, b) => a.localeCompare(b));
   $("#respellList").innerHTML = words.length
     ? words.map(w =>
         `<div class="say"><div class="w">${esc(w)}</div><div class="arrow">→</div>
-           <div class="w">${esc(map[w]) || "<em>(silent)</em>"}</div>
-           <button class="iconbtn hearSay" data-say="${esc(map[w])}" title="Hear it"
+           <div class="w">${esc(RESPELL[w]) || "<em>(silent)</em>"}</div>
+           <button class="iconbtn hearSay" data-say="${esc(RESPELL[w])}" title="Hear it"
                    aria-label="Hear it">▶</button>
            <button class="iconbtn dropSay" data-word="${esc(w)}" title="Remove"
                    aria-label="Remove">⊘</button></div>`).join("")
     : `<div class="hint">Nothing yet — a name the narrator gets wrong goes here.</div>`;
+  const n = respellPending();
+  const btn = $("#respellSave");
+  btn.disabled = !n;
+  btn.textContent = n ? `Save ${n} change${n === 1 ? "" : "s"} and re-narrate`
+                      : "Saved";
 }
 
 // The book itself, to take away and read. It sits under the respellings because that's what it's
@@ -2638,10 +2683,10 @@ function renderEpub(){
     : "";
 }
 
-async function saveRespellings(map){
+async function saveRespellings(){
   const call = extra => fetch("/api/books/respell", {method:"POST",
     headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({id: BOOK.id, respell: map, ...extra})}).then(r => r.json());
+    body: JSON.stringify({id: BOOK.id, respell: RESPELL, ...extra})}).then(r => r.json());
   let d = await call({});
   // Enough of the book to be worth knowing the cost first — one common word would re-narrate
   // everything, which is correct and not what anybody meant.
@@ -2651,6 +2696,7 @@ async function saveRespellings(map){
   }
   if(!d.ok){ toast("❌ " + (d.msg || "couldn't save that")); return false; }
   BOOK = d.book;
+  RESPELL = {...(BOOK.respell || {})};
   renderRespellings();
   renderChapterList();
   if(d.unchanged) toast("Already saying it that way.");
@@ -2667,23 +2713,58 @@ async function saveRespellings(map){
 $("#respellHear").addEventListener("click", e =>
   previewSaying($("#respellTo").value.trim() || $("#respellFrom").value.trim(),
                 $("#bookVoice").value, e.currentTarget));
-$("#respellAdd").addEventListener("click", async ()=>{
+$("#respellAdd").addEventListener("click", ()=>{
   if(!BOOK) return;
   const from = $("#respellFrom").value.trim(), to = $("#respellTo").value.trim();
   if(!from) return toast("Which word?");
-  if(await saveRespellings({...(BOOK.respell || {}), [from]: to}))
-    $("#respellFrom").value = $("#respellTo").value = "";
+  RESPELL = {...RESPELL, [from]: to};
+  $("#respellFrom").value = $("#respellTo").value = "";
+  renderRespellings();
 });
-// Delegated: the rows are rebuilt on every save.
+$("#respellSave").addEventListener("click", ()=> BOOK && saveRespellings());
+// Delegated: the rows are rebuilt on every edit.
 $("#respellList").addEventListener("click", e => {
   const hear = e.target.closest(".hearSay");
   if(hear) return previewSaying(hear.dataset.say, $("#bookVoice").value, hear);
   const drop = e.target.closest(".dropSay");
-  if(!drop || !BOOK) return;
-  const left = {...(BOOK.respell || {})};
-  delete left[drop.dataset.word];
-  // Taking one out is as much a change as putting it in: the audio still says the respelled form.
-  saveRespellings(left);
+  if(!drop) return;
+  // Taking one out is as much a change as putting it in — the audio still says the respelled
+  // form — so it waits for Save like the rest.
+  delete RESPELL[drop.dataset.word];
+  renderRespellings();
+});
+
+// What the book actually calls a word. A respelling is keyed on the written form, which is the
+// one thing a narrator saying it wrongly can't tell you, so it's asked of the text on disk
+// rather than hunted for in the EPUB.
+async function findInBook(){
+  if(!BOOK) return;
+  const q = $("#respellFind").value.trim();
+  const el = $("#respellFound");
+  if(q.length < 2){ el.innerHTML = ""; return toast("A couple of letters at least."); }
+  el.innerHTML = `<div class="hint"><span class="spin"></span>Looking…</div>`;
+  const d = await (await fetch(`/api/books/${BOOK.id}/find?q=${encodeURIComponent(q)}`)).json();
+  const forms = d.forms || [];
+  el.innerHTML = forms.length
+    ? `<div class="found">` + forms.map(f =>
+        `<button class="takeWord" data-word="${esc(f.word)}">${esc(f.word)}<span class="n">`
+        + `${f.count}×</span></button>`).join("") + `</div>`
+      + `<div class="foundline">${esc(forms[0].line)}</div>`
+      + `<div class="hint">${forms[0].count}× in ${forms[0].chapters} chapter`
+      + `${forms[0].chapters === 1 ? "" : "s"}. Tap a spelling to respell it.</div>`
+    : `<div class="hint">Not in this book. Mind the spelling — it's matched as written.</div>`;
+}
+$("#respellFindGo").addEventListener("click", findInBook);
+$("#respellFind").addEventListener("change", findInBook);
+$("#respellFound").addEventListener("click", e => {
+  const take = e.target.closest(".takeWord");
+  if(!take) return;
+  // Both fields: a respelling is nearly always an edit of the written form — a letter doubled,
+  // a full stop added after "Judges, Chapter 16" — so starting from a copy of it beats starting
+  // from an empty box, especially on a phone keyboard.
+  $("#respellFrom").value = $("#respellTo").value = take.dataset.word;
+  $("#respellTo").focus();
+  $("#respellTo").setSelectionRange(take.dataset.word.length, take.dataset.word.length);
 });
 $("#bookCoverFile").addEventListener("change", async e => {
   const f = e.target.files[0];

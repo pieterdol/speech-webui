@@ -389,3 +389,34 @@ class TestCutSentences:
         got, rest = textprep.cut_sentences(text, 0, flush=True)
         assert " ".join(got).split() == text.split()
         assert rest == ""
+
+
+class TestRespellingSeveralWords:
+    """A key can be a phrase, which is the only way to buy a pause the text never asked for: a
+    heading like "Judges, Chapter 16" carries no full stop, so a narrator reads straight on into
+    the sentence after it."""
+
+    def test_a_phrase_is_replaced(self):
+        got = textprep.respell("in his life. Judges, Chapter 16 But whoso shall offend",
+                               {"Judges, Chapter 16": "Judges, Chapter 16."})
+        assert got == "in his life. Judges, Chapter 16. But whoso shall offend"
+
+    def test_whitespace_in_the_key_matches_a_line_break(self):
+        """The file wraps where the publisher wrapped; the chunker joins paragraphs with a single
+        space before an engine sees them, so both are the same phrase out loud."""
+        assert textprep.respell("life.\nJudges,\nChapter 16\nBut", {"Judges, Chapter 16": "X"}) \
+            == "life.\nX\nBut"
+
+    def test_still_only_whole_words_at_the_edges(self):
+        assert textprep.respell("PreJudges, Chapter 16", {"Judges, Chapter 16": "X"}) \
+            == "PreJudges, Chapter 16"
+
+    def test_a_key_ending_in_a_full_stop_can_match(self):
+        """\\b has nothing to fasten to after a dot, so demanding one meant such a key never
+        fired at all."""
+        assert textprep.respell("she has a Ph.D. now", {"Ph.D.": "PhD"}) == "she has a PhD now"
+
+    def test_an_empty_key_matches_nothing_rather_than_everything(self):
+        """clean_respell drops it, but a pattern that matched the empty string would rewrite
+        every character of the book."""
+        assert textprep.respell("untouched", {"   ": "X"}) == "untouched"

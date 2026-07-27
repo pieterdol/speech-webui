@@ -281,7 +281,22 @@ it — a full book is hours of work.
   global `RESPELL`. Whole words, any capitalisation; an empty spoken form means don't say the word
   at all.
 
-  Saving one re-narrates **only the parts that said it the old way** — usually a single ten-minute
+  **How does the book spell it?** searches the chapter text and answers with the spellings that
+  are actually printed, commonest first, with counts and a phrase to see one in — tap a spelling
+  and it fills the written field. A respelling is keyed on the written form, which is the one
+  thing a narrator saying it wrongly can't tell you, and it's worth knowing what you're up
+  against: Dark Matter prints *Jason*, *Jason2*, *Jasons*, *Jason4* and *Jason9*, so respelling
+  the first fixes a fifth of them. Forms are runs of word characters, so a search answers
+  *Vermeer* rather than *Vermeer's* — that's what a rule is keyed on, and it matches the
+  possessive anyway. Under two letters isn't a search. About 50 ms over a 23-chapter book and
+  270 ms over a 192-chapter one.
+
+  Editing the list changes nothing by itself: **one save applies the lot**, so fixing three names
+  is one round of re-narrating rather than three, and the button says how many changes are
+  waiting. Leaving the book forgets an unsaved draft, which is two taps to redo and cheaper than
+  a stale copy of your intentions on disk.
+
+  Saving re-narrates **only the parts that said it the old way** — usually a single ten-minute
   part per occurrence out of a book of hundreds, which is what makes fixing a name on chapter
   forty affordable. Which parts, exactly, is decided by asking whether the text the engine would
   be handed changes, not by searching for the word: that catches a removed entry (the audio still

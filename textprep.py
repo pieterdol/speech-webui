@@ -120,15 +120,28 @@ def _expand(match, full):
     return full + ("." if not after or after[0].isupper() else "")
 
 
-def _word_re(src):
-    """The whole word, whatever its case. One helper because the substitution below and the
-    search that decides which audio a changed map invalidates have to agree exactly — a
-    difference between them would either re-make audio that was fine or leave audio that isn't.
+def respell_pattern(src):
+    """The whole word — or the whole phrase — whatever its case, however the text wraps it.
 
-    \\b can't match beside a non-word character, so a key like "Ph.D." never fires. That's a
-    limitation of matching words rather than something to work around here.
+    One helper because the substitution below, the search that decides which audio a changed map
+    invalidates, and the search that offers spellings all have to agree exactly. A difference
+    between them would re-make audio that was fine, or leave audio that isn't, or offer a
+    spelling that no rule would then match.
+
+    A key may be several words: "Judges, Chapter 16" → "Judges, Chapter 16." is how you buy a
+    pause the text never asked for. Whitespace in the key matches any run of it, so the phrase is
+    found whether the file has a space or a line break there — the chunker joins paragraphs with
+    a single space before an engine ever sees them, so both are the same phrase out loud.
+
+    A word boundary is added only at an end that is a word character. "Ph.D." has nothing for \\b
+    to fasten to after the dot, and demanding one would mean the key never fired at all.
     """
-    return re.compile(rf"\b{re.escape(src)}\b", re.IGNORECASE)
+    parts = [re.escape(p) for p in src.split()]
+    if not parts:
+        return re.compile(r"(?!)")            # nothing at all, rather than everything
+    edge = lambda c: r"\b" if c.isalnum() or c == "_" else ""
+    return re.compile(edge(src.strip()[0]) + r"\s+".join(parts) + edge(src.strip()[-1]),
+                      re.IGNORECASE)
 
 
 def respell(text, extra=None):
@@ -151,7 +164,7 @@ def respell(text, extra=None):
     # means a book key matching some global rule's *output* still fires on it. Deterministic,
     # occasionally surprising, and what the repair scan compares against anyway.
     for src, dst in (RESPELL | (extra or {})).items():
-        text = _word_re(src).sub(lambda m, d=dst: d, text)
+        text = respell_pattern(src).sub(lambda m, d=dst: d, text)
     return text
 
 

@@ -13,7 +13,7 @@ from core import (app, index_lock, jobs, log_transfer, new_job, run_lock, safe_p
                   write_json, HERE)
 from media import audio_seconds, pad_with_silence
 from textprep import (ONES, TENS, clean_respell, cut_sentences, respell,
-                      respell_diff)
+                      respell_diff, respell_pattern)
 from tts import piper_voice_ids, tts_engine_of, tts_say
 
 BOOKS_DIR  = os.path.join(HERE, "books")
@@ -273,6 +273,55 @@ def chapter_segments(book, index):
     except OSError:
         return []               # render_chapter turns this into an error; nothing to repair
     return split_segments(epub.strip_heading(text, chapters[index].get("name") or ""))
+
+FIND_FORMS = 12          # how many spellings one search answers with
+
+def text_snippet(text, start, end, around=42):
+    """A phrase from the book with the match in the middle of it, whitespace collapsed."""
+    lo, hi = max(0, start - around), min(len(text), end + around)
+    return ("…" if lo else "") + " ".join(text[lo:hi].split()) + ("…" if hi < len(text) else "")
+
+def find_in_book(book, q, limit=FIND_FORMS):
+    """The spellings of a word as the book actually prints them: each distinct form, how often it
+    occurs, in how many chapters, and one phrase to see it in.
+
+    Typing a respelling needs the *written* form exactly, which is the one thing a narrator
+    saying it wrongly can't tell you — and hunting for it through the EPUB on a phone is worse
+    than asking the text that's already on disk. Forms are runs of word characters, so searching
+    "verme" answers "Vermeer" rather than "Vermeer's": that's what a respelling is keyed on, and
+    it matches the possessive anyway.
+    """
+    q = (q or "").strip()
+    needle = q.casefold()
+    if len(needle) < 2:
+        return []                     # one letter matches most of the book
+    # Two searches, because they answer two different questions. A single word is looked for
+    # *inside* words — "danie" finds "Daniela", which is the point when you can't spell it. A
+    # phrase is looked for as written, through the same pattern a rule would use, so what comes
+    # back is something you can respell: "Judges, Chapter 16" is a real key, and the whitespace
+    # in it matches the line break the file happens to have there.
+    phrase = re.search(r"\s", q) is not None
+    hunt = respell_pattern(q) if phrase else None
+    seen = {}
+    for c in book.get("chapters") or []:
+        try:
+            with open(book_dir(book["id"], "text", f"ch{c['i']:03d}.txt")) as f:
+                text = f.read()
+        except OSError:
+            continue
+        for m in hunt.finditer(text) if phrase else re.finditer(r"\w+", text):
+            word = " ".join(m.group(0).split()) if phrase else m.group(0)
+            if not phrase and needle not in word.casefold():
+                continue
+            e = seen.setdefault(word, {"word": word, "count": 0, "chapters": set(), "line": ""})
+            e["count"] += 1
+            e["chapters"].add(c["i"])
+            if not e["line"]:
+                e["line"] = text_snippet(text, m.start(), m.end())
+    forms = sorted(seen.values(), key=lambda e: (-e["count"], e["word"]))[:limit]
+    # A count rather than the list: a name can be in a hundred chapters, and what you're deciding
+    # is only whether this is the spelling you meant.
+    return [e | {"chapters": len(e["chapters"])} for e in forms]
 
 def stale_segments(book, index, old, new):
     """Which of a chapter's segments the engine would now be given differently, as indices.
@@ -934,6 +983,16 @@ def api_book(book_id):
     return jsonify(book=b | {"cover_v": cover_version(book_id), "epub": book_epub(b)},
                    parts=book_parts(b), narrating=render_status(),
                    exports=book_exports(book_id))
+
+@app.get("/api/books/<book_id>/find")
+def api_book_find(book_id):
+    """Where a word appears in this book, and how it's spelled there. For getting a respelling's
+    written form right without leaving the phone — see find_in_book."""
+    book = find_book(book_id)
+    if not book:
+        return jsonify(error="unknown book"), 404
+    q = (request.args.get("q") or "").strip()[:80]
+    return jsonify(q=q, forms=find_in_book(book, q))
 
 @app.post("/api/books/update")
 def api_book_update():
