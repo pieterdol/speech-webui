@@ -1548,6 +1548,30 @@ function previewSaying(text, voice, btn){
   sampleAudio.play().catch(()=>{ done(); toast("Tap again to hear it."); });
 }
 
+// How a chapter will open, before committing hours to it: its announcement and the first ~600
+// characters, which is one call to the engine and about 15 seconds of work. A wrong narrator or a
+// butchered name otherwise costs a whole book to discover.
+//
+// Same rule as the two above — src and play() inside the tap, since iOS won't play audio after an
+// await — so the wait happens with the audio element already pointed at it. The server caches
+// what it made, so tapping the same chapter again is instant.
+function previewChapter(i, btn){
+  if(!BOOK) return;
+  if(!sampleAudio) sampleAudio = new Audio();
+  sampleAudio.src = `/api/books/${BOOK.id}/preview/${i}`;
+  const label = btn.innerHTML;
+  const done = ()=>{ btn.innerHTML = label; };
+  btn.innerHTML = '<span class="spin"></span>';
+  sampleAudio.onended = done;
+  sampleAudio.onerror = ()=>{ done();
+    toast("❌ Couldn't make a preview of that chapter. If something is narrating, its part has"
+          + " to finish first — try again in a moment."); };
+  sampleAudio.onplaying = ()=>{ btn.innerHTML = "⏸"; };
+  sampleAudio.play().catch(()=>{ done(); toast("Tap again to hear it."); });
+  // It is not silence for fifteen seconds, and nothing else on the row would say so.
+  toast("🎧 Rendering the first minute — about 15 seconds, then it plays.", 6000);
+}
+
 function waitForJob(job, labels = GEN_LABELS, report = setStatus){
   return new Promise((resolve, reject)=>{
     const tick = ()=> fetch("/api/status/" + job).then(r => r.json().then(d => ({ok:r.ok, d})))
@@ -2069,9 +2093,15 @@ function chapterRow(c, grouped){
   // afterwards, a part that came out short. Not while it's being narrated, and not while it's
   // already queued.
   const redo = segs.length && c.state !== "rendering" && !asked;
+  // 🎧 on a chapter with nothing to play yet: ~15 seconds of work to hear how it opens, against
+  // hours to find out the narrator says the hero's name wrong. Never where there's already audio
+  // — tapping the row plays that — and not while it's being made.
+  const taste = !c.skip && !segs.length && c.state !== "rendering";
   el.innerHTML = `<div class="cliphead"><div class="nm">${esc(chapterLabel(c, grouped))}</div>
       ${redo ? `<button class="skip redo" title="Narrate this again from nothing"
                         aria-label="Narrate this again">↻</button>` : ""}
+      ${taste ? `<button class="skip taste" title="Hear how this chapter will start"
+                         aria-label="Hear how this chapter will start">🎧</button>` : ""}
       <button class="skip" title="${c.skip ? "Narrate this after all"
                                            : "Leave this out of the narration"}"
               >${c.skip ? "↩" : "⊘"}</button>
@@ -2082,10 +2112,12 @@ function chapterRow(c, grouped){
     <div class="tr">${plays ? '<span class="play">▶</span> ' : ""}${esc(note)}</div>`;
   el.querySelector(".cliphead").addEventListener("click", ()=> chapterTapped(c.i));
   el.querySelector(".tr").addEventListener("click", ()=> chapterTapped(c.i));
-  el.querySelector(".skip:not(.redo)").addEventListener("click",
+  el.querySelector(".skip:not(.redo):not(.taste)").addEventListener("click",
                                              e => { e.stopPropagation(); toggleSkip(c.i); });
   const again = el.querySelector(".redo");
   if(again) again.addEventListener("click", e => { e.stopPropagation(); redoChapter(c.i); });
+  const hear = el.querySelector(".taste");
+  if(hear) hear.addEventListener("click", e => { e.stopPropagation(); previewChapter(c.i, hear); });
   const nar = el.querySelector(".narrow");
   if(nar) nar.addEventListener("click", e => { e.stopPropagation(); narrateChapter(c.i); });
   if(segs.length || c.state === "rendering") el.appendChild(partsPanel(c));

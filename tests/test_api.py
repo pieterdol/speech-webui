@@ -198,6 +198,75 @@ class TestClearNarration:
         assert os.path.exists(books.book_dir("b1", "text", "ch000.txt"))
 
 
+class TestChapterPreview:
+    """One chunk of a chapter, spoken now. The expensive mistakes — the wrong narrator, a name
+    the voice mangles, a title that reads badly out loud — all show up in the first minute."""
+
+    LONG = " ".join(["A sentence about nothing much at all."] * 60)
+
+    def test_it_renders_one_chunk_of_the_chapter(self, client, make_book, fake_tts):
+        make_book(texts=[self.LONG])
+        r = client.get("/api/books/b1/preview/0")
+        assert r.status_code == 200 and r.data
+        assert len(fake_tts) == 1
+        assert fake_tts[0]["text"] == books.split_chunks(self.LONG)[0]
+        assert fake_tts[0]["voice"] == "af_heart"
+
+    def test_it_speaks_the_announcement_the_render_would(self, client, make_book, fake_tts):
+        """The book's own opening is the thing most worth hearing before eight hours of it."""
+        make_book(texts=[self.LONG], announce=True, title="A Book", author="An Author")
+        client.get("/api/books/b1/preview/0")
+        assert fake_tts[0]["intro"] == books.chapter_intro(books.find_book("b1"), 0)
+        assert fake_tts[0]["intro"][0][0] == "A Book"
+
+    def test_the_book_s_pronunciations_reach_it(self, client, make_book, fake_tts):
+        make_book(texts=[self.LONG], respell={"sentence": "sentance"})
+        client.get("/api/books/b1/preview/0")
+        assert fake_tts[0]["respellings"] == {"sentence": "sentance"}
+
+    def test_a_second_tap_replays_rather_than_re_rendering(self, client, make_book, fake_tts):
+        make_book(texts=[self.LONG])
+        client.get("/api/books/b1/preview/0")
+        assert client.get("/api/books/b1/preview/0").status_code == 200
+        assert len(fake_tts) == 1
+
+    def test_a_changed_voice_is_a_different_preview(self, client, make_book, fake_tts):
+        """Cached under what is actually spoken, so nothing replays a voice you've moved off."""
+        make_book(texts=[self.LONG])
+        client.get("/api/books/b1/preview/0")
+        books.update_book("b1", lambda b: b.update(voice="bm_george"))
+        client.get("/api/books/b1/preview/0")
+        assert [c["voice"] for c in fake_tts] == ["af_heart", "bm_george"]
+        # and the one it replaces goes: it answers a question nobody will ask again
+        assert len(os.listdir(books.book_dir("b1", "preview"))) == 1
+
+    def test_nothing_to_read_is_not_a_crash(self, client, make_book, fake_tts):
+        make_book(texts=["   "])
+        assert client.get("/api/books/b1/preview/0").status_code == 404
+        assert fake_tts == []
+
+    def test_a_chapter_that_is_not_there(self, client, make_book, fake_tts):
+        make_book()
+        assert client.get("/api/books/b1/preview/7").status_code == 404
+
+    def test_unknown_book(self, client):
+        assert client.get("/api/books/nope/preview/0").status_code == 404
+
+    def test_an_engine_failure_is_reported_not_cached(self, client, make_book, monkeypatch):
+        def boom(*a, **k):
+            raise RuntimeError("no such voice")
+        monkeypatch.setattr(books, "_render_segment", boom)
+        make_book(texts=[self.LONG])
+        r = client.get("/api/books/b1/preview/0")
+        assert r.status_code == 500 and "no such voice" in r.get_json()["error"]
+
+    def test_it_can_be_cached_by_the_browser(self, client, make_book, fake_tts):
+        """Named after what it says, so unlike a chapter's parts it can't go stale."""
+        make_book(texts=[self.LONG])
+        r = client.get("/api/books/b1/preview/0")
+        assert "max-age=86400" in r.headers["Cache-Control"]
+
+
 class TestAutoExportSetting:
     def test_stored_on_the_book_and_turned_off_again(self, client, make_book):
         make_book()

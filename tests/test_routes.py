@@ -13,6 +13,7 @@ EXPECTED = {
     ("/api/books", "POST"),
     ("/api/books/<book_id>", "GET"),
     ("/api/books/<book_id>/find", "GET"),
+    ("/api/books/<book_id>/preview/<int:index>", "GET"),
     ("/api/books/<book_id>/skipped/<int:n>", "GET"),
     ("/api/books/clear", "POST"),
     ("/api/books/cover", "POST"),

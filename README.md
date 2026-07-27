@@ -207,6 +207,15 @@ it — a full book is hours of work.
 - **Narrator** — the same picker as everywhere else, Kokoro English and Piper Dutch. A book
   declaring `nl` gets a Dutch voice by default. Changing it after rendering discards that
   book's audio, so it asks first.
+- **🎧 hears how a chapter will start** before anything is committed to it: its announcement and
+  the first ~600 characters, which is one call to the engine — about 15 seconds of work for 45
+  seconds of audio. Every expensive mistake is in that minute: the wrong narrator, a name the
+  voice mangles, a title that reads badly out loud, an opening note with a line in it you'd
+  rather not hear. Finding any of them out otherwise costs the eight hours first. It's made
+  through the same code a render uses, pauses and all, so it isn't a rehearsal of something else,
+  and it's cached under what it actually says — a second tap is instant, and changing the voice,
+  the title, the note or a pronunciation makes a new one rather than replaying the old. The
+  button is on chapters with nothing to play yet; where there's audio, tapping the row plays it.
 - **Rendering** is per chapter, in **~10-minute parts**, and each part appears as soon as it's
   finished — you can start on part 1 while part 2 is still being made. At the measured 2.4×
   realtime, a 5-minute chapter takes ~2 minutes.

@@ -3,7 +3,8 @@
 Owns its own storage paths rather than taking them from core, which is what lets the tests
 point the whole layer at a tmpdir.
 """
-import html, json, os, re, shutil, subprocess, tempfile, threading, time, urllib.parse, uuid
+import hashlib, html, json, os, re, shutil, subprocess, tempfile, threading, time
+import urllib.parse, uuid
 from contextlib import contextmanager
 
 from flask import Response, jsonify, request, send_from_directory
@@ -1091,6 +1092,53 @@ def api_book_find(book_id):
         return jsonify(error="unknown book"), 404
     q = (request.args.get("q") or "").strip()[:80]
     return jsonify(q=q, forms=find_in_book(book, q))
+
+@app.get("/api/books/<book_id>/preview/<int:index>")
+def api_book_preview(book_id, index):
+    """How a chapter will start, spoken now, before hours are committed to it.
+
+    One chunk — the same ~600 characters the engine is handed at a time, about 45 s of audio for
+    ~17 s of work — behind whatever the chapter's announcement will be. That's every expensive
+    mistake in the cheapest possible form: the wrong narrator, a name the voice mangles, a title
+    that reads badly out loud, an opening note with a line in it you didn't want. The alternative
+    was finding out eight hours later.
+
+    Made through _render_segment rather than a shortcut, so what you hear is what a render would
+    produce, pauses and all. Answered as audio in the one request — the page has to set src and
+    play inside the tap or iOS refuses the sound, the same reason /api/say is a plain GET.
+
+    Cached under a name derived from what is actually spoken, so a second tap costs nothing and a
+    changed voice, title, note or pronunciation makes a different file rather than replaying a
+    stale one. The old ones for that chapter go: they answer a question nobody will ask again.
+    """
+    book = find_book(book_id)
+    if not book:
+        return jsonify(error="unknown book"), 404
+    segments = chapter_segments(book, index)
+    chunks = split_chunks(segments[0]) if segments else []
+    if not chunks:
+        return jsonify(error="nothing to read in that chapter"), 404
+    voice = book.get("voice") or "af_heart"
+    respellings = book.get("respell") or {}
+    intro = chapter_intro(book, index)
+    spoken = [respell(p, respellings) for p, _ in intro] + [respell(chunks[0], respellings)]
+    key = hashlib.sha1("\n".join([voice] + spoken).encode()).hexdigest()[:16]
+    d = book_dir(book_id, "preview")
+    name = f"ch{index:03d}-{key}.opus"
+    if not os.path.exists(os.path.join(d, name)):
+        os.makedirs(d, exist_ok=True)
+        try:
+            _render_segment(chunks[0], voice, os.path.join(d, name), intro=intro,
+                            respellings=respellings)
+        except Exception as e:
+            return jsonify(error=str(e)[:200]), 500
+        for old in os.listdir(d):
+            if old.startswith(f"ch{index:03d}-") and old != name:
+                os.remove(os.path.join(d, old))
+    r = send_from_directory(d, name, conditional=True)
+    # Content-addressed, so unlike a chapter's parts this one can be cached blind.
+    r.headers["Cache-Control"] = "private, max-age=86400"
+    return r
 
 @app.post("/api/books/update")
 def api_book_update():
