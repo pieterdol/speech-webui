@@ -244,6 +244,11 @@ it — a full book is hours of work.
   when something is happening. The queue is global: renders are serialized *across* books, so
   what's holding this one up can be another book, and the panel names it when it isn't the one
   you're looking at.
+- **A queued chapter says so on its own row**, `⏳ queued`, with its Narrate button gone: there's
+  nothing left to ask for, and a row that looked untouched made a tap that had worked
+  indistinguishable from one that had missed. Only chapters *asked for* are marked — a chapter a
+  bulk run will reach on its own keeps its button, because tapping it is how you pull it forward
+  past the rest of the run.
 - **The book announces itself.** It opens with the title and author — *"Dark Matter" … "by
   Blake Crouch" …* — the way a published audiobook does, and that's also the first thing the
   exported `.m4b` plays. Then before each chapter's prose comes the part's name and the chapter
@@ -295,6 +300,16 @@ it — a full book is hours of work.
   chapter in flight finish rather than leaving half of one behind. *Narrate part* is the same
   run scoped to one part, counting its progress and hours-left over the part rather than the
   book.
+- **A run can be added to while it runs.** There's one run per book, and it covers a set of
+  parts — asking for another part while one is being narrated queues that part behind it, and
+  asking for the whole book widens the run to everything. Nothing is interrupted and nothing
+  starts twice: the worker re-reads what it covers between chapters, so a single worker per book
+  picks up whatever has been added. The panel counts over the run's whole scope, and its buttons
+  say which state they're in — a part being narrated shows a spinner and can't be pressed, and
+  *Narrate the whole book* is only dead once the run already covers it.
+
+  The scope lives in `render_all.parts`, `[]` meaning the whole book. A run started before that
+  existed carries a single `part` name instead, which is read the same way rather than migrated.
 - **Export as audiobook (.m4b)** builds one file from whatever is narrated: chapter markers,
   cover art, title and author, AAC 48 kbps mono. On the phone, tap the download and share it
   into **BookPlayer**, which gives you chapters, sleep timer and position with no PC involved —

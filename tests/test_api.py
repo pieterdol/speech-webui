@@ -17,7 +17,7 @@ def no_background_work(monkeypatch):
     monkeypatch.setattr(books, "render_chapter",
                         lambda book_id, i: started["chapters"].append((book_id, i)))
     monkeypatch.setattr(books, "render_all_worker",
-                        lambda book_id, part=None: started["runs"].append((book_id, part)))
+                        lambda book_id: started["runs"].append(book_id))
     return started
 
 
@@ -63,9 +63,11 @@ class TestRenderEndpoints:
         make_book(names=["A · Chapter 1", "B · Chapter 1"], texts=["word " * 10] * 2)
         client.post("/api/books/render_all", json={"id": "b1", "part": "A"})
         ra = books.find_book("b1")["render_all"]
-        assert ra["part"] == "A"
+        assert ra["parts"] == ["A"]
         assert ra["total"] == 1                      # the part's size, not the book's 2
-        assert no_background_work["runs"] == [("b1", "A")]
+        # The worker takes no scope of its own — it reads the slot, so a part added later is
+        # picked up by the one already running.
+        assert no_background_work["runs"] == ["b1"]
 
     def test_a_second_run_does_not_stack(self, client, make_book, no_background_work):
         make_book()
@@ -650,3 +652,79 @@ class TestQueueFeedback:
         make_book()
         assert client.post("/api/books/render", json={"id": "b1", "chapter": 0}
                            ).get_json()["ahead"] == 0
+
+
+class TestAddingToARun:
+    """A book has one run slot, and asking for more while it runs used to be refused. On The
+    Institute that meant a run over "Escape" — 22 chapters — left the other 115 with no way to
+    be asked for at all: the whole-book button was disabled and another part's button answered
+    "already" and did nothing."""
+
+    def parts(self, book_id="b1"):
+        return books.run_parts(books.find_book(book_id)["render_all"])
+
+    def start(self, client, part=None):
+        return client.post("/api/books/render_all",
+                           json={"id": "b1", **({"part": part} if part else {})}).get_json()
+
+    def three_parts(self, make_book):
+        names = ([f"A · Chapter {i}" for i in range(2)] + [f"B · Chapter {i}" for i in range(3)]
+                 + [f"C · Chapter {i}" for i in range(4)])
+        return make_book(names=names, texts=["word " * 10] * 9)
+
+    def test_a_second_part_joins_the_run(self, client, make_book, no_background_work):
+        self.three_parts(make_book)
+        self.start(client, "A")
+        got = self.start(client, "B")
+        assert got["added"] == "B"
+        assert self.parts() == ["A", "B"]
+        assert books.find_book("b1")["render_all"]["total"] == 5     # 2 + 3, not the book's 9
+
+    def test_and_does_not_start_a_second_worker(self, client, make_book, no_background_work):
+        """One worker per book: it reads what to do from the slot, so adding to the slot is all
+        that's needed. Two workers would race for the same chapters and fight over the counts."""
+        self.three_parts(make_book)
+        self.start(client, "A")
+        self.start(client, "B")
+        assert no_background_work["runs"] == ["b1"]
+
+    def test_the_whole_book_widens_a_part_run(self, client, make_book, no_background_work):
+        self.three_parts(make_book)
+        self.start(client, "A")
+        got = self.start(client)
+        assert got["widened"] is True
+        assert self.parts() == []                                   # [] means everything
+        assert books.find_book("b1")["render_all"]["total"] == 9
+
+    def test_a_part_already_in_the_run_changes_nothing(self, client, make_book,
+                                                       no_background_work):
+        self.three_parts(make_book)
+        self.start(client, "A")
+        assert self.start(client, "A").get("already") is True
+        assert self.parts() == ["A"]
+
+    def test_a_run_over_the_whole_book_already_covers_every_part(self, client, make_book,
+                                                                no_background_work):
+        self.three_parts(make_book)
+        self.start(client)
+        assert self.start(client, "B").get("already") is True
+        assert self.parts() == []
+
+    def test_the_slot_never_says_two_things_at_once(self, client, make_book, no_background_work):
+        """`part` is what a run's scope used to be kept in. Leaving a stale name under the list
+        would be a trap for anything still reading it."""
+        self.three_parts(make_book)
+        self.start(client, "A")
+        self.start(client, "B")
+        assert books.find_book("b1")["render_all"]["part"] is None
+
+    def test_a_run_left_by_the_old_shape_is_still_read(self, client, make_book,
+                                                       no_background_work):
+        """A book mid-run when this landed has `part` and no `parts`."""
+        self.three_parts(make_book)
+        books.update_book("b1", lambda b: b.update(render_all={
+            "running": True, "done": 0, "total": 2, "part": "A"}))
+        assert self.parts() == ["A"]
+        assert self.start(client, "A").get("already") is True
+        assert self.start(client, "B")["added"] == "B"
+        assert self.parts() == ["A", "B"]

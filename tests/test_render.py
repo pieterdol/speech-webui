@@ -297,7 +297,7 @@ class TestRenderAllWorker:
             scope = books.chapters_in(books.find_book("b1"), "A")
             books.update_book("b1", lambda b: b.update(render_all={
                 "running": True, "done": 0, "total": len(scope), "part": "A"}))
-            books.render_all_worker("b1", "A")
+            books.render_all_worker("b1")
         finally:
             books.update_book = real_update
 
@@ -311,14 +311,14 @@ class TestRenderAllWorker:
         make_book(names=["Chapter One", "Chapter Two"], texts=["word " * 40] * 2)
         books.update_book("b1", lambda b: b.update(render_all={
             "running": True, "done": 0, "total": 2, "part": None}))
-        books.render_all_worker("b1", None)
+        books.render_all_worker("b1")
         assert all(c["state"] == "ready" for c in books.find_book("b1")["chapters"])
 
     def test_stopping_ends_it(self, make_book, fake_tts):
         make_book(names=[f"Chapter {i}" for i in range(5)], texts=["word " * 40] * 5)
         books.update_book("b1", lambda b: b.update(render_all={
             "running": False, "done": 0, "total": 5}))
-        books.render_all_worker("b1", None)
+        books.render_all_worker("b1")
         assert all(c["state"] == "pending" for c in books.find_book("b1")["chapters"])
 
     def test_a_chapter_left_out_is_never_narrated(self, make_book, fake_tts):
@@ -328,7 +328,7 @@ class TestRenderAllWorker:
         books.update_book("b1", lambda b: b["chapters"][0].update(skip=True))
         books.update_book("b1", lambda b: b.update(render_all={
             "running": True, "done": 0, "total": 1}))
-        books.render_all_worker("b1", None)
+        books.render_all_worker("b1")
         assert [c["state"] for c in books.find_book("b1")["chapters"]] \
             == ["pending", "ready"]
         assert books.find_book("b1")["render_all"]["running"] is False
@@ -338,7 +338,7 @@ class TestRenderAllWorker:
         books.update_book("b1", lambda b: b["chapters"][0].update(state="error"))
         books.update_book("b1", lambda b: b.update(render_all={
             "running": True, "done": 0, "total": 2}))
-        books.render_all_worker("b1", None)
+        books.render_all_worker("b1")
         states = [c["state"] for c in books.find_book("b1")["chapters"]]
         assert states == ["error", "ready"]
 
@@ -464,3 +464,53 @@ class TestRenderDepth:
         books.update_book("b1", lambda b: b.update(render_all={"running": True, "part": None}))
         assert len(books.render_status()["queue"]) == 4
         assert books.render_depth() == 0      # nothing is holding the lock yet
+
+
+class TestARunThatGrows:
+    """The worker takes no scope of its own: it reads what the run covers from the book between
+    chapters, so a part added while it's going is picked up by the worker already in flight."""
+
+    def test_it_narrates_a_part_added_after_it_started(self, make_book, fake_tts):
+        names = [f"A · Chapter {i}" for i in range(2)] + [f"B · Chapter {i}" for i in range(2)]
+        make_book(names=names, texts=["word " * 40] * 4)
+        books.update_book("b1", lambda b: b.update(render_all={
+            "running": True, "done": 0, "total": 2, "parts": ["A"]}))
+
+        # add B the way the endpoint does, from inside the run: after the first chapter of A
+        real = books.render_chapter
+        added = []
+
+        def render_then_add(book_id, i):
+            real(book_id, i)
+            if not added:
+                added.append(i)
+                books.update_book("b1", lambda b: b["render_all"].update(parts=["A", "B"]))
+
+        books.render_chapter = render_then_add
+        try:
+            books.render_all_worker("b1")
+        finally:
+            books.render_chapter = real
+
+        assert [c["state"] for c in books.find_book("b1")["chapters"]] == ["ready"] * 4
+        assert books.find_book("b1")["render_all"]["total"] == 4      # recounted as it widened
+
+    def test_a_part_run_still_stops_at_its_own_part(self, make_book, fake_tts):
+        """The other half of the same behaviour: reading the slot must not quietly widen a run
+        that nobody widened."""
+        names = [f"A · Chapter {i}" for i in range(2)] + [f"B · Chapter {i}" for i in range(2)]
+        make_book(names=names, texts=["word " * 40] * 4)
+        books.update_book("b1", lambda b: b.update(render_all={
+            "running": True, "done": 0, "total": 2, "parts": ["A"]}))
+        books.render_all_worker("b1")
+        assert [c["state"] for c in books.find_book("b1")["chapters"]] \
+            == ["ready", "ready", "pending", "pending"]
+
+    def test_the_queue_panel_lists_every_part_the_run_covers(self, make_book):
+        names = [f"A · Chapter {i}" for i in range(2)] + [f"B · Chapter {i}" for i in range(2)]
+        make_book(names=names, texts=["word " * 40] * 4)
+        books.update_book("b1", lambda b: b.update(render_all={
+            "running": True, "parts": ["A", "B"]}))
+        assert len(books.render_status()["queue"]) == 4
+        books.update_book("b1", lambda b: b["render_all"].update(parts=["A"]))
+        assert len(books.render_status()["queue"]) == 2

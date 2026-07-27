@@ -275,7 +275,7 @@ def render_status():
         ra = b.get("render_all") or {}
         if not ra.get("running"):
             continue
-        for c in chapters_in(b, ra.get("part")):
+        for c in run_scope(b):
             if c.get("state") == "pending" and (b["id"], c["i"]) not in seen:
                 queue_.append(entry((b["id"], c["i"]), "queued"))
     return {"current": entry(current, "narrating") if current else None, "queue": queue_}
@@ -495,6 +495,29 @@ def chapters_in(book, part=None):
         return chapters
     return [c for c in chapters if part_of(c.get("name")) == part]
 
+def run_parts(ra):
+    """The parts a bulk run covers, `[]` meaning the whole book.
+
+    A run used to cover exactly one part or all of them, held in `part`. It can now be added to
+    while it runs — asking for a second part while the first is being narrated queues it rather
+    than being refused — so the slot carries a list. A slot written in the old shape, on a book
+    that was mid-run when this landed, is read through here rather than migrated."""
+    parts = ra.get("parts")
+    if parts is None:
+        parts = [ra["part"]] if ra.get("part") else []
+    return [p for p in parts if p]
+
+def run_scope(book):
+    """The chapters a bulk run has to work through, in the book's order.
+
+    Derived from the book every time it's wanted, never remembered: what a run covers can grow
+    while it runs, and a chapter can be left out from under it."""
+    parts = run_parts(book.get("render_all") or {})
+    if not parts:
+        return chapters_in(book)
+    keep = set(parts)
+    return [c for c in chapters_in(book) if part_of(c.get("name")) in keep]
+
 def first_chapter(book):
     """Which chapter opens the book: the first one that isn't left out, or None if there's
     nothing to narrate. The title and author are spoken at the top of it, so leaving the
@@ -515,25 +538,30 @@ def book_parts(book):
         seen[p]["words"] += c.get("words", 0)
     return out
 
-def render_all_worker(book_id, part=None):
-    """Narrate every chapter, in order, until done or told to stop.
+def render_all_worker(book_id):
+    """Narrate every chapter the run covers, in order, until done or told to stop.
 
     Deliberately calls render_chapter per chapter rather than holding render_lock for the
     whole book: an 8-hour job that blocked every other render would be intolerable, and this
-    way tapping a single chapter gets its turn between two chapters of the bulk run."""
+    way tapping a single chapter gets its turn between two chapters of the bulk run.
+
+    Takes no scope of its own — run_scope reads it from the book's slot each time round, so a
+    part added to the run while it's going is picked up by the worker already in flight. One
+    worker per book, however much it's asked to do.
+    """
     while True:
         book = find_book(book_id)
         if not book or not (book.get("render_all") or {}).get("running"):
             break
         # only "pending" — a chapter that errored is skipped rather than retried forever
-        nxt = next((c["i"] for c in chapters_in(book, part) if c.get("state") == "pending"), None)
+        nxt = next((c["i"] for c in run_scope(book) if c.get("state") == "pending"), None)
         if nxt is None:
             break
         render_chapter(book_id, nxt)
-        # Counted over the part being narrated, not the whole book. Reporting 3 of 192 for a
-        # run that only ever intended four chapters made a part run look like a whole-book one.
+        # Counted over what the run covers, not the whole book. Reporting 3 of 192 for a run
+        # that only ever intended four chapters made a part run look like a whole-book one.
         book = find_book(book_id) or {}
-        scope = chapters_in(book, part)
+        scope = run_scope(book)
         done = sum(1 for c in scope if c.get("state") == "ready")
         update_book(book_id, lambda b, n=done, t=len(scope):
                     b.setdefault("render_all", {}).update(done=n, total=t))
@@ -952,20 +980,43 @@ def api_book_rescan():
 
 @app.post("/api/books/render_all")
 def api_book_render_all():
-    """Narrate the whole book — hours of work, so it reports progress and can be stopped."""
+    """Narrate the whole book, or one part of it — hours of work, so it reports progress and can
+    be stopped. A run already going is added to rather than refused.
+
+    Asking for a second part while the first was being narrated used to answer "already" and do
+    nothing, which read as a dead button: the run covered 22 chapters of The Institute and the
+    other 115 had no way in. There is one run slot per book, so instead of stacking a second
+    worker on it the part joins the run in flight — the worker re-reads what it covers between
+    chapters — and asking for the whole book widens the run to everything. Nothing is
+    interrupted: whatever is narrating goes on narrating, and the addition is queued behind it.
+    """
     d = request.get_json(force=True, silent=True) or {}
     book = find_book(d.get("id") or "")
     if not book:
         return jsonify(ok=False, msg="unknown book"), 404
-    if (book.get("render_all") or {}).get("running"):
-        return jsonify(ok=True, already=True)
     part = d.get("part") or None
-    scope = chapters_in(book, part)
+    ra = book.get("render_all") or {}
+    if ra.get("running"):
+        have = run_parts(ra)
+        # A run over the whole book already covers every part there is; so does one that names
+        # this part already. Either way there's nothing to add.
+        if not have or (part is not None and part in have):
+            return jsonify(ok=True, already=True)
+        want = [] if part is None else have + [part]
+        scope = run_scope(book | {"render_all": ra | {"parts": want, "part": None}})
+        done = sum(1 for c in scope if c.get("state") == "ready")
+        # part=None as well as parts=…, so the slot can't say two different things about its
+        # scope — run_parts prefers the list, and a stale name under it would be a trap.
+        update_book(book["id"], lambda b, w=want, n=done, t=len(scope):
+                    b["render_all"].update(parts=w, part=None, done=n, total=t))
+        return jsonify(ok=True, added=part, widened=part is None, parts=want)
+    parts = [] if part is None else [part]
+    scope = run_scope(book | {"render_all": {"parts": parts}})
     done = sum(1 for c in scope if c.get("state") == "ready")
     update_book(book["id"], lambda b: b.update(render_all={
-        "running": True, "done": done, "total": len(scope), "part": part}))
-    threading.Thread(target=render_all_worker, args=(book["id"], part), daemon=True).start()
-    return jsonify(ok=True)
+        "running": True, "done": done, "total": len(scope), "parts": parts, "part": part}))
+    threading.Thread(target=render_all_worker, args=(book["id"],), daemon=True).start()
+    return jsonify(ok=True, parts=parts)
 
 @app.post("/api/books/render_stop")
 def api_book_render_stop():

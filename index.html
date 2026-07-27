@@ -1643,6 +1643,15 @@ $("#bookResume").addEventListener("click", ()=>{
   if(r) playChapter(r.ci, r.si, r.offset);
 });
 
+// What a run covers: the parts named in its slot, or the whole book when it names none. A run
+// can be added to while it's going, so this is a list — and a slot written before it could be
+// carried a single name, which is what the fallback is for.
+const runParts = ra => ((ra.parts || (ra.part ? [ra.part] : []))).filter(Boolean);
+const partsLabel = ps => !ps.length ? "the whole book"
+  : ps.length === 1 ? `“${esc(ps[0])}”`
+  : ps.length === 2 ? `“${esc(ps[0])}” and “${esc(ps[1])}”`
+  : `${ps.length} parts`;
+
 // The whole-book panel: how much is narrated, and what's left to do.
 function renderWholeBook(){
   // What will be narrated, which is what the server counts too — a chapter left out isn't
@@ -1654,16 +1663,20 @@ function renderWholeBook(){
   const part  = chs.filter(c => c.state !== "ready" && (c.segments || []).length).length;
   const leftMin = left.reduce((n, c) => n + c.words / 146, 0) / 2.4;
   const ra = BOOK.render_all || {};
+  const parts = runParts(ra);
   $("#renderStop").style.display = ra.running ? "block" : "none";
-  $("#renderAll").disabled = !!ra.running || !left.length;
-  // A run started from a part narrates only that part, so it shouldn't report itself as the
-  // whole book — the counts and the hours left are the part's, and so is the name.
-  const scope = ra.running && ra.part ? chs.filter(c => partOf(c) === ra.part) : chs;
+  // Left enabled while a run covers only parts: asking for the whole book then widens it, which
+  // is the one thing you'd want and the disabled button refused. Nothing left to ask for only
+  // when the run is the whole book already.
+  $("#renderAll").disabled = (ra.running && !parts.length) || !left.length;
+  // A run over parts shouldn't report itself as the whole book — the counts and the hours left
+  // are the run's own, and so is the name.
+  const scope = ra.running && parts.length ? chs.filter(c => parts.includes(partOf(c))) : chs;
   const scopeDone = scope.filter(c => c.state === "ready").length;
   const scopeLeftMin = scope.filter(c => c.state === "pending")
                             .reduce((n, c) => n + c.words / 146, 0) / 2.4;
   $("#allHint").innerHTML = ra.running
-    ? `<span class="spin"></span>Narrating ${ra.part ? `“${esc(ra.part)}”` : "the whole book"}`
+    ? `<span class="spin"></span>Narrating ${partsLabel(parts)}`
       + ` — ${scopeDone} of ${scope.length} chapters done, roughly `
       + hoursLeft(scopeLeftMin) + ` left. It keeps going if you close the page.`
     : `${ready.length} of ${chs.length} chapters narrated.`
@@ -1728,7 +1741,23 @@ const chapterLabel = (c, grouped) =>
 // One list for the whole book. Books divided into parts — The Institute has four — group
 // their chapters under the part, which is also the unit you'd narrate or download at a time;
 // books without parts are the same list with that level left out.
+// This book's chapters that the engine is holding, refreshed before the rows are built.
+//
+// Two kinds, and the difference is what a row may still offer. "waiting" is a chapter asked for
+// by hand, already stacked up on the lock — there is nothing left to ask for. "queued" is one a
+// bulk run will reach on its own, which a tap can still pull forward, since a chapter tapped
+// during a run takes its turn as soon as the chapter in flight ends.
+let QUEUED = {asked: new Set(), coming: new Set()};
+function readQueue(){
+  QUEUED = {asked: new Set(), coming: new Set()};
+  (NARRATING.queue || []).forEach(e => {
+    if(BOOK && e.book === BOOK.id)
+      (e.state === "waiting" ? QUEUED.asked : QUEUED.coming).add(e.chapter);
+  });
+}
+
 function renderChapterList(){
+  readQueue();
   renderWholeBook();
   renderNarrating();
   renderResume();
@@ -1757,6 +1786,12 @@ function partGroup(g){
   const ready = g.chapters.filter(c => c.state === "ready").length;
   const all   = ready === g.chapters.length;
   const open  = OPEN_GROUPS.has(g.part);
+  // Being narrated already: either the run in flight covers this part — its own, or the whole
+  // book, which includes it — or one of its chapters is in the engine or waiting on the lock.
+  // Pressing it then did nothing at all, and looked exactly like pressing it to start.
+  const ra = BOOK.render_all || {}, parts = runParts(ra);
+  const busy = (ra.running && (!parts.length || parts.includes(g.part)))
+            || g.chapters.some(c => c.state === "rendering" || QUEUED.asked.has(c.i));
   const el = document.createElement("div");
   el.className = "clip group";
   el.innerHTML = `<div class="cliphead">
@@ -1765,7 +1800,10 @@ function partGroup(g){
         <div class="dur">${(words / 146 / 60).toFixed(1)} h</div></div>
       <div class="tr">${ready} of ${g.chapters.length} chapters narrated</div>
       <div class="clipacts">
-        <button class="nar"${all ? " disabled" : ""}>${all ? "✓ narrated" : "📖 Narrate part"}</button>
+        <button class="nar"${all || busy ? " disabled" : ""}>${
+          all ? "✓ narrated"
+              : busy ? '<span class="spin"></span>Narrating…'
+                     : "📖 Narrate part"}</button>
         <button class="exp"${ready ? "" : " disabled"}>⬇ Download part</button>
       </div>`;
   el.querySelector(".nar").addEventListener("click", async e => {
@@ -1775,8 +1813,9 @@ function partGroup(g){
     const d = await (await fetch("/api/books/render_all", {method:"POST",
       headers:{"Content-Type":"application/json"},
       body: JSON.stringify({id: BOOK.id, part: g.part})})).json();
-    toast(d.already
-      ? "⏳ This book is already narrating — that run has to finish or be stopped first."
+    toast(d.already ? `⏳ “${esc(g.part)}” is already in the run.`
+      : d.added ? `⏳ Added “${esc(g.part)}” to the run — about ${hoursLeft(mins)} of work,`
+                  + ` behind what's being narrated now.`
       : `<span class="spin"></span>Narrating “${esc(g.part)}” — about `
         + `${hoursLeft(mins)} of work, chapter by chapter.`);
     watchRenders();
@@ -1812,6 +1851,10 @@ function chapterRow(c, grouped){
   // would be hiding the useful part.
   let note = `${c.words.toLocaleString()} words · ~${(c.words / 146).toFixed(0)} min`;
   let plays = false;                       // …and so gets the ▶ in front of it
+  // Asked for and waiting its turn. Without this a tap on a second chapter changed nothing on
+  // screen — the row it came from looked as untouched as before, so the queue it had joined was
+  // only visible in the panel above, if you thought to fold it open.
+  const asked = QUEUED.asked.has(c.i);
   if(c.state === "rendering")
     note = `⏳ narrating… ${segs.length}/${c.total || "?"} parts`;
   else if(c.state === "ready"){ note = `${fmt(c.seconds)} · ready`; plays = true; }
@@ -1820,6 +1863,10 @@ function chapterRow(c, grouped){
     note = `${fmt(segsSeconds(segs))} narrated · ${segs.length} part(s), unfinished`;
     plays = true;
   }
+  // In front of what the row already said rather than instead of it: a half-narrated chapter
+  // waiting its turn still has audio worth knowing about, and still plays.
+  if(asked && c.state !== "rendering" && c.state !== "ready")
+    note = segs.length ? `⏳ queued · ${note}` : `⏳ queued · ~${workMin(c.words)} min of work`;
   // Left out: a mark on the chapter, not a deletion. Anything already narrated stays where it
   // is and stays playable — what the mark decides is what gets narrated from here and what
   // goes into a download.
@@ -1830,13 +1877,17 @@ function chapterRow(c, grouped){
   // Every chapter carries its own narrate button. Tapping the row does it too, but that only
   // works while the chapter has nothing to play — once it has, tapping plays instead — and a
   // book with no parts has no "Narrate part" either, so there was nothing visible to press.
-  const todo = !c.skip && (c.state === "pending" || c.state === "error");
+  // Not one already asked for: there's nothing left to ask, and a second tap on it looked like
+  // the first one hadn't worked. A chapter a bulk run will reach keeps its button, because
+  // tapping it is how you pull it forward.
+  const todo = !c.skip && !asked && (c.state === "pending" || c.state === "error");
   el.innerHTML = `<div class="cliphead"><div class="nm">${esc(chapterLabel(c, grouped))}</div>
       <button class="skip" title="${c.skip ? "Narrate this after all"
                                            : "Leave this out of the narration"}"
               >${c.skip ? "↩" : "⊘"}</button>
       <div class="dur">${c.state === "ready" && !c.skip ? "✓"
                        : c.state === "rendering" ? '<span class="spin"></span>'
+                       : asked ? "⏳"
                        : todo ? '<button class="narrow">📖 Narrate</button>' : ""}</div></div>
     <div class="tr">${plays ? '<span class="play">▶</span> ' : ""}${esc(note)}</div>`;
   el.querySelector(".cliphead").addEventListener("click", ()=> chapterTapped(c.i));
@@ -2000,7 +2051,9 @@ $("#renderAll").addEventListener("click", async ()=>{
     headers:{"Content-Type":"application/json"}, body: JSON.stringify({id: BOOK.id})})).json();
   // A toast rather than the status line: what the run is doing belongs in the hint beside this
   // button and the panel under it, both of which keep saying it. This only answers the tap.
-  toast(d.already ? "⏳ This book is already narrating."
+  toast(d.already ? "⏳ The whole book is already being narrated."
+    : d.widened ? `⏳ The run covers the whole book now — ${left.length} chapters left, about `
+                  + `${hrs} h, carrying on from what it's narrating.`
     : `<span class="spin"></span>Narrating the whole book — ${left.length} chapters, about `
       + `${hrs} h of work.`);
   watchRenders();
