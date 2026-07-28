@@ -332,7 +332,7 @@ def chapter_segments(book, index):
             text = f.read()
     except OSError:
         return []               # render_chapter turns this into an error; nothing to repair
-    return split_segments(epub.strip_heading(text, heading_of(chapters[index].get("name"))))
+    return split_segments(epub.strip_heading(text, chapters[index].get("name") or ""))
 
 FIND_FORMS = 12          # how many spellings one search answers with
 
@@ -604,10 +604,11 @@ def render_chapter(book_id, index):
                 state="error", error=f"missing text: {e}"[:200]))
             return
         # The chapter's own heading line is a bare number ("9") or the title, which the spoken
-        # lead-in says better, so it always comes out of the text. Matched against the chapter's
-        # own heading, never the part it's in: the page says "SHADE OF FEAR", not "Part One ·
-        # Shade of Fear".
-        text = epub.strip_heading(text, heading_of(chapter.get("name")))
+        # lead-in says better, so it always comes out of the text. The whole name goes in, part
+        # and all: strip_heading matches each piece of it against the lines separately, since a
+        # page prints whichever of them it likes — usually the chapter alone, and both where a
+        # part-title page opens the file.
+        text = epub.strip_heading(text, chapter.get("name") or "")
         intro = chapter_intro(book, index)
 
         # The lead-in lives in the chapter's first segment, and a resumed render keeps whatever
@@ -680,7 +681,7 @@ def render_chapter(book_id, index):
         # Cancelled, however we got here: finished, broke out of the loop, or threw.
         discard_render(book_id, index, audio_dir, made)
 
-PART_SEP = " · "     # how epub.py joins a part name to its chapter label
+PART_SEP = epub.PART_SEP     # how epub.py joins a part name to its chapter label
 
 # Spoken lead-in before a chapter's text: "The Night Knocker" … "one" … the prose. The pause
 # after each is real silence, not punctuation — a full stop buys about a third of a second,

@@ -190,6 +190,13 @@ it — a full book is hours of work.
   chapter's heading — which the narration then drops, along with whatever heading the chapter's
   own page carries. A short section that *isn't* the next chapter's title, like a stray
   quotation, stays a chapter of its own: the test is that its whole text is inside its name.
+
+  **A part's title page belongs to the chapter under it, as a part.** Same fold, different page:
+  The War of the Worlds and A Tale of Two Cities open each book with *BOOK ONE THE COMING OF THE
+  MARTIANS*, and the chapter beneath it is in the contents nowhere at all. Folded in it would
+  take the part's name and announce it as its own, so where the line under the part opens with a
+  number that line is the chapter — the name becomes `BOOK ONE … · I. THE EVE OF THE WAR.`, which
+  announces as the part and then chapter one, and every heading comes out of the prose.
 - **Left out of the narration**, at the foot of the reader and shut by default, lists what
   extraction dropped and why — *Cover · 2w · looks like front or back matter*, *According to the
   National Center for… · 28w · only 28 words*. The Institute loses 21 sections that way, and

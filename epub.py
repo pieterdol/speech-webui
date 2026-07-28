@@ -40,6 +40,14 @@ HEADING_LINES = 3
 # heading find them: strip_heading, since that name matches the very text it was taken from, and
 # the announcement, which would read the opening of the chapter out twice.
 OPENING_NAME = "…"
+# How a part's name is joined to a chapter's own, here and everywhere downstream.
+PART_SEP = " · "
+# A part-title page and the chapter under it can share one spine document, with only the part in
+# the contents: The War of the Worlds sets "BOOK ONE THE COMING OF THE MARTIANS" over "I. THE EVE
+# OF THE WAR." Then the chapter goes in under the part's name, its own heading is left in the
+# prose to be read as "eye", and it announces the same thing every other chapter of book one does.
+# The line under the part is the chapter's own heading when it opens with a number.
+_NUMBERED_HEADING = re.compile(r"(?i)^(?:chapter|part|book|hoofdstuk|deel)?\s*[\dIVXLC]+\b")
 
 
 def _opf_path(z):
@@ -198,8 +206,26 @@ def extract(path):
                 page = chapters.pop()
                 entry.update(name=page["name"], text=page["text"] + "\n" + body)
                 entry["words"] = len(entry["text"].split())
+            # After the fold, because the page that came in may have been a *part's* title and
+            # not this chapter's — and then the chapter's own heading is the line under it.
+            entry["name"] += _own_heading(entry["text"], entry["name"])
             chapters.append(entry)
     return meta, chapters, skipped
+
+
+def _own_heading(body, name):
+    """The chapter's own heading joined on as a part would be, or "".
+
+    For a section the contents names after the part-title line it opens with: the line under
+    that one is the chapter, when it opens with a number and is short enough to be a heading.
+    Joined rather than replacing, because the part is real — it's the part that page announces.
+    """
+    lines = [line.strip() for line in body.split("\n")[:2]]
+    if PART_SEP in name or name.endswith(OPENING_NAME) or len(lines) < 2:
+        return ""
+    if _norm(lines[0]) != _norm(name) or len(lines[1]) > HEADING_CHARS:
+        return ""
+    return PART_SEP + lines[1] if _NUMBERED_HEADING.match(lines[1]) else ""
 
 
 def _is_title_page(chapter):
@@ -287,12 +313,18 @@ def strip_heading(text, name):
     Containment one way only. A line the heading contains is the heading; a line that contains
     the heading is prose that opens with the title's own words — "The long walk home began at
     dawn" under a chapter called "The Long Walk Home" — and stays.
+
+    The name is matched a piece at a time, the part and the chapter's own heading each on their
+    own, because a page carries whichever of them it happens to print: usually just the chapter,
+    and both where a part-title page opens the file.
     """
     lines = text.split("\n")
     # A section named after its own first words is named after the very lines below, so every
     # one of them "is part of the heading" — that name is no heading at all.
-    heading = "" if (name or "").endswith(OPENING_NAME) else _norm(name)
-    taken, covered = 0, 0
+    pieces = [] if (name or "").endswith(OPENING_NAME) else \
+        [p for p in (_norm(x) for x in (name or "").split(PART_SEP)) if p]
+    covered = [0] * len(pieces)
+    taken = 0
     while taken < min(len(lines), HEADING_LINES):
         line = lines[taken].strip()
         if len(line) > HEADING_CHARS:
@@ -302,18 +334,19 @@ def strip_heading(text, name):
         # only at the very top: 11/22/63 numbers the sections inside a chapter, so under
         # "CHAPTER 1" sits a "1" that belongs to the prose — take it off and the first section
         # of every chapter is the only one without its number.
-        if heading and len(norm) >= 3 and norm in heading:
-            covered += len(norm)
+        hit = next((j for j, p in enumerate(pieces) if len(norm) >= 3 and norm in p), None)
+        if hit is not None:
+            covered[hit] += len(norm)
         elif taken == 0 and (re.fullmatch(r"[\dIVXLC]+\.?", line)
                              or re.fullmatch(r"(?i)chapter\s+[\dIVXLC]+\.?", line)):
-            covered = len(heading)       # a number is all of the heading there is
+            covered = [len(p) for p in pieces]    # a number is all of the heading there is
         else:
             break
         taken += 1
-    # And what came off has to be most of the heading, not a few of its letters: "Dawn." is a
-    # line of the story under a chapter called "A Wind Off the Downs at Dawn", and every word of
-    # it appears in that title.
-    if covered * 2 < len(heading):
+    # And what came off has to be most of the piece it matched, not a few of its letters:
+    # "Dawn." is a line of the story under a chapter called "A Wind Off the Downs at Dawn", and
+    # every word of it appears in that title.
+    if any(0 < c * 2 < len(p) for c, p in zip(covered, pieces)):
         return text
     # A part-title page kept as a chapter — The Gunslinger has "THE GUNSLINGER" and nothing
     # else — is all heading. Emptying it would leave a chapter with no segments, which is a

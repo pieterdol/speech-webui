@@ -184,6 +184,39 @@ class TestATitleOnAPageOfItsOwn:
         assert [c["name"] for c in chapters] == ["Before the Road", "CHAPTER 1"]
 
 
+class TestAPartTitleOverTheFirstChapter:
+    """The War of the Worlds' shape: one document holding "BOOK ONE THE COMING OF THE MARTIANS"
+    and then "I. THE EVE OF THE WAR.", with only the part in the contents. The chapter went in
+    under the part's name, and its own heading stayed in the prose to be read as "eye"."""
+
+    def make(self, tmp_path, second="I. THE EVE OF THE WAR."):
+        doc = ("<html><body><h1>BOOK ONE THE COMING OF THE MARTIANS</h1>"
+               f"<h2>{second}</h2><p>{' '.join(f'word{i}' for i in range(400))}</p></body></html>")
+        return build(tmp_path, [("b1.html", doc)],
+                     [("BOOK ONE THE COMING OF THE MARTIANS", "b1.html", [])])
+
+    def test_the_chapters_own_heading_joins_the_name(self, tmp_path):
+        _meta, chapters, _skipped = epub.extract(self.make(tmp_path))
+        assert [c["name"] for c in chapters] == [
+            "BOOK ONE THE COMING OF THE MARTIANS · I. THE EVE OF THE WAR."]
+
+    def test_the_part_and_the_chapter_are_then_both_announceable(self, tmp_path):
+        _meta, chapters, _skipped = epub.extract(self.make(tmp_path))
+        name = chapters[0]["name"]
+        assert books.part_of(name) == "BOOK ONE THE COMING OF THE MARTIANS"
+        assert books.spoken_heading(books.heading_of(name)) == "1. THE EVE OF THE WAR."
+
+    def test_both_heading_lines_come_off_the_prose(self, tmp_path):
+        _meta, chapters, _skipped = epub.extract(self.make(tmp_path))
+        c = chapters[0]
+        assert epub.strip_heading(c["text"], c["name"]).startswith("word0")
+
+    def test_a_second_line_that_is_prose_is_left_alone(self, tmp_path):
+        """The line under the part title is the chapter only when it opens with a number."""
+        _meta, chapters, _skipped = epub.extract(self.make(tmp_path, second="It began quietly."))
+        assert chapters[0]["name"] == "BOOK ONE THE COMING OF THE MARTIANS"
+
+
 class TestFlatToc:
     """1984's shape: three entries, no children. There are no parts to find, and saying so is
     correct rather than a failure."""
