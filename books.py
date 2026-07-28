@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from flask import Response, jsonify, request, send_from_directory
 
 import epub
+import openlib
 from core import (app, index_lock, jobs, log, log_transfer, new_job, run_lock, safe_path,
                   write_json, HERE)
 from media import audio_seconds, pad_with_silence
@@ -1250,7 +1251,42 @@ def api_book_add():
         items = load_books()
         items.insert(0, entry)
         write_books(items)
+    threading.Thread(target=fetch_description,
+                     args=(bid, meta["title"], meta["author"]), daemon=True).start()
     return jsonify(ok=True, book=book_summary(entry))
+
+def fetch_description(book_id, title, author):
+    """What the book is about, from Open Library, kept on the book.
+
+    Off the upload rather than inside it: the network is someone else's machine, and adding a
+    book must neither wait on it nor fail with it. A book that turns up nothing keeps no
+    description and says nothing about it — the field in ⚙ is there to type one in, or to ask
+    again once the title is right.
+    """
+    try:
+        text, work = openlib.describe(title, author)
+    except Exception as e:              # a timeout, a 500, a search that matched nobody
+        log.info("no description for %r: %s", title, e)
+        return
+    if text:
+        update_book(book_id, lambda b: b.update(description=text, work=work))
+
+@app.post("/api/books/describe")
+def api_book_describe():
+    """Ask again — for a book added before this existed, one the search put on the wrong work,
+    or one whose description has been cleared and wants filling back in."""
+    d = request.get_json(force=True, silent=True) or {}
+    book = find_book(d.get("id") or "")
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    try:
+        text, work = openlib.describe(book.get("title") or "", book.get("author") or "")
+    except Exception as e:
+        return jsonify(ok=False, msg=f"couldn't reach Open Library: {str(e)[:120]}"), 502
+    if not text:
+        return jsonify(ok=False, msg="Open Library has nothing for this one"), 404
+    update_book(book["id"], lambda b: b.update(description=text, work=work))
+    return jsonify(ok=True, book=find_book(book["id"]))
 
 @app.get("/api/books")
 def api_books():
@@ -1529,6 +1565,8 @@ def api_book_update():
         if d.get("title"): b["title"] = d["title"][:200]
         if "spoken_title" in d: b["spoken_title"] = (d["spoken_title"] or "").strip()[:200]
         if "opening" in d: b["opening"] = (d["opening"] or "").strip()[:OPENING_CHARS]
+        if "description" in d:
+            b["description"] = (d["description"] or "").strip()[:openlib.DESCRIPTION_CHARS]
         return b
     # The opening announcement lives inside the first segment of whichever chapter opens the
     # book, so renaming it leaves that one file saying the old name. Re-making it costs a few

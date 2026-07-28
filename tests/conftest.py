@@ -20,6 +20,7 @@ import books        # noqa: E402
 import chat         # noqa: E402
 import clips        # noqa: E402
 import core         # noqa: E402
+import openlib      # noqa: E402
 import tts          # noqa: E402
 
 HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
@@ -138,6 +139,21 @@ def no_real_engines(monkeypatch):
 
     monkeypatch.setattr(tts, "worker_call", refuse)
     monkeypatch.setattr(tts, "_voices", {})     # and no cache carried in from elsewhere
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """No test reaches Open Library.
+
+    Adding a book looks its description up in a thread, so without this every import test
+    would go out to the internet — slowly, differently each time, and reporting a fault in
+    someone else's service as a fault here. A test that wants a description patches
+    openlib.describe itself.
+    """
+    def refuse(url):
+        raise AssertionError(f"a test tried to fetch {url} — patch openlib.describe instead")
+
+    monkeypatch.setattr(openlib, "_get", refuse)
 
 
 @pytest.fixture

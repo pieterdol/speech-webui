@@ -8,8 +8,12 @@ phone ──https──> tailscale serve :8443 ──> 127.0.0.1:8600  speech.py
                                               ├── kokoro_worker   (subprocess, English, resident)
                                               ├── piper_worker    (subprocess, Dutch, resident)
                                               ├── f5-tts CLI      (~/.local/bin/f5-tts)
-                                              └── ollama HTTP     (127.0.0.1:11434 → Radeon)
+                                              ├── ollama HTTP     (127.0.0.1:11434 → Radeon)
+                                              └── openlibrary.org (once per book added)
 ```
+
+Every arrow but the last one stays on this machine. `openlib.py` sends a title and an author when
+a book is added and gets back a line about what it is; nothing else, and nothing waits on it.
 
 ## The speech engines
 

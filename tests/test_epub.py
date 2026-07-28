@@ -6,12 +6,14 @@ front matter that gets dropped, and a flat TOC that legitimately has no parts to
 """
 import os
 import shutil
+import time
 import zipfile
 
 import pytest
 
 import books
 import epub
+import openlib
 
 CONTAINER = """<?xml version="1.0"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
@@ -388,6 +390,78 @@ class TestStripHeading:
                 "the section after in the absence of anything better\n"
                 "and then the rest of it follows.")
         assert epub.strip_heading(text, text.split("\n")[0]) == text
+
+
+class TestTheDescription:
+    """Adding a book looks up what it's about, off the upload — the network is someone else's
+    machine and an import must neither wait on it nor fail with it."""
+
+    def add(self, client, tmp_path, name="t.epub"):
+        docs = [("c1.html", page("Chapter 1", 400))]
+        path = build(tmp_path, docs, [("Chapter 1", "c1.html", [])], name=name)
+        with open(path, "rb") as f:
+            return client.post("/api/books", data={"file": (f, name)},
+                               content_type="multipart/form-data").get_json()["book"]["id"]
+
+    def test_it_is_kept_with_the_book(self, client, tmp_path, isolated_books, monkeypatch):
+        monkeypatch.setattr(openlib, "describe",
+                            lambda title, author: ("A surveyor arrives.", "/works/OL1W"))
+        bid = self.add(client, tmp_path)
+        for _ in range(50):                       # the lookup runs in its own thread
+            if books.find_book(bid).get("description"):
+                break
+            time.sleep(0.02)
+        book = books.find_book(bid)
+        assert book["description"] == "A surveyor arrives."
+        assert book["work"] == "/works/OL1W"      # the match is a guess, so it's recorded
+
+    def test_a_book_nobody_has_heard_of_is_added_anyway(self, client, tmp_path, isolated_books,
+                                                        monkeypatch):
+        monkeypatch.setattr(openlib, "describe", lambda title, author: ("", ""))
+        bid = self.add(client, tmp_path)
+        assert books.find_book(bid) is not None
+        assert "description" not in books.find_book(bid)
+
+    def test_the_import_survives_open_library_falling_over(self, client, tmp_path,
+                                                           isolated_books, monkeypatch):
+        def boom(title, author):
+            raise TimeoutError("no answer")
+
+        monkeypatch.setattr(openlib, "describe", boom)
+        bid = self.add(client, tmp_path)
+        assert books.find_book(bid)["chapters"][0]["name"] == "Chapter 1"
+
+    def test_asking_again(self, client, tmp_path, isolated_books, monkeypatch):
+        """For a book added before this existed, or matched to the wrong work."""
+        monkeypatch.setattr(openlib, "describe", lambda title, author: ("", ""))
+        bid = self.add(client, tmp_path)
+        monkeypatch.setattr(openlib, "describe",
+                            lambda title, author: ("Found this time.", "/works/OL2W"))
+        r = client.post("/api/books/describe", json={"id": bid})
+        assert r.status_code == 200
+        assert books.find_book(bid)["description"] == "Found this time."
+
+    def test_asking_again_when_there_is_nothing(self, client, tmp_path, isolated_books,
+                                                monkeypatch):
+        monkeypatch.setattr(openlib, "describe", lambda title, author: ("", ""))
+        bid = self.add(client, tmp_path)
+        r = client.post("/api/books/describe", json={"id": bid})
+        assert r.status_code == 404 and not r.get_json()["ok"]
+
+    def test_it_can_be_written_by_hand_and_cleared(self, client, tmp_path, isolated_books,
+                                                   monkeypatch):
+        monkeypatch.setattr(openlib, "describe", lambda title, author: ("", ""))
+        bid = self.add(client, tmp_path)
+        client.post("/api/books/update", json={"id": bid, "description": "  My own words.  "})
+        assert books.find_book(bid)["description"] == "My own words."
+        client.post("/api/books/update", json={"id": bid, "description": ""})
+        assert books.find_book(bid)["description"] == ""
+
+    def test_a_long_one_is_capped(self, client, tmp_path, isolated_books, monkeypatch):
+        monkeypatch.setattr(openlib, "describe", lambda title, author: ("", ""))
+        bid = self.add(client, tmp_path)
+        client.post("/api/books/update", json={"id": bid, "description": "x" * 5000})
+        assert len(books.find_book(bid)["description"]) == openlib.DESCRIPTION_CHARS
 
 
 class TestReadingBackASkippedSection:

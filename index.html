@@ -483,6 +483,11 @@
       <button id="bookCog" class="iconbtn" title="Book settings" aria-label="Book settings">⚙</button>
     </div>
 
+    <!-- What the book is about, looked up when it was added. Hidden when there is none: an
+         empty line under the title reads as something failing rather than as nothing to say. -->
+    <div id="bookAbout" class="dim" style="display:none;font-size:13px;margin-top:10px;
+         line-height:1.45"></div>
+
     <!-- One tap back to where you stopped. Hidden until there is a position to go back to and
          audio still sitting under it. -->
     <button id="bookResume" class="btn primary wide" style="display:none"></button>
@@ -509,6 +514,16 @@
       <div class="hint">For a title written to be read rather than heard. “11/22/63: A Novel”
         wants “eleven, twenty-two, sixty-three”. Only the announcement changes — the written
         title, the library and the .m4b keep the real one. Empty means say it as written.</div>
+      <label for="bookDescription">What it's about</label>
+      <div class="pickrow">
+        <textarea id="bookDescription" rows="3"></textarea>
+        <button id="bookDescribe" class="iconbtn" title="Look it up on Open Library"
+                aria-label="Look it up again">↻</button>
+      </div>
+      <div class="hint">Shown under the title, never narrated. Looked up on Open Library when the
+        book was added — ↻ asks again, which is what to do when the search matched the wrong
+        book, and it's the only thing here that leaves this machine. Write your own over it or
+        empty it; either sticks.</div>
       <label for="bookOpening">Read this at the start</label>
       <div class="pickrow">
         <textarea id="bookOpening" rows="3"></textarea>
@@ -1780,6 +1795,7 @@ async function openBook(id){
   renderRespellings();
   renderEpub();
   $("#bookOpening").value = BOOK.opening || "";
+  showAbout();
   $("#respellFrom").value = $("#respellTo").value = $("#respellFind").value = "";
   $("#respellFound").innerHTML = "";
   // The count says there is something to see; the panel at the foot of the page says what.
@@ -2846,6 +2862,28 @@ $("#bookAutoExport").addEventListener("change",
   ()=> changeBook({auto_export: $("#bookAutoExport").checked}));
 // On change, not on every keystroke: each save can re-make the book's opening.
 $("#bookSayTitle").addEventListener("change", ()=> changeBook({spoken_title: $("#bookSayTitle").value}));
+// What the book is about. Nothing is narrated with it, so a save here re-makes no audio.
+function showAbout(){
+  const text = (BOOK && BOOK.description) || "";
+  $("#bookAbout").textContent = text;
+  $("#bookAbout").style.display = text ? "" : "none";
+  $("#bookDescription").value = text;
+}
+$("#bookDescription").addEventListener("change", ()=>
+  changeBook({description: $("#bookDescription").value}));
+$("#bookDescribe").addEventListener("click", async e => {
+  const btn = e.currentTarget, id = BOOK && BOOK.id;
+  if(!id) return;
+  btn.disabled = true;
+  try {
+    const d = await (await fetch("/api/books/describe", {method:"POST",
+      headers:{"Content-Type":"application/json"}, body: JSON.stringify({id})})).json();
+    if(!d.ok) return toast("❌ " + (d.msg || "couldn't look it up"));
+    BOOK = d.book;
+    showAbout();
+    toast("✅ Description updated.");
+  } finally { btn.disabled = false; }
+});
 // Same deal for the opening note: on change, since each save can re-record the book's opening.
 $("#bookOpening").addEventListener("change", ()=> changeBook({opening: $("#bookOpening").value}));
 $("#bookOpeningPlay").addEventListener("click", e =>
@@ -2873,6 +2911,7 @@ async function changeBook(patch){
   // Back from what was stored, not from what was typed: the note is capped, and a field showing
   // more than the book kept would be lying about what gets read out.
   $("#bookOpening").value = BOOK.opening || "";
+  showAbout();
   // A rename re-makes one file, the opening of chapter 1 — so only somebody listening to that
   // has the ground moved under them. Stopping the player halfway through chapter forty over a
   // spelling change would be gratuitous.

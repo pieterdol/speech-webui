@@ -32,6 +32,18 @@ Three folding rules keep one chapter from becoming two:
   the page sets them, by the same rule that removes a heading. A bare number is left alone: by then
   it's the book's own numbering inside the chapter.
 
+## What the book is about
+
+Adding a book looks it up on Open Library — a title and an author out, a paragraph back, cut to
+two or three sentences and shown under the title on the book's own page. It's never narrated.
+
+This is the only part of the app that talks to another machine, so it's built to be ignorable:
+the lookup runs off the upload rather than inside it, an import neither waits on it nor fails
+with it, and a book that turns up nothing simply hasn't got one. The match is a guess made from
+a title and an author, and the catalogue will happily return a different book of the same name —
+so the work it matched is recorded beside the description, **↻** in ⚙ asks again, and the field
+takes whatever you write over it, including nothing.
+
 ## Left out of the narration
 
 The panel lists what extraction dropped and why. It's what the index keeps; a section's words are
