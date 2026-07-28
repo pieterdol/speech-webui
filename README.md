@@ -772,6 +772,15 @@ redirects along with everything else, and the rest of the test then runs against
   and two single digits are left alone, `1/2` being a fraction far more often than a date. Prose
   as much as titles.
 
+  **Nor is a thousands separator.** Kokoro's tokenizer reads it as a break between two numbers,
+  so `140,000,000 miles` comes out *"one hundred forty, zero zero zero, zero zero zero miles"*
+  and `$100,000` as *"dollar one hundred, zero zero zero"*. Dropping the commas is the whole fix
+  — the same tokenizer reads `140000000` as *"one hundred forty million"* — and it needs no
+  spelling out, so a Dutch voice goes on saying the number in Dutch. Groups of exactly three
+  digits only, which is what keeps it safe there: a comma is the decimal point in Dutch, and
+  `3,5` is left to be read as *"drie komma vijf"*. The Dutch thousands form, `140.000.000`, is
+  left alone too — espeak reads that one correctly as it stands.
+
   A hyphenated date gets the same treatment but needs a narrower rule, since between numbers a
   hyphen is usually a range: `1914-1918`, `pages 10-20`, `the 2020-21 season`. Only the two forms
   carrying a four-digit year are read as a date — `10-02-1986` and `1986-02-10` — and every other

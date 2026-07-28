@@ -90,6 +90,18 @@ TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eight
 # side rules out a URL or a path.
 _SLASH_NUMBERS = re.compile(r"(?<![\w/.])(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?(?![\w/])")
 
+# A thousands separator is a writing convention too, and Kokoro's tokenizer reads it as a break
+# between two numbers: "140,000,000 miles" comes out as "one hundred forty, zero zero zero, zero
+# zero zero miles", and "$100,000" as "dollar one hundred, zero zero zero". Dropped, the same
+# tokenizer reads the digits as one number — "one hundred forty million" — so nothing here spells
+# anything out and every voice goes on saying it in its own language. espeak, which is what Piper
+# phonemises with, gets the separator right either way and is unharmed by its going.
+#
+# Groups of exactly three digits, which is what makes this safe in a Dutch book: there a comma is
+# the decimal point, and "3,5" is left alone to be read as "drie komma vijf". A list is safe for
+# the same reason — "100, 200" has a space, and "1,2,3" hasn't got three digits anywhere.
+_GROUPED_NUMBER = re.compile(r"(?<![\d.,])\d{1,3}(?:,\d{3})+(?![\d,])")
+
 # The same date written with hyphens — "10-02-1986". A hyphen needs a much narrower rule than a
 # slash, because between numbers it is usually a range and not a separator: "1914-1918", "pages
 # 10-20", "the 2020-21 season", "MS-13". So only the two forms carrying a four-digit year count
@@ -176,6 +188,7 @@ def respell(text, extra=None):
     for pattern, full in _SPOKEN:
         text = pattern.sub(lambda m, f=full: _expand(m, f), text)
     text = _NUMBER_OF.sub("number", text)
+    text = _GROUPED_NUMBER.sub(lambda m: m.group(0).replace(",", ""), text)
     text = _SLASH_NUMBERS.sub(_spoken_groups, text)
     text = _HYPHEN_DATE.sub(_spoken_groups, text)
     # A replacement is put in through a function, not as re.sub's template: a reader typing

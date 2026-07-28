@@ -290,6 +290,37 @@ class TestNumberWords:
         assert textprep.ONES[11] == "eleven" and textprep.TENS[6] == "sixty"
 
 
+class TestGroupedNumbers:
+    """Kokoro's tokenizer reads a thousands separator as a break between two numbers, so
+    "140,000,000 miles" comes out "one hundred forty, zero zero zero, zero zero zero". Without
+    it the same tokenizer says "one hundred forty million" — in whatever language it speaks, so
+    nothing is spelled out here."""
+
+    @pytest.mark.parametrize("written,spoken", [
+        ("140,000,000 miles away", "140000000 miles away"),
+        ("$100,000 a year", "$100000 a year"),
+        ("8,722 of them", "8722 of them"),
+        ("1,200 men and 10,440 horses", "1200 men and 10440 horses"),
+    ])
+    def test_the_separator_goes(self, written, spoken):
+        assert textprep.respell(written) == spoken
+
+    @pytest.mark.parametrize("text", [
+        "het was 3,5 meter breed",        # a Dutch decimal, read as "drie komma vijf"
+        "op 0,75 na",
+        "chapters 100, 200 and 300",      # a list: the space says so
+        "1,2,3 and away",
+        "140.000.000 mijl",               # the Dutch thousands form, which espeak reads right
+        "a room 12,5 metres long",
+    ])
+    def test_left_alone(self, text):
+        assert textprep.respell(text) == text
+
+    def test_a_date_is_still_a_date(self):
+        """The slash rule owns those, and its output has no separator to lose."""
+        assert textprep.respell("on 11/22/63 it happened") == "on 11, 22, 63 it happened"
+
+
 class TestSlashNumbers:
     """A slash between numbers is a writing convention, not a sound: "11/22/63" read as written
     comes out "eleven slash twenty-two slash sixty-three". Only the slash is dealt with here —
