@@ -184,8 +184,31 @@ def extract(path):
                 skipped.append({"name": name, "words": words, "why": why, "text": body,
                                 "at": len(chapters)})
                 continue
-            chapters.append({"name": name, "words": words, "text": body})
+            entry = {"name": name, "words": words, "text": body}
+            # A book that sets each chapter's title on a page of its own lists every chapter
+            # twice. The Gunslinger has "Chapter 1: The Gunslinger" with two words in it, then
+            # the chapter itself under the heading its own page carries, "CHAPTER 1" — two rows
+            # in the library, two markers in the .m4b, and an announcement for each. The page is
+            # the chapter's heading, and the contents' name for it is the better of the two.
+            if chapters and _is_title_page(chapters[-1]):
+                page = chapters.pop()
+                entry.update(name=page["name"], text=page["text"] + "\n" + body)
+                entry["words"] = len(entry["text"].split())
+            chapters.append(entry)
     return meta, chapters, skipped
+
+
+def _is_title_page(chapter):
+    """Whether a section is nothing but the title of the chapter after it: one line's worth of
+    text, saying what the contents calls it.
+
+    A name made from the section's own first words is excluded, being no title — it would say
+    the same thing about any short section at all, an epigraph included.
+    """
+    if chapter["name"].endswith(OPENING_NAME) or len(chapter["text"]) > HEADING_CHARS:
+        return False
+    text = _norm(chapter["text"])
+    return bool(text) and text in _norm(chapter["name"])
 
 
 def cover(path):

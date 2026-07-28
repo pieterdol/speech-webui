@@ -146,6 +146,44 @@ class TestSeveralChaptersPerFile:
         assert "four five six" in chapters[0]["text"]
 
 
+class TestATitleOnAPageOfItsOwn:
+    """The Gunslinger's shape: a page carrying nothing but the chapter's title, which the
+    contents names, and then the chapter itself on the page after it, which it doesn't. It was
+    listing every chapter twice — "Chapter 1: The Gunslinger" with two words in it, then
+    "CHAPTER 1" with the story."""
+
+    def make(self, tmp_path, title_page="THE OUTSET", label="Chapter 1: The Outset"):
+        # The contents points at the title page by anchor, which is what keeps a page of two
+        # words from being dropped as a stray line.
+        docs = [("t1.html", f'<html><body><h1 id="top">{title_page}</h1></body></html>'),
+                ("c1.html", page("body", 400, heading="CHAPTER 1"))]
+        return build(tmp_path, docs, [(label, "t1.html#top", [])])
+
+    def test_the_two_become_one_chapter(self, tmp_path):
+        _meta, chapters, _skipped = epub.extract(self.make(tmp_path))
+        assert [c["name"] for c in chapters] == ["Chapter 1: The Outset"]
+
+    def test_it_keeps_the_name_from_the_contents(self, tmp_path):
+        """Which is the better of the two: "CHAPTER 1" is only what the page happens to say."""
+        _meta, chapters, _skipped = epub.extract(self.make(tmp_path))
+        assert chapters[0]["words"] > 400            # the story, not the two-word page
+        assert "word399" in chapters[0]["text"]
+
+    def test_both_headings_then_come_off_the_text(self, tmp_path):
+        _meta, chapters, _skipped = epub.extract(self.make(tmp_path))
+        c = chapters[0]
+        assert epub.strip_heading(c["text"], c["name"]).startswith("word0")
+
+    def test_a_short_section_that_is_not_a_title_stays_its_own_chapter(self, tmp_path):
+        """A stray quotation before a chapter is short too, and it isn't its heading."""
+        docs = [("ep.html", '<html><body><p id="top">Every road runs out somewhere, said the '
+                            'sign at the edge of the last town.</p></body></html>'),
+                ("c1.html", page("body", 400, heading="CHAPTER 1"))]
+        book = build(tmp_path, docs, [("Before the Road", "ep.html#top", [])])
+        _meta, chapters, _skipped = epub.extract(book)
+        assert [c["name"] for c in chapters] == ["Before the Road", "CHAPTER 1"]
+
+
 class TestFlatToc:
     """1984's shape: three entries, no children. There are no parts to find, and saying so is
     correct rather than a failure."""

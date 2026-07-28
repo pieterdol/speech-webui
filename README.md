@@ -181,6 +181,15 @@ it — a full book is hours of work.
   addresses each from its table of contents by anchor — `Section0001.xhtml#heading_id_3` — is cut
   at those anchors, so twenty chapters stay twenty chapters. A chapter the TOC names is kept
   however short it is; the length rule that drops part-title pages applies to untitled sections.
+
+  **A title set on a page of its own belongs to the chapter after it.** The Gunslinger gives each
+  chapter a page carrying two words — *THE GUNSLINGER* — which its contents names *"Chapter 1: The
+  Gunslinger"*, and then the chapter itself on a page the contents doesn't name at all. Left as
+  two, every chapter appears twice in the library, twice in the `.m4b`, and is announced twice.
+  They're folded into one, under the name the contents gives, and the title page becomes the
+  chapter's heading — which the narration then drops, along with whatever heading the chapter's
+  own page carries. A short section that *isn't* the next chapter's title, like a stray
+  quotation, stays a chapter of its own: the test is that its whole text is inside its name.
 - **Left out of the narration**, at the foot of the reader and shut by default, lists what
   extraction dropped and why — *Cover · 2w · looks like front or back matter*, *According to the
   National Center for… · 28w · only 28 words*. The Institute loses 21 sections that way, and
