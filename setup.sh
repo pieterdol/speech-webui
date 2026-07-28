@@ -8,7 +8,7 @@
 #   ./setup.sh --check         # report what's installed, change nothing
 #
 # Each engine keeps its own venv under ~/.local/share, and the app borrows their interpreters
-# rather than duplicating their dependencies — see the README. Nothing here touches Ollama;
+# rather than duplicating their dependencies — see docs/architecture.md. Nothing here touches Ollama;
 # that's `ollama.service` in this repo.
 #
 # Versions are pinned to what this app was tested against. Bumping them is fine, but F5 in
