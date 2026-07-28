@@ -766,7 +766,7 @@ def title_label(label):
     strip_heading asks — past a line's worth it isn't a heading, it's prose.
     """
     label = (label or "").strip()
-    if label.endswith("…") or re.fullmatch(r"[\w-]+\.x?html?", label, re.I):
+    if label.endswith(epub.OPENING_NAME) or re.fullmatch(r"[\w-]+\.x?html?", label, re.I):
         return ""
     return label if len(label) <= epub.HEADING_CHARS else ""
 

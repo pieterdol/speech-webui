@@ -234,9 +234,47 @@ class TestStripHeading:
         assert epub.strip_heading("PROLOGUE: SHADE OF FEAR\nA wind blew off the mountain.",
                                   "Prologue: Shade of Fear").startswith("A wind")
 
+    def test_a_heading_set_as_two_blocks_comes_off_whole(self):
+        """Rich Dad Poor Dad's pages have "Chapter One" over "LESSON 1: THE RICH DON'T WORK FOR
+        MONEY", which the contents joins into one entry."""
+        text = ("Chapter One\nLESSON 1: THE RICH DON’T WORK FOR MONEY\n"
+                "The poor work for money, which is the whole lesson.")
+        assert epub.strip_heading(text, "Chapter One: Lesson 1: The Rich Don’t Work for Money") \
+            == "The poor work for money, which is the whole lesson."
+
+    def test_a_numbered_section_under_the_heading_stays(self):
+        """11/22/63 numbers the sections inside a chapter. The "1" below "CHAPTER 1" belongs to
+        the prose, and taking it off would leave the first section of every chapter the only one
+        without its number."""
+        text = "CHAPTER 1\n1\nThe first section starts here."
+        assert epub.strip_heading(text, "Chapter 1") == "1\nThe first section starts here."
+
+    def test_prose_that_opens_with_the_title_stays(self):
+        """Containment runs one way. A line the heading contains is the heading; a line that
+        contains the heading is prose using the title's own words."""
+        text = "The long walk home began at dawn and ended in the dark."
+        assert epub.strip_heading(text, "The Long Walk Home") == text
+
+    def test_a_section_that_is_only_a_heading_keeps_it(self):
+        """A part-title page kept as a chapter has nothing else in it, and emptying it would
+        leave a chapter with no segments — so no announcement either."""
+        assert epub.strip_heading("THE GUNSLINGER", "Chapter 1: The Gunslinger") \
+            == "THE GUNSLINGER"
+
     def test_leaves_prose_alone(self):
         text = "It was a bright cold day in April."
         assert epub.strip_heading(text, "Chapter 1") == text
+
+    def test_a_section_named_after_its_own_words_keeps_them(self):
+        """That name is the text's own opening, so every line below it "is part of the
+        heading" — The Gunslinger's back-matter list lost three."""
+        text = "Also by This Author\nFICTION\nA Novel\nAnd Another"
+        assert epub.strip_heading(text, "Also by This Author FICTION A Novel…") == text
+
+    def test_a_one_word_line_is_not_swallowed_by_a_long_title(self):
+        """Its letters turn up inside the heading, and it's still the first line of the story."""
+        text = "Dawn.\nThe rest of the chapter follows."
+        assert epub.strip_heading(text, "A Wind Off the Downs at Dawn") == text
 
     def test_a_line_too_long_to_be_a_heading_stays(self):
         """Real headings run longer than they look — Rich Dad Poor Dad has one of 74

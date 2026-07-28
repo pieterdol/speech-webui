@@ -27,6 +27,15 @@ MIN_WORDS = 120
 # Real ones run longer than they look: Rich Dad Poor Dad has "Chapter Four: Lesson 4: The History
 # of Taxes and the Power of Corporations", at 74.
 HEADING_CHARS = 100
+# And how many lines of it there can be. A page sets the number and the title as separate blocks
+# often enough to matter; three is room for that and a subtitle, and a floor under how much of a
+# chapter a bad match could ever eat.
+HEADING_LINES = 3
+# What extract hangs on a name it had to make out of the section's own first words. A title from
+# the contents never ends in one, and it's how the two rules that must not treat such a name as a
+# heading find them: strip_heading, since that name matches the very text it was taken from, and
+# the announcement, which would read the opening of the chapter out twice.
+OPENING_NAME = "…"
 
 
 def _opf_path(z):
@@ -161,7 +170,8 @@ def extract(path):
             # A section with no entry in the table of contents and no heading — an epigraph,
             # say — would otherwise be listed as "fm00.html". Its opening words say far more.
             opening = " ".join(body.split()[:6])
-            name = label or (f"{opening}…" if opening else href.rsplit("/", 1)[-1])
+            name = label or (f"{opening}{OPENING_NAME}" if opening
+                            else href.rsplit("/", 1)[-1])
             why = ("looks like front or back matter"
                    if SKIP_HINTS.search(href) or SKIP_HINTS.search(name)
                    else f"only {words} words" if words < MIN_WORDS and not titled
@@ -229,22 +239,57 @@ def minutes(words):
     return words / WORDS_PER_MIN
 
 
-def strip_heading(text, name):
-    """Chapter files usually open with the chapter number or title as its own line, which
-    narrates as 'Nine. Led by...'. Drop that first line when it's just the heading.
+def _norm(text):
+    """A heading with nothing in it but its letters and digits, for comparing one written two
+    ways: "Chapter 1:The Oracle" and "Chapter 1: The Oracle" are the same heading."""
+    return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
 
-    Case is ignored, because the table of contents and the page itself often disagree about it:
-    Eragon's contents say "Prologue: Shade of Fear" where the page has it in capitals. Left in,
-    the title is narrated twice — once by the announcement, once by the prose, with nothing
-    between them.
+
+def strip_heading(text, name):
+    """Drop the chapter's own heading off the top of its text, where the spoken lead-in says it
+    better — left in, it narrates as 'Nine. Led by...', and now that a title is announced it
+    would be read twice over.
+
+    The page and the contents rarely agree word for word. Case differs: Eragon's contents say
+    "Prologue: Shade of Fear" where the page shouts it. And the page usually sets the heading as
+    two blocks where the contents joins them — "Chapter One" over "LESSON 1: THE RICH DON'T WORK
+    FOR MONEY", or "THE GUNSLINGER" under a contents entry reading "Chapter 1: The Gunslinger".
+    So a leading line comes off when the heading contains it, punctuation and case ignored, and
+    the first line that isn't part of the heading stops it.
+
+    Containment one way only. A line the heading contains is the heading; a line that contains
+    the heading is prose that opens with the title's own words — "The long walk home began at
+    dawn" under a chapter called "The Long Walk Home" — and stays.
     """
     lines = text.split("\n")
-    if not lines:
+    # A section named after its own first words is named after the very lines below, so every
+    # one of them "is part of the heading" — that name is no heading at all.
+    heading = "" if (name or "").endswith(OPENING_NAME) else _norm(name)
+    taken, covered = 0, 0
+    while taken < min(len(lines), HEADING_LINES):
+        line = lines[taken].strip()
+        if len(line) > HEADING_CHARS:
+            break
+        norm = _norm(line)
+        # Three characters at least. Below that a line is a number, and a number is the heading
+        # only at the very top: 11/22/63 numbers the sections inside a chapter, so under
+        # "CHAPTER 1" sits a "1" that belongs to the prose — take it off and the first section
+        # of every chapter is the only one without its number.
+        if heading and len(norm) >= 3 and norm in heading:
+            covered += len(norm)
+        elif taken == 0 and (re.fullmatch(r"[\dIVXLC]+\.?", line)
+                             or re.fullmatch(r"(?i)chapter\s+[\dIVXLC]+\.?", line)):
+            covered = len(heading)       # a number is all of the heading there is
+        else:
+            break
+        taken += 1
+    # And what came off has to be most of the heading, not a few of its letters: "Dawn." is a
+    # line of the story under a chapter called "A Wind Off the Downs at Dawn", and every word of
+    # it appears in that title.
+    if covered * 2 < len(heading):
         return text
-    first = lines[0].strip()
-    if len(first) <= HEADING_CHARS and (
-            first.rstrip(".").casefold() == (name or "").rstrip(".").casefold()
-            or re.fullmatch(r"[\dIVXLC]+\.?", first)
-            or re.fullmatch(r"(?i)chapter\s+[\dIVXLC]+\.?", first)):
-        return "\n".join(lines[1:]).strip()
-    return text
+    # A part-title page kept as a chapter — The Gunslinger has "THE GUNSLINGER" and nothing
+    # else — is all heading. Emptying it would leave a chapter with no segments, which is a
+    # chapter with no announcement either, and a marker of no length in the .m4b.
+    rest = "\n".join(lines[taken:]).strip()
+    return rest if taken and rest else text
