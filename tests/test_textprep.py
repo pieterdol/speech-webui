@@ -250,6 +250,37 @@ class TestSpokenAbbreviations:
         assert {a.lower() for a in expandable} <= textprep._ABBREV
 
 
+class TestSpokenInitials:
+    """An initial's full stop costs a pause in the middle of a name — two of them for "George
+    R.R. Martin" — and in an announcement no stop is ever ending a sentence."""
+
+    @pytest.mark.parametrize("written,spoken", [
+        ("by George R.R. Martin", "by George R R Martin"),
+        ("by Robert T. Kiyosaki", "by Robert T Kiyosaki"),
+        ("by J. K. Rowling", "by J K Rowling"),
+        ("by W.E.B. Du Bois", "by W E B Du Bois"),
+    ])
+    def test_the_stops_come_off(self, written, spoken):
+        assert textprep.spoken_initials(written) == spoken
+
+    def test_the_letters_stay_apart(self):
+        """"RR Martin" is a word; "R R Martin" is how the name is said."""
+        assert textprep.spoken_initials("George R.R. Martin") == "George R R Martin"
+
+    @pytest.mark.parametrize("text", [
+        "Prologue: Shade of Fear",
+        "by Stephen King",
+        "They walked down Main St. to the corner.",   # two letters, not an initial
+        "by e. e. cummings",                          # lowercase is not one either
+    ])
+    def test_left_alone(self, text):
+        assert textprep.spoken_initials(text) == text
+
+    def test_a_stop_at_the_very_end_stays(self):
+        """Nothing follows it, so it buys no pause that the silence after wasn't buying."""
+        assert textprep.spoken_initials("The Man Who Was Only J.") == "The Man Who Was Only J."
+
+
 class TestNumberWords:
     """Only words-to-digits is needed: a chapter heading can spell its number out, but digits
     handed to an engine are read in whatever language it speaks."""

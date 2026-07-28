@@ -158,15 +158,44 @@ class TestChapterIntro:
         assert self.said(books.chapter_intro(b, 0)) == ["T"]
         assert self.said(books.chapter_intro(b, 1)) == ["1"]
 
+    def test_a_long_title_is_still_a_title(self):
+        """Rich Dad Poor Dad's longest is 74 characters, and it was going unannounced."""
+        long = "Chapter Four: Lesson 4: The History of Taxes and the Power of Corporations"
+        b = self.book([long], title="T", author="")
+        assert self.said(books.chapter_intro(b, 0)) == ["T", long]
+
     def test_a_title_the_length_of_a_paragraph_is_not_a_title(self):
         b = self.book(["A heading this long is a stray line of prose that came through as one" * 2],
                       title="T", author="")
         assert self.said(books.chapter_intro(b, 0)) == ["T"]
 
+    def test_a_contents_that_nests_deeper_than_a_part(self):
+        """The Institute's has "Escape · Escape · Chapter 2" — read whole that announces the
+        separator out loud and buries the number behind it."""
+        b = self.book(["Escape · Escape · Chapter 1", "Escape · Escape · Chapter 2"],
+                      title="T", author="")
+        assert self.said(books.chapter_intro(b, 0)) == ["T", "Escape", "1"]
+        assert self.said(books.chapter_intro(b, 1)) == ["2"]
+
     def test_a_titled_chapter_inside_a_part(self):
         b = self.book(["A · Shade of Fear", "A · Palancar Valley"], title="T", author="")
         assert self.said(books.chapter_intro(b, 0)) == ["T", "A", "Shade of Fear"]
         assert self.said(books.chapter_intro(b, 1)) == ["Palancar Valley"]
+
+    def test_an_authors_initials_lose_their_stops(self):
+        """Each one is read as a letter and then a sentence break, so the name comes out with
+        two pauses standing in the middle of it."""
+        b = self.book(["Chapter One"], title="A Game of Thrones", author="George R.R. Martin")
+        assert self.said(books.chapter_intro(b, 0)) \
+            == ["A Game of Thrones", "by George R R Martin", "1"]
+
+    def test_the_opening_note_keeps_its_sentences(self):
+        """It's the one part of the announcement that is prose, and a stop ending a sentence
+        there is doing its job — "and so did I. Then he left" is not an initial."""
+        b = self.book(["Chapter One"], title="T", author="",
+                      opening="Nobody knew but I. Then everybody did.")
+        assert self.said(books.chapter_intro(b, 0)) \
+            == ["T", "Nobody knew but I. Then everybody did.", "1"]
 
     def test_announcements_off(self):
         b = self.book(["Chapter One"], announce=False)

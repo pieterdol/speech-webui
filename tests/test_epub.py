@@ -239,8 +239,12 @@ class TestStripHeading:
         assert epub.strip_heading(text, "Chapter 1") == text
 
     def test_a_line_too_long_to_be_a_heading_stays(self):
-        text = ("The title of this section runs on for rather longer than any heading would\n"
-                "and then the prose starts.")
+        """Real headings run longer than they look — Rich Dad Poor Dad has one of 74
+        characters — so the line has to be paragraph-length before it stops being one."""
+        text = ("The opening line of this section runs on for far longer than any heading ever "
+                "would, being an entire paragraph of prose that the extraction happened to name "
+                "the section after in the absence of anything better\n"
+                "and then the rest of it follows.")
         assert epub.strip_heading(text, text.split("\n")[0]) == text
 
 

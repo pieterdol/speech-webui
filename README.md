@@ -753,6 +753,14 @@ redirects along with everything else, and the rest of the test then runs against
   name. Same for `Mrs.`, `Ms.`, `Dr.`, `Prof.`, and for `Jr.`, `Sr.`, `vs.`, `etc.`, `e.g.`,
   `i.e.`, `approx.`, which keep the stop only when it also ends the sentence. `St.` is left alone:
   it's Saint before a name and Street after one, and nothing here can tell which.
+
+  **Initials lose their stops in the announcement**, for the same reason and only there: *"by
+  George R.R. Martin"* is a letter, a sentence break, a letter, another sentence break, and then
+  the surname. Announced it's `George R R Martin` — the letters kept and spaced, since `RR` is a
+  word and `R R` is how the name is said. The opening note is exempt, being the one part of the
+  announcement that is prose: there a single capital and a stop can be a sentence ending, as in
+  "and so did I. Then he left". In the prose itself initials keep their stops; only a phrase
+  spoken alone can assume it has no sentences in it.
 - **Kokoro has no Dutch voice** — its 54 cover nine languages and Dutch isn't one, which is why
   Piper is here. It *can* be forced at Dutch through espeak-ng, but the result is an American
   accent reading Dutch spelling. Not exposed in the UI; use a Piper voice.

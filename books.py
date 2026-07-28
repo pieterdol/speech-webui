@@ -14,7 +14,7 @@ from core import (app, index_lock, jobs, log, log_transfer, new_job, run_lock, s
                   write_json, HERE)
 from media import audio_seconds, pad_with_silence
 from textprep import (ONES, TENS, clean_respell, cut_sentences, respell,
-                      respell_diff, respell_pattern)
+                      respell_diff, respell_pattern, spoken_initials)
 from tts import piper_voice_ids, tts_engine_of, tts_say
 
 BOOKS_DIR  = os.path.join(HERE, "books")
@@ -332,7 +332,7 @@ def chapter_segments(book, index):
             text = f.read()
     except OSError:
         return []               # render_chapter turns this into an error; nothing to repair
-    return split_segments(epub.strip_heading(text, label_of(chapters[index].get("name"))))
+    return split_segments(epub.strip_heading(text, heading_of(chapters[index].get("name"))))
 
 FIND_FORMS = 12          # how many spellings one search answers with
 
@@ -605,9 +605,9 @@ def render_chapter(book_id, index):
             return
         # The chapter's own heading line is a bare number ("9") or the title, which the spoken
         # lead-in says better, so it always comes out of the text. Matched against the chapter's
-        # own label, never the part it's in: the page says "SHADE OF FEAR", not "Part One ·
+        # own heading, never the part it's in: the page says "SHADE OF FEAR", not "Part One ·
         # Shade of Fear".
-        text = epub.strip_heading(text, label_of(chapter.get("name")))
+        text = epub.strip_heading(text, heading_of(chapter.get("name")))
         intro = chapter_intro(book, index)
 
         # The lead-in lives in the chapter's first segment, and a resumed render keeps whatever
@@ -800,16 +800,21 @@ def chapter_intro(book, index):
         return []
     name  = chapters[index].get("name") or ""
     part  = part_of(name)
-    label = label_of(name)
+    label = heading_of(name)
     pieces = []
+    # A heading or a name is spoken alone here, with real silence after it, so a full stop inside
+    # one is never ending a sentence — and an engine that meets one pauses anyway: "by George
+    # R.R. Martin" came out with two pauses in the middle of the name. The opening note goes in
+    # as written, being the one thing in the announcement that is prose and has sentences.
+    say = lambda phrase, pause: pieces.append((spoken_initials(phrase), pause))
     if index == first_chapter(book):
         # How a published audiobook opens, and it's what the .m4b plays first as well
         said = spoken_title(book)
         if said:
-            pieces.append((said, TITLE_PAUSE))
+            say(said, TITLE_PAUSE)
         if book.get("author"):
             by = BY.get((book.get("language") or "")[:2], "by")
-            pieces.append((f"{by} {book['author']}", AUTHOR_PAUSE))
+            say(f"{by} {book['author']}", AUTHOR_PAUSE)
         # A chunk at a time, so a note of a few sentences is a few ordinary TTS calls rather than
         # one long utterance — the same reason a chapter's segments are chunked. A short beat
         # between them and a proper pause before the book starts.
@@ -820,7 +825,7 @@ def chapter_intro(book, index):
     # out the first chapter of a part would take the part's name out of the book with it.
     earlier = [c for c in chapters[:index] if not c.get("skip")]
     if part and not any(part_of(c.get("name")) == part for c in earlier):
-        pieces.append((part, PART_PAUSE))
+        say(part, PART_PAUSE)
     n = label_number(label)
     if n is not None:
         # As digits, for the engine to say in whatever language it speaks: espeak reads "19" as
@@ -832,7 +837,7 @@ def chapter_intro(book, index):
         # Valley", never a "chapter two". The title is announced for the same reason a number
         # is, and gets the same real silence after it: read as the first line of the prose it
         # runs straight into the text, and no full stop is long enough to fix that.
-        pieces.append((title_label(label), CHAPTER_PAUSE))
+        say(title_label(label), CHAPTER_PAUSE)
     return pieces
 
 def part_of(name):
@@ -840,9 +845,17 @@ def part_of(name):
 
 def label_of(name):
     """A chapter's own name without the part it's in: "Chapter 1" out of "The Night Knocker ·
-    Chapter 1". What the announcement reads a number out of, and what a section put back in is
-    recognised by."""
+    Chapter 1". What a section put back in is recognised by, so it keeps every piece below the
+    part — an inserted section's own name can carry a separator of its own."""
     return (name or "").split(PART_SEP, 1)[1] if PART_SEP in (name or "") else (name or "")
+
+def heading_of(name):
+    """A chapter's own heading: the last piece of its name, whatever came before it.
+
+    A table of contents that nests deeper than one part repeats the parent inside the child —
+    The Institute has "Escape · Escape · Chapter 2" — and read whole that announces a separator
+    out loud and hides the number behind it."""
+    return label_of(name).split(PART_SEP)[-1].strip()
 
 def chapters_in(book, part=None):
     """Chapters to narrate — of one part of the book, or of all of it when part is None.

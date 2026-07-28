@@ -35,6 +35,29 @@ HONORIFICS = {"Mr": "Mister", "Mrs": "Missus", "Ms": "Miz", "Dr": "Doctor",
 # what follows looks like a new sentence and dropped when it doesn't.
 SPOKEN_ABBREV = {"Jr": "Junior", "Sr": "Senior", "vs": "versus", "etc": "et cetera",
                  "e.g": "for example", "i.e": "that is", "approx": "approximately"}
+# An initial in a name — "George R.R. Martin", "Robert T. Kiyosaki". The full stop is the same
+# problem the honorifics have: the engine says the letter, then takes a sentence break, so a name
+# with two initials in it is read with two pauses inside it. The letters stay and the stops come
+# off, spaced apart so they're still read one at a time — "R R Martin" is how the name is said,
+# where "RR Martin" is a word.
+#
+# One capital letter, and a word after it: a stop at the very end of the phrase is followed by
+# silence anyway. "R.R." has to come out as two, so the letter before the stop is all the rule
+# looks back at — which takes "U.S.A." apart as well, and that is how it's said.
+_INITIAL = re.compile(r"(?<!\w)([A-Z])\.(?=[\s\"'“‘(]*[A-Za-z])")
+
+def spoken_initials(text):
+    """A name or a heading with the full stops taken off its initials.
+
+    For the announcement, where a phrase is spoken alone with real silence after it — so a stop
+    inside it is never ending a sentence and always costs a pause the words didn't ask for.
+
+    Only for those phrases, never for prose: "and so did I. Then he left" is a single capital
+    letter with a stop after it too, and there the stop is doing its job.
+    """
+    return re.sub(r"[^\S\n]{2,}", " ", _INITIAL.sub(r"\1 ", text or "")).strip()
+
+
 # Left alone on purpose. "St." is Saint before a name and Street after one, and this has no
 # way to tell which; "fig.", "al." and "inc." are rare enough in prose that guessing wrong
 # costs more than the abbreviation does. They stay in _ABBREV, so they still don't split a

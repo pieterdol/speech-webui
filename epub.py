@@ -24,7 +24,9 @@ SKIP_HINTS = re.compile(r"cover|copyright|toc|contents|colophon|advert|buylink|b
 # Below this a section is a part-title page or a stray line, not something to narrate.
 MIN_WORDS = 120
 # Longest a line can be and still be a chapter's heading rather than the first line of its prose.
-HEADING_CHARS = 60
+# Real ones run longer than they look: Rich Dad Poor Dad has "Chapter Four: Lesson 4: The History
+# of Taxes and the Power of Corporations", at 74.
+HEADING_CHARS = 100
 
 
 def _opf_path(z):
