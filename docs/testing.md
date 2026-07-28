@@ -9,7 +9,7 @@ Also on every push and pull request, via `.github/workflows/tests.yml`.
 
 ## What's covered
 
-Every module, ~715 tests. The books state machine, which is where the bugs actually live: a render
+Every module. The books state machine, which is where the bugs actually live: a render
 cancelled under itself, what survives a restart, which chapters an export takes, how a part run
 scopes its progress, the queue, what leaving a chapter out takes it out of, and which audio a changed
 pronunciation invalidates — including a save landing mid-render. What a section put back as a chapter

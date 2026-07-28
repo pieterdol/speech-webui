@@ -273,7 +273,7 @@ uv pip install --python .venv/bin/python pytest    # once
 .venv/bin/python -m pytest                         # ~40 s
 ```
 
-Also on every push and pull request. ~715 tests across every module, weighted towards the books state
+Also on every push and pull request. Every module is covered, weighted towards the books state
 machine and the pure text functions; the external engines are stubbed at their boundaries, so what's
 tested is which model gets asked for and what happens to the answer. Anything you have to hear isn't
 covered, and can't be. `STRICT_TESTS=1`, which CI sets, refuses to skip a test whose tool is missing
