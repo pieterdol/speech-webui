@@ -47,8 +47,36 @@ class TestShortening:
         assert openlib.shorten(None) == ""
 
 
+BLURB = "A surveyor arrives at a village that is on no map, and is not allowed to leave it."
+
+
+class TestWhatIsSearchedFor:
+    """A search that finds nothing is the common failure, so there's more than one to try."""
+
+    def test_the_author_first_then_without_it(self):
+        assert openlib.attempts("A Book", "A Writer") == [("A Book", "A Writer"), ("A Book", "")]
+
+    @pytest.mark.parametrize("title,main", [
+        ("Moby Dick; Or, The Whale", "Moby Dick"),
+        ("Flatland: A Romance of Many Dimensions", "Flatland"),
+        ("Max Havelaar / Of de koffiveilingen", "Max Havelaar"),
+    ])
+    def test_the_subtitle_comes_off_for_a_second_go(self, title, main):
+        """An EPUB's metadata title carries it and the catalogue's usually doesn't."""
+        assert openlib.attempts(title, "A Writer")[1] == (main, "A Writer")
+
+    def test_a_title_with_no_subtitle_is_not_searched_twice(self):
+        assert len(openlib.attempts("A Book", "A Writer")) == 2
+
+    def test_no_author_to_go_on(self):
+        assert openlib.attempts("A Book") == [("A Book", "")]
+
+    def test_nothing_at_all(self):
+        assert openlib.attempts("   ", "A Writer") == []
+
+
 class TestDescribe:
-    """Two calls: the search for a work, then the work for its description."""
+    """Two calls per attempt: the search for a work, then the work for its description."""
 
     def fake(self, monkeypatch, search=None, work=None):
         def _get(url):
@@ -57,19 +85,25 @@ class TestDescribe:
 
     def test_a_match_with_a_description(self, monkeypatch):
         self.fake(monkeypatch, search={"docs": [{"key": "/works/OL1W"}]},
-                  work={"description": "A surveyor arrives."})
-        assert openlib.describe("A Book", "A Writer") == ("A surveyor arrives.", "/works/OL1W")
+                  work={"description": BLURB})
+        assert openlib.describe("A Book", "A Writer") == (BLURB, "/works/OL1W")
 
     def test_a_description_stored_as_a_record(self, monkeypatch):
         """Some carry the text directly and some wrap it in a value."""
         self.fake(monkeypatch, search={"docs": [{"key": "/works/OL1W"}]},
-                  work={"description": {"type": "/type/text", "value": "A surveyor arrives."}})
-        assert openlib.describe("A Book")[0] == "A surveyor arrives."
+                  work={"description": {"type": "/type/text", "value": BLURB}})
+        assert openlib.describe("A Book")[0] == BLURB
 
     def test_a_work_with_no_description(self, monkeypatch):
         """Normal, especially for a short story: no description and no error."""
         self.fake(monkeypatch, search={"docs": [{"key": "/works/OL1W"}]}, work={})
-        assert openlib.describe("A Book", "A Writer") == ("", "/works/OL1W")
+        assert openlib.describe("A Book", "A Writer") == ("", "")
+
+    def test_a_scrap_is_not_a_description(self, monkeypatch):
+        """A duplicate work record often carries a genre tag where the blurb should be."""
+        self.fake(monkeypatch, search={"docs": [{"key": "/works/OL1W"}]},
+                  work={"description": "Science fiction."})
+        assert openlib.describe("A Book") == ("", "")
 
     def test_nothing_matched(self, monkeypatch):
         self.fake(monkeypatch, search={"docs": []})
@@ -80,20 +114,16 @@ class TestDescribe:
         self.fake(monkeypatch, search={"docs": [{"key": "/books/OL1M"}]})
         assert openlib.describe("A Book") == ("", "")
 
-    def test_the_author_is_dropped_on_a_second_try(self, monkeypatch):
-        """A name spelled differently there finds nothing at all, where the title alone
-        finds the book."""
-        seen = []
-
+    def test_it_moves_on_when_a_match_has_nothing_to_say(self, monkeypatch):
+        """A search matching is not the same as a description existing: a public-domain title
+        has a dozen work records and most of them are bare."""
         def _get(url):
             if "search.json" in url:
-                seen.append(url)
-                return {"docs": []} if "author" in url else {"docs": [{"key": "/works/OL1W"}]}
-            return {"description": "Found on the second try."}
+                return {"docs": [{"key": "/works/OL2W" if "author" in url else "/works/OL1W"}]}
+            return {"description": BLURB} if "OL1W" in url else {}
 
         monkeypatch.setattr(openlib, "_get", _get)
-        assert openlib.describe("A Book", "A Writer")[1] == "/works/OL1W"
-        assert len(seen) == 2 and "author" in seen[0] and "author" not in seen[1]
+        assert openlib.describe("A Book", "A Writer") == (BLURB, "/works/OL1W")
 
     def test_no_title_asks_nothing(self, monkeypatch):
         monkeypatch.setattr(openlib, "_get",
