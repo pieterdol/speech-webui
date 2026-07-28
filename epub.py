@@ -18,9 +18,13 @@ WORDS_PER_MIN = 146
 
 DROP_TAGS = ["script", "style", "svg", "figure", "figcaption", "table", "sup", "nav"]
 # Sections that are apparatus rather than the book. Matched against the file name and title.
+# "gutenberg" covers both ends of a Project Gutenberg text — the header page and the 343-word
+# licence — which are otherwise chapters: announced, narrated, and given a marker in the .m4b.
+# A book *about* Gutenberg loses its chapters to this, and the Left out panel is where you'd
+# see that and put them back.
 SKIP_HINTS = re.compile(r"cover|copyright|toc|contents|colophon|advert|buylink|backad|"
                         r"praise|also_by|alsoby|dedication|epigraph|teaser|excerpt|signup|"
-                        r"newsletter|titlepage|halftitle", re.I)
+                        r"newsletter|titlepage|halftitle|gutenberg|transcriber", re.I)
 # Below this a section is a part-title page or a stray line, not something to narrate.
 MIN_WORDS = 120
 # Longest a line can be and still be a chapter's heading rather than the first line of its prose.

@@ -210,6 +210,19 @@ class TestSkipping:
         assert {s["name"] for s in skipped} >= {"Cover", "Copyright", "Contents"}
         assert all("why" in s for s in skipped)
 
+    def test_a_gutenberg_text_loses_its_wrapper(self, tmp_path):
+        """Every Project Gutenberg book opens with a header page and closes with the 343-word
+        licence, both long enough to be chapters and neither one the book."""
+        docs = [("hdr.html", page("The Project Gutenberg eBook of Something", 130)),
+                ("c1.html", page("Chapter 1", 400)),
+                ("lic.html", page("THE FULL PROJECT GUTENBERG™ LICENSE", 343))]
+        nav = [("The Project Gutenberg eBook of Something", "hdr.html", []),
+               ("Chapter 1", "c1.html", []),
+               ("THE FULL PROJECT GUTENBERG™ LICENSE", "lic.html", [])]
+        _meta, chapters, skipped = epub.extract(build(tmp_path, docs, nav))
+        assert [c["name"] for c in chapters] == ["Chapter 1"]
+        assert all(s["why"] == "looks like front or back matter" for s in skipped)
+
     def test_short_sections_dropped_with_a_reason(self, tmp_path):
         docs = [("a.html", page("Tiny", 5)), ("b.html", page("Chapter 1", 400))]
         nav = [("Tiny", "a.html", []), ("Chapter 1", "b.html", [])]

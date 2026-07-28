@@ -712,7 +712,25 @@ _TENS_N = {w: i * 10 for i, w in enumerate(TENS) if w}
 # read out as written. Only the languages the books are in are here; an unrecognised word for
 # "chapter" costs nothing, since the heading is then announced whole — "Kapitel 19" rather than
 # "19", which is what it says anyway.
-NUMBER_WORDS = ("chapter", "part", "and", "the", "hoofdstuk", "deel")
+NUMBER_WORDS = ("chapter", "part", "book", "and", "the", "hoofdstuk", "deel", "boek")
+# The third way a book numbers its chapters, and the one the classics use: Pride and Prejudice
+# writes "Chapter I.", A Tale of Two Cities "CHAPTER II. The Mail". Left as letters an engine
+# reads "I" as the word and "IV" as two of them.
+#
+# The strict form only — "IIII" is not a numeral — and uppercase only, which is how a heading
+# writes one. Both rules are there because the alternative is reading words as numbers.
+_ROMAN = re.compile(r"M{0,3}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})")
+_ROMAN_VALUE = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+# A numeral standing behind the word that says it's one, for a heading that carries a title as
+# well and so is read out whole: "CHAPTER I. Down the Rabbit-Hole". Only there — a bare "I" in
+# a title is the pronoun, and "I Am Legend" is not chapter one.
+_ROMAN_AFTER_WORD = re.compile(r"(?i)\b(%s)\s+([IVXLCDM]+)\b" % "|".join(NUMBER_WORDS))
+# …and a heading that opens with one, where the stop after it is what says it's a number rather
+# than a word: The War of the Worlds has "II. The Falling Star". "I Am Legend" hasn't got one.
+_ROMAN_AT_FRONT = re.compile(r"^([IVXLCDM]+)(?=[.:—–-]\s)")
+# A footnote marker the heading brought with it off the page. Max Havelaar's first chapter is
+# "EERSTE HOOFDSTUK[1]", and the engine reads the marker out as a number.
+_FOOTNOTE_MARK = re.compile(r"\[\d+\]")
 
 def word_number(label):
     """The chapter number written out in a heading, or None. Handles "One", "Twenty-One" and
@@ -741,6 +759,36 @@ def word_number(label):
         i += 1
     return total if seen and 0 < total <= 999 else None
 
+def roman_number(word):
+    """The value of a roman numeral, or None.
+
+    Capped at 999 like the spelled-out form, which also throws out the one English word written
+    in nothing but numeral letters: "MIX" is a perfectly good 1009.
+    """
+    word = (word or "").strip().rstrip(".")
+    if not word or not _ROMAN.fullmatch(word):
+        return None
+    total = 0
+    for i, letter in enumerate(word):
+        value = _ROMAN_VALUE[letter]
+        after = _ROMAN_VALUE.get(word[i + 1]) if i + 1 < len(word) else 0
+        total += -value if after and after > value else value
+    return total if 0 < total <= 999 else None
+
+def roman_label(label):
+    """The number of a heading that is a roman numeral and nothing else — "Chapter I.", "II"."""
+    words = [w for w in re.findall(r"[A-Za-z]+", label or "") if w.lower() not in NUMBER_WORDS]
+    return roman_number(words[0]) if len(words) == 1 else None
+
+def spoken_heading(label):
+    """A heading as the announcement should say it: its roman numeral in digits, for the engine
+    to read in whatever language it speaks, and without the footnote marker the page hung on
+    it. Only what a heading picked up on its way here — the wording itself is the book's."""
+    label = _FOOTNOTE_MARK.sub("", label or "").strip()
+    label = _ROMAN_AT_FRONT.sub(lambda m: str(roman_number(m.group(1)) or m.group(1)), label)
+    return _ROMAN_AFTER_WORD.sub(
+        lambda m: f"{m.group(1)} {roman_number(m.group(2)) or m.group(2)}", label)
+
 def label_number(label):
     """The number of a chapter from its heading, in digits or in words, or None.
 
@@ -752,7 +800,8 @@ def label_number(label):
     """
     m = re.search(r"\d+", label or "")
     if not m:
-        return word_number(label)
+        n = word_number(label)
+        return n if n is not None else roman_label(label)
     rest = re.findall(r"[a-z]+", (label[:m.start()] + " " + label[m.end():]).lower())
     return int(m.group(0)) if all(w in NUMBER_WORDS for w in rest) else None
 
@@ -825,7 +874,7 @@ def chapter_intro(book, index):
     # out the first chapter of a part would take the part's name out of the book with it.
     earlier = [c for c in chapters[:index] if not c.get("skip")]
     if part and not any(part_of(c.get("name")) == part for c in earlier):
-        say(part, PART_PAUSE)
+        say(spoken_heading(part), PART_PAUSE)
     n = label_number(label)
     if n is not None:
         # As digits, for the engine to say in whatever language it speaks: espeak reads "19" as
@@ -837,7 +886,11 @@ def chapter_intro(book, index):
         # Valley", never a "chapter two". The title is announced for the same reason a number
         # is, and gets the same real silence after it: read as the first line of the prose it
         # runs straight into the text, and no full stop is long enough to fix that.
-        say(title_label(label), CHAPTER_PAUSE)
+        #
+        # A heading that carries a number as well is read out whole, so the numeral in it wants
+        # putting into digits here: Alice's "CHAPTER I. Down the Rabbit-Hole" would be announced
+        # as "chapter eye".
+        say(spoken_heading(title_label(label)), CHAPTER_PAUSE)
     return pieces
 
 def part_of(name):

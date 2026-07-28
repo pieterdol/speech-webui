@@ -334,11 +334,16 @@ it — a full book is hours of work.
   is real silence rather than punctuation, a second or so each, and a chapter closes with a
   longer one so it doesn't run into the next announcement. Off via ⚙, which re-renders the book.
 
-  The number is read out of the heading in **digits or in words**, since a book may name its
-  chapters "Chapter 1" or "Chapter One", and goes to the engine as digits so that it comes out in
-  whatever language the voice speaks — *"nineteen"* from an English one, *"negentien"* from a
-  Dutch one. Same reason the *"by"* in front of the author is the book's own word: *"van"* for a
-  Dutch book, since the English one read by a Dutch voice comes out as "bie".
+  The number is read out of the heading in **digits, in words or in roman numerals** — a book may
+  write "Chapter 1", "Chapter One" or "Chapter I" — and goes to the engine as digits so that it
+  comes out in whatever language the voice speaks: *"nineteen"* from an English one, *"negentien"*
+  from a Dutch one. Same reason the *"by"* in front of the author is the book's own word: *"van"*
+  for a Dutch book, since the English one read by a Dutch voice comes out as "bie".
+
+  A numeral is only a number where a heading says it is — behind "chapter" or "part", or opening
+  the heading with a stop after it, *"II. The Falling Star"*. A bare `I` anywhere else is the
+  pronoun, and *I Am Legend* is not chapter one. The strict form only, and capped at 999, which
+  between them throw out the English words spelled in numeral letters: `MIX` is a valid 1009.
 
   **A heading that is a title is announced as a title**, with the same silence after it — Eragon
   names its chapters *"Palancar Valley"* and never numbers one, and the title read as the first

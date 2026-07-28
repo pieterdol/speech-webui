@@ -43,6 +43,57 @@ class TestLabelNumber:
         # "Chapter 3" inside a part called "One" must not come out as one
         assert books.label_number("Chapter 3") == 3
 
+    @pytest.mark.parametrize("label,n", [
+        ("Chapter I.", 1),          # Pride and Prejudice
+        ("CHAPTER II", 2),
+        ("IV", 4),
+        ("Chapter XLII", 42),
+        ("Book IX", 9),
+    ])
+    def test_roman_numerals(self, label, n):
+        """The classics number their chapters this way, and "I" read as a letter is "eye"."""
+        assert books.label_number(label) == n
+
+    @pytest.mark.parametrize("label", [
+        "MIX",              # a word written in numeral letters — and 1009, so the cap catches it
+        "IIII",             # not how four is written
+        "DID",
+        "I Am Legend",      # a pronoun, and the heading is a title
+        "Chapter I. Down the Rabbit-Hole",   # a number and a title: read whole, not as "one"
+    ])
+    def test_not_a_roman_numeral(self, label):
+        assert books.label_number(label) is None
+
+
+class TestSpokenHeading:
+    """A heading read out whole still wants its numeral in digits, or the engine says the
+    letters: "chapter eye" for Alice, "chapter eye vee" for chapter four."""
+
+    @pytest.mark.parametrize("written,spoken", [
+        ("CHAPTER I. Down the Rabbit-Hole", "CHAPTER 1. Down the Rabbit-Hole"),
+        ("Chapter IV. The Rabbit Sends in a Little Bill", "Chapter 4. The Rabbit Sends in a "
+                                                          "Little Bill"),
+        ("BOOK ONE THE COMING OF THE MARTIANS", "BOOK ONE THE COMING OF THE MARTIANS"),
+    ])
+    def test_a_numeral_behind_its_word(self, written, spoken):
+        assert books.spoken_heading(written) == spoken
+
+    def test_a_numeral_the_heading_opens_with(self):
+        """The stop after it is what says it's a number: "II. The Falling Star"."""
+        assert books.spoken_heading("II. THE FALLING STAR.") == "2. THE FALLING STAR."
+
+    def test_a_footnote_marker_the_heading_picked_up(self):
+        """Max Havelaar's first chapter carries one, and it reads out as a number."""
+        assert books.spoken_heading("EERSTE HOOFDSTUK[1]") == "EERSTE HOOFDSTUK"
+
+    @pytest.mark.parametrize("text", [
+        "I Am Legend",              # the pronoun, with no word in front marking a number
+        "The Vanishing Half",
+        "MIX",
+    ])
+    def test_left_alone(self, text):
+        assert books.spoken_heading(text) == text
+
 
 class TestPartOf:
     def test_splits_on_the_separator(self):
