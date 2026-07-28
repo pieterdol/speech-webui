@@ -319,9 +319,9 @@ it — a full book is hours of work.
   past the rest of the run.
 - **The book announces itself.** It opens with the title and author — *"Dark Matter" … "by
   Blake Crouch" …* — the way a published audiobook does, and that's also the first thing the
-  exported `.m4b` plays. Then before each chapter's prose comes the part's name and the chapter
-  number: *"The Night Knocker" … "one" …* and only then the text. The part is spoken only where
-  a part actually begins; later chapters in it just get their number. What separates the phrases
+  exported `.m4b` plays. Then before each chapter's prose comes the part's name and the chapter's
+  number or title: *"The Night Knocker" … "one" …* and only then the text. The part is spoken only
+  where a part actually begins; later chapters in it just get their own heading. What separates the phrases
   is real silence rather than punctuation, a second or so each, and a chapter closes with a
   longer one so it doesn't run into the next announcement. Off via ⚙, which re-renders the book.
 
@@ -329,9 +329,16 @@ it — a full book is hours of work.
   chapters "Chapter 1" or "Chapter One", and goes to the engine as digits so that it comes out in
   whatever language the voice speaks — *"nineteen"* from an English one, *"negentien"* from a
   Dutch one. Same reason the *"by"* in front of the author is the book's own word: *"van"* for a
-  Dutch book, since the English one read by a Dutch voice comes out as "bie". A heading that is a
-  title rather than a number gets no number: an epigraph shouldn't be introduced as "chapter
-  seven".
+  Dutch book, since the English one read by a Dutch voice comes out as "bie".
+
+  **A heading that is a title is announced as a title**, with the same silence after it — Eragon
+  names its chapters *"Palancar Valley"* and never numbers one, and the title read as the first
+  line of the prose runs straight into the text with nothing between them. A heading holding both
+  is read whole: *"Chapter Seven: Overcoming Obstacles"*, since announcing the seven alone would
+  throw the title away. The heading comes out of the text either way, matched without regard to
+  case — a book's contents and its pages often disagree about that, and left in, the title is
+  narrated twice. What gets no announcement is a section extraction had to name after its own
+  first words, because the prose is about to read them out anyway.
 
   **Read this at the start** in ⚙ is spoken after the author and before the first chapter: a
   dedication or a notice extraction dropped, filled from the *Left out* panel or typed. It's
@@ -378,9 +385,9 @@ it — a full book is hours of work.
   forty affordable. Which parts, exactly, is decided by asking whether the text the engine would
   be handed changes, not by searching for the word: that catches a removed entry (the audio still
   says the respelled form), an entry that fires on another rule's output, and one keyed `Doctor`
-  reaching text that reads `Dr. Who`. A word in the title, the author or a part name is caught
-  through the recorded opening instead, and a word only in a chapter's heading line costs nothing,
-  since the heading is dropped before the text is read.
+  reaching text that reads `Dr. Who`. A word in the title, the author, a part name or a chapter's
+  own heading is caught through the recorded opening instead — that's where all four are spoken,
+  the heading having been dropped from the text before it's read.
 
   Everything the change invalidates is deleted at once, so no export can pick it up, and every
   affected chapter is queued — a finished book stays finished. Past a couple of chapters it says

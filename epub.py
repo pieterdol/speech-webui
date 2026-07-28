@@ -23,6 +23,8 @@ SKIP_HINTS = re.compile(r"cover|copyright|toc|contents|colophon|advert|buylink|b
                         r"newsletter|titlepage|halftitle", re.I)
 # Below this a section is a part-title page or a stray line, not something to narrate.
 MIN_WORDS = 120
+# Longest a line can be and still be a chapter's heading rather than the first line of its prose.
+HEADING_CHARS = 60
 
 
 def _opf_path(z):
@@ -227,13 +229,20 @@ def minutes(words):
 
 def strip_heading(text, name):
     """Chapter files usually open with the chapter number or title as its own line, which
-    narrates as 'Nine. Led by...'. Drop that first line when it's just the heading."""
+    narrates as 'Nine. Led by...'. Drop that first line when it's just the heading.
+
+    Case is ignored, because the table of contents and the page itself often disagree about it:
+    Eragon's contents say "Prologue: Shade of Fear" where the page has it in capitals. Left in,
+    the title is narrated twice — once by the announcement, once by the prose, with nothing
+    between them.
+    """
     lines = text.split("\n")
     if not lines:
         return text
     first = lines[0].strip()
-    if len(first) <= 60 and (first.rstrip(".") == (name or "").rstrip(".")
-                             or re.fullmatch(r"[\dIVXLC]+\.?", first)
-                             or re.fullmatch(r"(?i)chapter\s+[\dIVXLC]+\.?", first)):
+    if len(first) <= HEADING_CHARS and (
+            first.rstrip(".").casefold() == (name or "").rstrip(".").casefold()
+            or re.fullmatch(r"[\dIVXLC]+\.?", first)
+            or re.fullmatch(r"(?i)chapter\s+[\dIVXLC]+\.?", first)):
         return "\n".join(lines[1:]).strip()
     return text

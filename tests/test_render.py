@@ -88,6 +88,17 @@ class TestRenderChapter:
         assert len(fake_tts) == 1                   # only the missing one was remade
         assert chapter("b1")["state"] == "ready"
 
+    def test_a_titled_chapter_says_its_title_once_with_a_pause_after_it(self, make_book,
+                                                                        fake_tts):
+        """A book that names its chapters has the name in the prose as well, as the heading
+        line. Read from there it runs straight into the text; announced, it gets real silence
+        after it — and the heading comes out of the text so it isn't said twice."""
+        make_book(names=["Palancar Valley"], texts=["PALANCAR VALLEY\n" + LONG], announce=True)
+        books.render_chapter("b1", 0)
+        intro = fake_tts[0]["intro"]
+        assert intro[-1][0] == "Palancar Valley" and intro[-1][1] > 0
+        assert "PALANCAR VALLEY" not in fake_tts[0]["text"]
+
     def test_missing_text_is_an_error_not_a_crash(self, make_book, fake_tts):
         make_book(texts=[LONG])
         os.remove(books.book_dir("b1", "text", "ch000.txt"))

@@ -229,9 +229,19 @@ class TestStripHeading:
         assert epub.strip_heading("Chapter 1\nIt was a bright cold day.",
                                   "Chapter 1").startswith("It was")
 
+    def test_the_page_may_shout_what_the_contents_dont(self):
+        """Eragon's contents say "Prologue: Shade of Fear"; the page has it in capitals."""
+        assert epub.strip_heading("PROLOGUE: SHADE OF FEAR\nA wind blew off the mountain.",
+                                  "Prologue: Shade of Fear").startswith("A wind")
+
     def test_leaves_prose_alone(self):
         text = "It was a bright cold day in April."
         assert epub.strip_heading(text, "Chapter 1") == text
+
+    def test_a_line_too_long_to_be_a_heading_stays(self):
+        text = ("The title of this section runs on for rather longer than any heading would\n"
+                "and then the prose starts.")
+        assert epub.strip_heading(text, text.split("\n")[0]) == text
 
 
 class TestReadingBackASkippedSection:

@@ -31,6 +31,10 @@ class TestLabelNumber:
         "Appendix",
         "",
         None,
+        # a number in it and still a title: announcing "7" or "24" would drop what it says
+        "Chapter 7: Overcoming Obstacles",
+        "AMPOULES REMAINING: 24",
+        "Citizen of the Century (2012)",
     ])
     def test_not_numbered(self, label):
         assert books.label_number(label) is None
@@ -120,7 +124,8 @@ class TestChapterIntro:
         comes first now — otherwise the book would never announce itself at all."""
         b = self.book(["Other titles by this author", "Chapter One"], title="T", author="A")
         b["chapters"][0]["skip"] = True
-        assert self.said(books.chapter_intro(b, 0)) == []
+        # the section left out keeps its own heading and nothing else — it's never narrated
+        assert self.said(books.chapter_intro(b, 0)) == ["Other titles by this author"]
         assert self.said(books.chapter_intro(b, 1)) == ["T", "by A", "1"]
 
     def test_a_part_is_named_at_the_first_chapter_of_it_that_is_kept(self):
@@ -128,10 +133,40 @@ class TestChapterIntro:
         b["chapters"][0]["skip"] = True
         assert self.said(books.chapter_intro(b, 1)) == ["T", "A", "2"]
 
-    def test_unnumbered_section_says_nothing_of_its_own(self):
-        b = self.book(["An epigraph", "Chapter One"], title="T", author="")
+    def test_a_titled_chapter_is_announced_by_its_title(self):
+        """Eragon names its chapters instead of numbering them, and the title read as the first
+        line of the prose runs straight into the text. Announced, it gets a pause after it."""
+        b = self.book(["Prologue: Shade of Fear", "Palancar Valley"], title="T", author="")
+        assert self.said(books.chapter_intro(b, 0)) == ["T", "Prologue: Shade of Fear"]
+        assert self.said(books.chapter_intro(b, 1)) == ["Palancar Valley"]
+
+    def test_a_heading_with_both_is_read_whole(self):
+        """"Chapter Seven: Overcoming Obstacles" announced as "seven" would lose the title."""
+        b = self.book(["Chapter Seven: Overcoming Obstacles", "AMPOULES REMAINING: 24"])
+        assert self.said(books.chapter_intro(b, 1)) == ["AMPOULES REMAINING: 24"]
+        assert self.said(books.chapter_intro(b, 0))[-1] == "Chapter Seven: Overcoming Obstacles"
+
+    def test_a_section_named_after_its_own_first_words_says_nothing(self):
+        """Extraction names a section with no heading and no place in the contents after the
+        words it opens with — announcing that would read them out twice."""
+        b = self.book(["And Samson called unto the LORD,…", "Chapter One"], title="T", author="")
         assert self.said(books.chapter_intro(b, 0)) == ["T"]      # only the book's own opening
         assert self.said(books.chapter_intro(b, 1)) == ["1"]
+
+    def test_a_section_named_after_its_file_says_nothing(self):
+        b = self.book(["fm00.html", "Chapter One"], title="T", author="")
+        assert self.said(books.chapter_intro(b, 0)) == ["T"]
+        assert self.said(books.chapter_intro(b, 1)) == ["1"]
+
+    def test_a_title_the_length_of_a_paragraph_is_not_a_title(self):
+        b = self.book(["A heading this long is a stray line of prose that came through as one" * 2],
+                      title="T", author="")
+        assert self.said(books.chapter_intro(b, 0)) == ["T"]
+
+    def test_a_titled_chapter_inside_a_part(self):
+        b = self.book(["A · Shade of Fear", "A · Palancar Valley"], title="T", author="")
+        assert self.said(books.chapter_intro(b, 0)) == ["T", "A", "Shade of Fear"]
+        assert self.said(books.chapter_intro(b, 1)) == ["Palancar Valley"]
 
     def test_announcements_off(self):
         b = self.book(["Chapter One"], announce=False)

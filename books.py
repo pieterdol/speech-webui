@@ -332,7 +332,7 @@ def chapter_segments(book, index):
             text = f.read()
     except OSError:
         return []               # render_chapter turns this into an error; nothing to repair
-    return split_segments(epub.strip_heading(text, chapters[index].get("name") or ""))
+    return split_segments(epub.strip_heading(text, label_of(chapters[index].get("name"))))
 
 FIND_FORMS = 12          # how many spellings one search answers with
 
@@ -604,8 +604,10 @@ def render_chapter(book_id, index):
                 state="error", error=f"missing text: {e}"[:200]))
             return
         # The chapter's own heading line is a bare number ("9") or the title, which the spoken
-        # lead-in says better, so it always comes out of the text.
-        text = epub.strip_heading(text, chapter.get("name") or "")
+        # lead-in says better, so it always comes out of the text. Matched against the chapter's
+        # own label, never the part it's in: the page says "SHADE OF FEAR", not "Part One ·
+        # Shade of Fear".
+        text = epub.strip_heading(text, label_of(chapter.get("name")))
         intro = chapter_intro(book, index)
 
         # The lead-in lives in the chapter's first segment, and a resumed render keeps whatever
@@ -706,6 +708,11 @@ CHAPTER_END_PAUSE = 1.8
 # so the whole book was narrated with no announcement at all.
 _ONES_N = {w: i for i, w in enumerate(ONES) if w}
 _TENS_N = {w: i * 10 for i, w in enumerate(TENS) if w}
+# The words a heading wraps its number in. Anything else in it makes it a title, and a title is
+# read out as written. Only the languages the books are in are here; an unrecognised word for
+# "chapter" costs nothing, since the heading is then announced whole — "Kapitel 19" rather than
+# "19", which is what it says anyway.
+NUMBER_WORDS = ("chapter", "part", "and", "the", "hoofdstuk", "deel")
 
 def word_number(label):
     """The chapter number written out in a heading, or None. Handles "One", "Twenty-One" and
@@ -727,7 +734,7 @@ def word_number(label):
         elif w in _ONES_N:
             total += _ONES_N[w]
             seen = True
-        elif w in ("chapter", "part", "and", "the"):
+        elif w in NUMBER_WORDS:
             pass                                  # the words a heading wraps its number in
         else:
             return None                           # a titled section, not a numbered one
@@ -735,9 +742,33 @@ def word_number(label):
     return total if seen and 0 < total <= 999 else None
 
 def label_number(label):
-    """The number of a chapter from its heading, in digits or in words."""
+    """The number of a chapter from its heading, in digits or in words, or None.
+
+    A heading can hold a number and still not be one: "Chapter 7: Overcoming Obstacles" and
+    "AMPOULES REMAINING: 24" are titles, and announcing the number out of them would throw away
+    what they actually say. So digits only count when the rest of the heading is the words a
+    number gets wrapped in — the spelled-out form already works this way, since word_number
+    gives up at the first word that isn't part of a number.
+    """
     m = re.search(r"\d+", label or "")
-    return int(m.group(0)) if m else word_number(label)
+    if not m:
+        return word_number(label)
+    rest = re.findall(r"[a-z]+", (label[:m.start()] + " " + label[m.end():]).lower())
+    return int(m.group(0)) if all(w in NUMBER_WORDS for w in rest) else None
+
+def title_label(label):
+    """A chapter's heading when it's a title to read out, or "".
+
+    A section with no heading and no entry in the table of contents is named after its own
+    first words ("And Samson called unto the LORD,…") or, when it hasn't even got those, after
+    the file it came from. Neither is a title: the first would read the opening of the chapter
+    twice over, the second would say "fm00.html" out loud. Length is the same question
+    strip_heading asks — past a line's worth it isn't a heading, it's prose.
+    """
+    label = (label or "").strip()
+    if label.endswith("…") or re.fullmatch(r"[\w-]+\.x?html?", label, re.I):
+        return ""
+    return label if len(label) <= epub.HEADING_CHARS else ""
 
 def spoken_title(book):
     """What the opening announcement calls the book. A title is written to be read, not heard:
@@ -759,8 +790,9 @@ def opening_note(book):
 def chapter_intro(book, index):
     """[(phrase, pause_after)] to speak before the chapter — the book's title and author at
     the very top, then the opening note if it has one, the part's name when this chapter opens a
-    new part, then the chapter number. Empty when announcements are off, and for a section that
-    is neither numbered nor inside a part (an epigraph, say)."""
+    new part, then the chapter's number, or its title where a book names its chapters rather
+    than numbering them. Empty when announcements are off, and for a section with neither: one
+    named after its own first words, which the prose is about to read out anyway."""
     if not book.get("announce", True):
         return []
     chapters = book.get("chapters") or []
@@ -795,6 +827,12 @@ def chapter_intro(book, index):
         # "nineteen" for an English voice and "negentien" for a Dutch one. Spelling it out here
         # would mean spelling it out in one language — a Dutch book was announcing "oo-nuh".
         pieces.append((str(n), CHAPTER_PAUSE))
+    elif title_label(label):
+        # A book that names its chapters instead of numbering them — Eragon has "Palancar
+        # Valley", never a "chapter two". The title is announced for the same reason a number
+        # is, and gets the same real silence after it: read as the first line of the prose it
+        # runs straight into the text, and no full stop is long enough to fix that.
+        pieces.append((title_label(label), CHAPTER_PAUSE))
     return pieces
 
 def part_of(name):
