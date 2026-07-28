@@ -6,8 +6,13 @@ looking at the screen.
 ## Extraction
 
 `epub.py` reads the spine for reading order and the `.ncx` for chapter names, then drops covers,
-colophons, adverts, dedications and part-title pages. A chapter the table of contents names is kept
-however short it is; the length rule that drops front matter applies to untitled sections only.
+colophons, adverts, dedications, lists of illustrations and part-title pages. A chapter the table of
+contents names is kept however short it is; the length rule that drops front matter applies to
+untitled sections only.
+
+A Project Gutenberg text is dropped at both ends: its header page and its 343-word licence are long
+enough to be chapters and neither one is the book. A book *about* Gutenberg loses its chapters to
+that, and the *Left out* panel is where you'd see it and put them back.
 
 A book that packs several chapters into one file and addresses each from its contents by anchor —
 `Section0001.xhtml#heading_id_3` — is cut at those anchors, so twenty chapters stay twenty chapters.
@@ -160,6 +165,12 @@ would throw the title away. The heading comes out of the text either way, matche
 case, since a book's contents and its pages often disagree about that and left in, the title is
 narrated twice. What gets no announcement is a section extraction had to name after its own first
 words, because the prose is about to read them out anyway.
+
+**The book's title is said once.** A page carrying nothing but the title becomes a chapter, or the
+part above the first one, and the announcement would then say the same thing twice over — *"The Time
+Machine" … "by H G Wells" … "The Time Machine" … "1. Introduction"*. A part or heading the title has
+just said is dropped, the start of the title included, since such a page is often cut short of the
+subtitle. Four characters at least, so nothing is dropped for sharing a word with the title.
 
 **Read this at the start** is spoken after the author and before the first chapter. It's chunked like
 any other text, so a few sentences are a few ordinary calls to the engine with a beat between them and
