@@ -233,6 +233,26 @@ class TestChapterIntro:
         assert self.said(books.chapter_intro(b, 0)) == ["T", "A", "Shade of Fear"]
         assert self.said(books.chapter_intro(b, 1)) == ["Palancar Valley"]
 
+    def test_the_title_is_not_announced_twice(self):
+        """A page carrying nothing but the title becomes the part above the first chapter, and
+        The Time Machine opened by saying its own name twice over."""
+        b = self.book(["The Time Machine · I. Introduction", "II. The Machine"],
+                      title="The Time Machine", author="H. G. Wells")
+        assert self.said(books.chapter_intro(b, 0)) \
+            == ["The Time Machine", "by H G Wells", "1. Introduction"]
+
+    def test_nor_the_start_of_it(self):
+        """Such a page is often cut short of the subtitle: Frankenstein's says
+        "Frankenstein;"."""
+        b = self.book(["Frankenstein;", "Letter 1"],
+                      title="Frankenstein; or, the modern prometheus", author="")
+        assert self.said(books.chapter_intro(b, 0)) \
+            == ["Frankenstein; or, the modern prometheus"]
+
+    def test_a_heading_that_only_shares_a_word_is_kept(self):
+        b = self.book(["The Machine"], title="The Time Machine", author="")
+        assert self.said(books.chapter_intro(b, 0)) == ["The Time Machine", "The Machine"]
+
     def test_an_authors_initials_lose_their_stops(self):
         """Each one is read as a letter and then a sentence break, so the name comes out with
         two pauses standing in the middle of it."""

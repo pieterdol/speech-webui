@@ -869,6 +869,22 @@ def chapter_intro(book, index):
     # R.R. Martin" came out with two pauses in the middle of the name. The opening note goes in
     # as written, being the one thing in the announcement that is prose and has sentences.
     say = lambda phrase, pause: pieces.append((spoken_initials(phrase), pause))
+
+    def say_heading(phrase, pause):
+        """A part or a chapter heading, except where the book's title has just said it.
+
+        A page carrying nothing but the title becomes a chapter, or the part above the first
+        one: The Time Machine opened "The Time Machine" … "by H G Wells" … "The Time Machine" …
+        "1. Introduction". The title is worth saying once.
+
+        The start of it counts too, since such a page is often cut short of the subtitle —
+        Frankenstein's says "Frankenstein;" and Max Havelaar's the first half of its title. Four
+        characters at least, so a heading isn't dropped for sharing a word with the title."""
+        flat = epub.norm(phrase)
+        titles = [epub.norm(spoken_title(book)), epub.norm(book.get("title"))]
+        if flat and not any(t and t.startswith(flat) and len(flat) >= 4 for t in titles):
+            say(phrase, pause)
+
     if index == first_chapter(book):
         # How a published audiobook opens, and it's what the .m4b plays first as well
         said = spoken_title(book)
@@ -887,7 +903,7 @@ def chapter_intro(book, index):
     # out the first chapter of a part would take the part's name out of the book with it.
     earlier = [c for c in chapters[:index] if not c.get("skip")]
     if part and not any(part_of(c.get("name")) == part for c in earlier):
-        say(spoken_heading(part), PART_PAUSE)
+        say_heading(spoken_heading(part), PART_PAUSE)
     n = label_number(label)
     if n is not None:
         # As digits, for the engine to say in whatever language it speaks: espeak reads "19" as
@@ -903,7 +919,7 @@ def chapter_intro(book, index):
         # A heading that carries a number as well is read out whole, so the numeral in it wants
         # putting into digits here: Alice's "CHAPTER I. Down the Rabbit-Hole" would be announced
         # as "chapter eye".
-        say(spoken_heading(title_label(label)), CHAPTER_PAUSE)
+        say_heading(spoken_heading(title_label(label)), CHAPTER_PAUSE)
     return pieces
 
 def part_of(name):

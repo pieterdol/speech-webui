@@ -24,7 +24,8 @@ DROP_TAGS = ["script", "style", "svg", "figure", "figcaption", "table", "sup", "
 # see that and put them back.
 SKIP_HINTS = re.compile(r"cover|copyright|toc|contents|colophon|advert|buylink|backad|"
                         r"praise|also_by|alsoby|dedication|epigraph|teaser|excerpt|signup|"
-                        r"newsletter|titlepage|halftitle|gutenberg|transcriber", re.I)
+                        r"newsletter|titlepage|halftitle|gutenberg|transcriber|"
+                        r"illustration", re.I)
 # Below this a section is a part-title page or a stray line, not something to narrate.
 MIN_WORDS = 120
 # Longest a line can be and still be a chapter's heading rather than the first line of its prose.
@@ -223,7 +224,7 @@ def _own_heading(body, name):
     lines = [line.strip() for line in body.split("\n")[:2]]
     if PART_SEP in name or name.endswith(OPENING_NAME) or len(lines) < 2:
         return ""
-    if _norm(lines[0]) != _norm(name) or len(lines[1]) > HEADING_CHARS:
+    if norm(lines[0]) != norm(name) or len(lines[1]) > HEADING_CHARS:
         return ""
     return PART_SEP + lines[1] if _NUMBERED_HEADING.match(lines[1]) else ""
 
@@ -237,8 +238,8 @@ def _is_title_page(chapter):
     """
     if chapter["name"].endswith(OPENING_NAME) or len(chapter["text"]) > HEADING_CHARS:
         return False
-    text = _norm(chapter["text"])
-    return bool(text) and text in _norm(chapter["name"])
+    text = norm(chapter["text"])
+    return bool(text) and text in norm(chapter["name"])
 
 
 def cover(path):
@@ -292,7 +293,7 @@ def minutes(words):
     return words / WORDS_PER_MIN
 
 
-def _norm(text):
+def norm(text):
     """A heading with nothing in it but its letters and digits, for comparing one written two
     ways: "Chapter 1:The Oracle" and "Chapter 1: The Oracle" are the same heading."""
     return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
@@ -344,21 +345,21 @@ def _strip_lines(text, name, numbered):
     # A section named after its own first words is named after the very lines below, so every
     # one of them "is part of the heading" — that name is no heading at all.
     pieces = [] if (name or "").endswith(OPENING_NAME) else \
-        [p for p in (_norm(x) for x in (name or "").split(PART_SEP)) if p]
+        [p for p in (norm(x) for x in (name or "").split(PART_SEP)) if p]
     covered = [0] * len(pieces)
     taken = 0
     while taken < min(len(lines), HEADING_LINES):
         line = lines[taken].strip()
         if len(line) > HEADING_CHARS:
             break
-        norm = _norm(line)
+        flat = norm(line)
         # Three characters at least. Below that a line is a number, and a number is the heading
         # only at the very top: 11/22/63 numbers the sections inside a chapter, so under
         # "CHAPTER 1" sits a "1" that belongs to the prose — take it off and the first section
         # of every chapter is the only one without its number.
-        hit = next((j for j, p in enumerate(pieces) if len(norm) >= 3 and norm in p), None)
+        hit = next((j for j, p in enumerate(pieces) if len(flat) >= 3 and flat in p), None)
         if hit is not None:
-            covered[hit] += len(norm)
+            covered[hit] += len(flat)
         elif numbered and taken == 0 and (re.fullmatch(r"[\dIVXLC]+\.?", line)
                                           or re.fullmatch(r"(?i)chapter\s+[\dIVXLC]+\.?", line)):
             covered = [len(p) for p in pieces]    # a number is all of the heading there is
