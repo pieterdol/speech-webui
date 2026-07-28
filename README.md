@@ -3,7 +3,8 @@
 A phone-friendly web front-end for the local speech tools on this PC. Everything that reads,
 listens or speaks runs locally — speech on the CPU, the language model on the Radeon — and the
 one thing that leaves the machine is a book's title and author, sent to Open Library when the
-book is added to fetch a line about what it is. The header switches between three modes.
+book is added to fetch a line about what it is. `OPENLIBRARY=0` stops even that. The header
+switches between three modes.
 
 **Studio** — the three speech panels. Record or upload a clip, get the text out of it with
 Whisper, and turn text back into speech: Kokoro's built-in voices for English, Piper for Dutch,

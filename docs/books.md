@@ -37,6 +37,10 @@ Three folding rules keep one chapter from becoming two:
 Adding a book looks it up on Open Library — a title and an author out, a paragraph back, cut to
 two or three sentences and shown under the title on the book's own page. It's never narrated.
 
+**`OPENLIBRARY=0` turns the automatic lookup off**, and then nothing leaves this machine on its
+own. **↻** in ⚙ still asks, because tapping it is the request; a button that did nothing would be
+worse than no button. Read at startup like the other settings, so it takes a restart.
+
 This is the only part of the app that talks to another machine, so it's built to be ignorable:
 the lookup runs off the upload rather than inside it, an import neither waits on it nor fails
 with it, and a book that turns up nothing simply hasn't got one. The match is a guess made from

@@ -1251,8 +1251,11 @@ def api_book_add():
         items = load_books()
         items.insert(0, entry)
         write_books(items)
-    threading.Thread(target=fetch_description,
-                     args=(bid, meta["title"], meta["author"]), daemon=True).start()
+    # Guarded here rather than inside the lookup, so that with OPENLIBRARY=0 there is no thread
+    # and no request — nothing to reason about, which is the point of the setting.
+    if openlib.AUTOMATIC:
+        threading.Thread(target=fetch_description,
+                         args=(bid, meta["title"], meta["author"]), daemon=True).start()
     return jsonify(ok=True, book=book_summary(entry))
 
 def fetch_description(book_id, title, author):
@@ -1274,7 +1277,10 @@ def fetch_description(book_id, title, author):
 @app.post("/api/books/describe")
 def api_book_describe():
     """Ask again — for a book added before this existed, one the search put on the wrong work,
-    or one whose description has been cleared and wants filling back in."""
+    or one whose description has been cleared and wants filling back in.
+
+    Not gated by OPENLIBRARY: that setting is about what happens on its own. Tapping ↻ is the
+    request, and a button that did nothing would be worse than not having one."""
     d = request.get_json(force=True, silent=True) or {}
     book = find_book(d.get("id") or "")
     if not book:

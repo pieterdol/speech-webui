@@ -12,11 +12,16 @@ and an author are all we have to go on, and Open Library will happily return a d
 of a different book.
 """
 import json
+import os
 import re
 import urllib.parse
 import urllib.request
 
 API = "https://openlibrary.org"
+# Whether adding a book looks it up by itself. `OPENLIBRARY=0` and nothing leaves this machine
+# unless you ask for it on a book, which ↻ in ⚙ still does — tapping it is the request. Read
+# once at startup, like the other settings, so turning it off takes a restart.
+AUTOMATIC = os.environ.get("OPENLIBRARY", "1").strip().lower() not in ("0", "no", "off", "")
 TIMEOUT = 12
 # Two or three sentences: enough to remember what a book is, short enough to read on a phone
 # above the chapter list. Their descriptions run to several paragraphs and a page of them would

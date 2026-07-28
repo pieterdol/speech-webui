@@ -137,6 +137,7 @@ are the same number, which is why nothing else in the app had to change. Every p
 | `OLLAMA_URL` | environment | Where Ollama is, if not `http://127.0.0.1:11434` |
 | `HIP_VISIBLE_DEVICES=-1`, `ROCR_VISIBLE_DEVICES=-1` | Ollama's environment | Not optional on this PC — see [gotchas.md](gotchas.md) |
 | `KOKORO_IDLE_MINUTES` | environment | Idle window before the Kokoro worker unloads; `0` keeps it resident |
+| `OPENLIBRARY` | environment | `0` stops a book looking itself up when it's added, and then nothing leaves this machine on its own. **↻** in ⚙ still asks, since tapping it is the request |
 | `keep_alive` | `speech.py`, per request | How long Ollama keeps a model in VRAM; overrides `OLLAMA_KEEP_ALIVE` |
 | `num_ctx` | `speech.py` | Chat context, 8192 tokens |
 | `STRICT_TESTS` | environment | Fail instead of skipping when a tool is missing — see [testing.md](testing.md) |

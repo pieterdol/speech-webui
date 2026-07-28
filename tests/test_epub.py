@@ -415,6 +415,25 @@ class TestTheDescription:
         assert book["description"] == "A surveyor arrives."
         assert book["work"] == "/works/OL1W"      # the match is a guess, so it's recorded
 
+    def test_the_setting_turns_the_lookup_off(self, client, tmp_path, isolated_books,
+                                              monkeypatch):
+        """OPENLIBRARY=0 and adding a book asks nobody anything."""
+        monkeypatch.setattr(openlib, "AUTOMATIC", False)
+        monkeypatch.setattr(openlib, "describe",
+                            lambda title, author: pytest.fail("asked without being asked to"))
+        bid = self.add(client, tmp_path)
+        time.sleep(0.05)                          # long enough for a thread to have run
+        assert "description" not in books.find_book(bid)
+
+    def test_but_asking_by_hand_still_works(self, client, tmp_path, isolated_books, monkeypatch):
+        """The setting is about what happens on its own; tapping ↻ is the request."""
+        monkeypatch.setattr(openlib, "AUTOMATIC", False)
+        bid = self.add(client, tmp_path)
+        monkeypatch.setattr(openlib, "describe",
+                            lambda title, author: ("A surveyor arrives.", "/works/OL1W"))
+        assert client.post("/api/books/describe", json={"id": bid}).status_code == 200
+        assert books.find_book(bid)["description"] == "A surveyor arrives."
+
     def test_a_book_nobody_has_heard_of_is_added_anyway(self, client, tmp_path, isolated_books,
                                                         monkeypatch):
         monkeypatch.setattr(openlib, "describe", lambda title, author: ("", ""))
