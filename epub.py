@@ -298,10 +298,19 @@ def _norm(text):
     return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
 
 
-def strip_heading(text, name):
+def strip_heading(text, name, *also):
     """Drop the chapter's own heading off the top of its text, where the spoken lead-in says it
     better — left in, it narrates as 'Nine. Led by...', and now that a title is announced it
     would be read twice over.
+
+    `also` is whatever else the lead-in already says that a page may print above the prose: the
+    book's title and author, which a half-title page sets over the first chapter. The War of the
+    Worlds opens by announcing the title and the author and then reading both out again. They
+    come off by the same containment rule, and go on coming off until the text stops shrinking,
+    since a page may set them either way round.
+
+    A bare number is only ever the chapter's own heading, never one of these: once the heading
+    has gone, a number at the top of the text is the book's own numbering inside the chapter.
 
     The page and the contents rarely agree word for word. Case differs: Eragon's contents say
     "Prologue: Shade of Fear" where the page shouts it. And the page usually sets the heading as
@@ -318,6 +327,19 @@ def strip_heading(text, name):
     own, because a page carries whichever of them it happens to print: usually just the chapter,
     and both where a part-title page opens the file.
     """
+    text = _strip_lines(text, name, numbered=True)
+    while also:
+        shorter = text
+        for other in also:
+            shorter = _strip_lines(shorter, other, numbered=False)
+        if shorter == text:
+            return text
+        text = shorter
+    return text
+
+
+def _strip_lines(text, name, numbered):
+    """One pass: the leading lines that are part of `name`, off the top."""
     lines = text.split("\n")
     # A section named after its own first words is named after the very lines below, so every
     # one of them "is part of the heading" — that name is no heading at all.
@@ -337,8 +359,8 @@ def strip_heading(text, name):
         hit = next((j for j, p in enumerate(pieces) if len(norm) >= 3 and norm in p), None)
         if hit is not None:
             covered[hit] += len(norm)
-        elif taken == 0 and (re.fullmatch(r"[\dIVXLC]+\.?", line)
-                             or re.fullmatch(r"(?i)chapter\s+[\dIVXLC]+\.?", line)):
+        elif numbered and taken == 0 and (re.fullmatch(r"[\dIVXLC]+\.?", line)
+                                          or re.fullmatch(r"(?i)chapter\s+[\dIVXLC]+\.?", line)):
             covered = [len(p) for p in pieces]    # a number is all of the heading there is
         else:
             break

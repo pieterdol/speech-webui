@@ -332,7 +332,17 @@ def chapter_segments(book, index):
             text = f.read()
     except OSError:
         return []               # render_chapter turns this into an error; nothing to repair
-    return split_segments(epub.strip_heading(text, chapters[index].get("name") or ""))
+    return split_segments(chapter_text(book, index, text))
+
+def chapter_text(book, index, text):
+    """A chapter's prose with everything the announcement already says off the top of it: the
+    chapter's own heading, and the book's title and author where a half-title page prints them
+    above the first chapter."""
+    chapters = book.get("chapters") or []
+    name = chapters[index].get("name") or "" if 0 <= index < len(chapters) else ""
+    by = BY.get((book.get("language") or "")[:2], "by")
+    return epub.strip_heading(text, name, book.get("title") or "",
+                              f"{by} {book['author']}" if book.get("author") else "")
 
 FIND_FORMS = 12          # how many spellings one search answers with
 
@@ -603,12 +613,10 @@ def render_chapter(book_id, index):
             update_book(book_id, lambda b: b["chapters"][index].update(
                 state="error", error=f"missing text: {e}"[:200]))
             return
-        # The chapter's own heading line is a bare number ("9") or the title, which the spoken
-        # lead-in says better, so it always comes out of the text. The whole name goes in, part
-        # and all: strip_heading matches each piece of it against the lines separately, since a
-        # page prints whichever of them it likes — usually the chapter alone, and both where a
-        # part-title page opens the file.
-        text = epub.strip_heading(text, chapter.get("name") or "")
+        # Whatever the lead-in is about to say comes off the top of the text, so nothing is read
+        # out twice: the chapter's own heading, and the book's title and author where the page
+        # above the first chapter prints them.
+        text = chapter_text(book, index, text)
         intro = chapter_intro(book, index)
 
         # The lead-in lives in the chapter's first segment, and a resumed render keeps whatever

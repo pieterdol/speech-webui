@@ -345,6 +345,26 @@ class TestStripHeading:
         assert epub.strip_heading("THE GUNSLINGER", "Chapter 1: The Gunslinger") \
             == "THE GUNSLINGER"
 
+    def test_the_books_title_and_author_come_off_too(self):
+        """A half-title page prints both above the first chapter, and the lead-in has just
+        announced them: The War of the Worlds said "by H. G. Wells" twice over."""
+        text = ("The War of the Worlds\nby H. G. Wells\n"
+                "‘And who is to say what walks the far side of the sky?’")
+        assert epub.strip_heading(text, "The War of the Worlds", "The War of the Worlds",
+                                  "by H. G. Wells").startswith("‘And who")
+
+    def test_either_way_round(self):
+        text = "by H. G. Wells\nThe War of the Worlds\nAnd then the story."
+        assert epub.strip_heading(text, "", "The War of the Worlds",
+                                  "by H. G. Wells") == "And then the story."
+
+    def test_a_number_under_the_heading_is_not_the_title(self):
+        """The second pass never takes a bare number: by then it's the book's own numbering
+        inside the chapter, not a heading."""
+        text = "CHAPTER 1\n1\nThe first section starts here."
+        assert epub.strip_heading(text, "Chapter 1", "A Book", "by An Author") \
+            == "1\nThe first section starts here."
+
     def test_leaves_prose_alone(self):
         text = "It was a bright cold day in April."
         assert epub.strip_heading(text, "Chapter 1") == text

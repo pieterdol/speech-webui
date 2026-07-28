@@ -191,6 +191,13 @@ it — a full book is hours of work.
   own page carries. A short section that *isn't* the next chapter's title, like a stray
   quotation, stays a chapter of its own: the test is that its whole text is inside its name.
 
+  **What the announcement is about to say never survives in the prose either.** A half-title page
+  prints the book's title and author over the first chapter, and the lead-in has just said both:
+  The War of the Worlds opened by announcing *"The War of the Worlds" … "by H G Wells"* and then
+  reading the same two lines out. They come off the top by the same rule the heading does, in
+  whichever order the page sets them — but a bare number never does, since by then it's the
+  book's own numbering inside the chapter.
+
   **A part's title page belongs to the chapter under it, as a part.** Same fold, different page:
   The War of the Worlds and A Tale of Two Cities open each book with *BOOK ONE THE COMING OF THE
   MARTIANS*, and the chapter beneath it is in the contents nowhere at all. Folded in it would

@@ -99,6 +99,16 @@ class TestRenderChapter:
         assert intro[-1][0] == "Palancar Valley" and intro[-1][1] > 0
         assert "PALANCAR VALLEY" not in fake_tts[0]["text"]
 
+    def test_the_half_title_page_is_not_read_after_the_announcement(self, make_book, fake_tts):
+        """The first chapter's page prints the book's title and author over the prose, and the
+        lead-in has just said both — The War of the Worlds read "by H. G. Wells" twice."""
+        make_book(names=["The Book"], announce=True,
+                  texts=["A Book\nby An Author\nAnd then the story begins.\n" + LONG])
+        books.render_chapter("b1", 0)
+        opening = fake_tts[0]["text"]
+        assert opening.startswith("And then the story begins.")
+        assert "An Author" not in opening
+
     def test_missing_text_is_an_error_not_a_crash(self, make_book, fake_tts):
         make_book(texts=[LONG])
         os.remove(books.book_dir("b1", "text", "ch000.txt"))
