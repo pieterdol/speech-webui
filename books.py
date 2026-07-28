@@ -411,12 +411,13 @@ def stale_segments(book, index, old, new):
     file, so respell_repair_plan drops it.
     """
     hits = set()
+    lang = book.get("language") or ""
     for si, seg in enumerate(chapter_segments(book, index)):
-        if any(respell(c, old) != respell(c, new) for c in split_chunks(seg)):
+        if any(respell(c, old, lang) != respell(c, new, lang) for c in split_chunks(seg)):
             hits.add(si)
     chapters = book.get("chapters") or []
     if 0 <= index < len(chapters):
-        spoken = [respell(p, new) for p, _ in chapter_intro(book, index)]
+        spoken = [respell(p, new, lang) for p, _ in chapter_intro(book, index)]
         if chapters[index].get("intro") != spoken:
             hits.add(0)
     return hits
@@ -601,6 +602,9 @@ def render_chapter(book_id, index):
         # chat, where there is no book — and because the repair scan has to be able to ask what
         # this map would have produced.
         respellings = book.get("respell") or {}
+        # And the book's language, for the one rule that turns on it: what a decimal point is
+        # called. Passed down the same way and for the same reason.
+        lang = book.get("language") or ""
         # Bumped whenever the narrator changes. A chapter that was already being rendered when
         # you switched would otherwise finish in the old voice and be marked ready, leaving one
         # chapter of the book in the wrong voice with nothing to show for it.
@@ -627,7 +631,7 @@ def render_chapter(book_id, index):
         # goes in as "11, 22, 63: A Novel", and a change to how a phrase is pronounced leaves the
         # written form identical. Comparing what's written would call that opening current when
         # it no longer is.
-        spoken = [respell(p, respellings) for p, _ in intro]
+        spoken = [respell(p, respellings, lang) for p, _ in intro]
         # Split before publishing the state, not after: how many parts a chapter comes to is
         # pure text work, and knowing it up front is the difference between "part 1 of 2" and
         # ten minutes of "starting…" in the queue panel.
@@ -660,7 +664,7 @@ def render_chapter(book_id, index):
                     _render_segment(seg_text, voice, out,
                                     intro=intro if si == 0 else None,
                                     tail_pause=CHAPTER_END_PAUSE if si == len(segments) - 1 else 0,
-                                    respellings=respellings)
+                                    respellings=respellings, lang=lang)
                 made.append({"file": name, "seconds": audio_seconds(out)})
                 # publish each finished segment: you can start listening to segment 1 while
                 # segment 2 is still being made
@@ -1144,7 +1148,8 @@ def export_worker(jid, book_id, part=None):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def _render_segment(text, voice, out_path, intro=None, tail_pause=0, respellings=None):
+def _render_segment(text, voice, out_path, intro=None, tail_pause=0, respellings=None,
+                    lang=""):
     """One segment = many TTS calls concatenated. run_lock is taken per chunk, not for the
     whole segment, so hours of narration don't starve everything else.
 
@@ -1157,12 +1162,12 @@ def _render_segment(text, voice, out_path, intro=None, tail_pause=0, respellings
         for ii, (phrase, pause) in enumerate(intro or []):
             raw = os.path.join(tmpdir, f"intro-{ii}.wav")
             with run_lock:
-                tts_say(voice, respell(phrase, respellings), 1.0, raw)
+                tts_say(voice, respell(phrase, respellings, lang), 1.0, raw)
             parts.append(pad_with_silence(raw, pause, os.path.join(tmpdir, f"intro-{ii}-pad.wav")))
         for ci, chunk in enumerate(split_chunks(text)):
             wav = os.path.join(tmpdir, f"{ci:04d}.wav")
             with run_lock:
-                tts_say(voice, respell(chunk, respellings), 1.0, wav)
+                tts_say(voice, respell(chunk, respellings, lang), 1.0, wav)
             parts.append(wav)
         if not parts:
             raise RuntimeError("nothing to say in this segment")
@@ -1447,7 +1452,9 @@ def api_book_preview(book_id, index):
     voice = book.get("voice") or "af_heart"
     respellings = book.get("respell") or {}
     intro = chapter_intro(book, index)
-    spoken = [respell(p, respellings) for p, _ in intro] + [respell(chunks[0], respellings)]
+    lang = book.get("language") or ""
+    spoken = ([respell(p, respellings, lang) for p, _ in intro]
+              + [respell(chunks[0], respellings, lang)])
     digest = hashlib.sha1("\n".join([voice] + spoken).encode()).hexdigest()[:16]
     d = book_dir(book_id, "preview")
     # Under the chapter's storage number, like its parts: keyed on the position, a section put
@@ -1457,7 +1464,7 @@ def api_book_preview(book_id, index):
     if not os.path.exists(os.path.join(d, name)):
         os.makedirs(d, exist_ok=True)
         try:
-            _render_segment(chunks[0], voice, os.path.join(d, name), intro=intro,
+            _render_segment(chunks[0], voice, os.path.join(d, name), intro=intro, lang=lang,
                             respellings=respellings)
         except Exception as e:
             return jsonify(error=str(e)[:200]), 500
@@ -1521,7 +1528,8 @@ def api_book_update():
     # would ever notice. A chapter part-way through has published segments too, and queueing a
     # second render behind the first is what the lock is for.
     opens = first_chapter(book)
-    said = lambda b: [respell(p, b.get("respell") or {}) for p, _ in chapter_intro(b, opens)]
+    said = lambda b: [respell(p, b.get("respell") or {}, b.get("language") or "")
+                      for p, _ in chapter_intro(b, opens)]
     renamed = bool(opens is not None and not resets
                    and (chapters[opens].get("segments") or [])
                    and said(rename(dict(book))) != said(book))

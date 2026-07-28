@@ -321,6 +321,43 @@ class TestGroupedNumbers:
         assert textprep.respell("on 11/22/63 it happened") == "on 11, 22, 63 it happened"
 
 
+class TestDecimalPoint:
+    """A decimal point is a word, and Kokoro's tokenizer drops it: "3.5 miles" phonemises as
+    "three five". The one number rule that can't stay out of the language."""
+
+    @pytest.mark.parametrize("written,spoken", [
+        ("3.5 miles away", "3 point 5 miles away"),
+        ("1.5 million of them", "1 point 5 million of them"),
+        ("a 2.5 hour wait", "a 2 point 5 hour wait"),
+        ("3.14 exactly", "3 point 14 exactly"),
+    ])
+    def test_the_point_is_said(self, written, spoken):
+        assert textprep.respell(written) == spoken
+
+    @pytest.mark.parametrize("text", [
+        "$3.50 a pound",        # Kokoro says "three fifty" by itself, which is how it's said
+        "£3.50 a pound",
+        "1.2.3.4 they counted",     # not a number at all
+        "It cost more. 5 of them, in fact.",     # a sentence end, and a space after it
+        "at the end.",
+    ])
+    def test_left_alone(self, text):
+        assert textprep.respell(text) == text
+
+    def test_dutch_keeps_its_own_notation(self):
+        """There the decimal is a comma, which espeak reads as "komma" unaided, and a point
+        between digits is a thousands separator it also gets right."""
+        assert textprep.respell("3,5 meter breed", lang="nl") == "3,5 meter breed"
+        assert textprep.respell("1.500 meter breed", lang="nl") == "1.500 meter breed"
+
+    def test_a_language_with_no_word_for_it_changes_nothing(self):
+        assert textprep.respell("3.5 Meter", lang="de") == "3.5 Meter"
+
+    def test_no_language_is_english(self):
+        """What the studio and chat pass, and what they speak."""
+        assert textprep.respell("3.5 miles") == textprep.respell("3.5 miles", lang="en")
+
+
 class TestSlashNumbers:
     """A slash between numbers is a writing convention, not a sound: "11/22/63" read as written
     comes out "eleven slash twenty-two slash sixty-three". Only the slash is dealt with here —
@@ -356,10 +393,14 @@ class TestSlashNumbers:
         "and/or",
         "Jake/George",
         "see example.com/5/8 for that",     # a path
-        "version 1.2/3 of it",
     ])
     def test_left_alone(self, text):
         assert textprep.respell(text) == text
+
+    def test_a_version_number_keeps_its_slash(self):
+        """The point is said out loud, since that's what a decimal point is; the slash beside
+        it is still not a date."""
+        assert textprep.respell("version 1.2/3 of it") == "version 1 point 2/3 of it"
 
     @pytest.mark.parametrize("written,spoken", [
         ("10-02-1986", "10, 2, 1986"),          # day first, as written here

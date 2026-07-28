@@ -43,7 +43,7 @@ class TestRenderChapter:
         split happens before the state is written."""
         seen = []
 
-        def slow_segment(text, voice, out_path, intro=None, tail_pause=0, respellings=None):
+        def slow_segment(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang=""):
             seen.append(dict(books.find_book("b1")["chapters"][0]))
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0")
@@ -58,7 +58,7 @@ class TestRenderChapter:
     def test_each_part_is_published_as_it_finishes(self, make_book, monkeypatch):
         counts = []
 
-        def watch(text, voice, out_path, intro=None, tail_pause=0, respellings=None):
+        def watch(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang=""):
             counts.append(len(books.find_book("b1")["chapters"][0]["segments"]))
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0")
@@ -175,7 +175,7 @@ class TestAnnouncementInvalidation:
 
 class TestCancellation:
     def slow_tts(self, monkeypatch, delay=0.15):
-        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None):
+        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang=""):
             time.sleep(delay)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0" * 64)
@@ -197,7 +197,7 @@ class TestCancellation:
 
     def test_it_stops_within_a_segment_not_at_the_end(self, make_book, monkeypatch):
         made = []
-        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None):
+        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang=""):
             made.append(out_path)
             time.sleep(0.15)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -519,7 +519,7 @@ class TestQueue:
         started = threading.Event()
         release = threading.Event()
 
-        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None):
+        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang=""):
             started.set()
             release.wait(timeout=10)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -551,7 +551,7 @@ class TestQueue:
         started = threading.Event()
         release = threading.Event()
 
-        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None):
+        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang=""):
             started.set()
             release.wait(timeout=10)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -601,7 +601,7 @@ class TestRenderDepth:
         started = threading.Event()
         release = threading.Event()
 
-        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None):
+        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang=""):
             started.set()
             release.wait(timeout=10)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -841,7 +841,7 @@ class TestAMapChangeDuringARender:
         seen = []
 
         def save_the_map_midway(text, voice, out_path, intro=None, tail_pause=0,
-                                respellings=None):
+                                respellings=None, lang=""):
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0" * 64)
             seen.append(os.path.basename(out_path))
@@ -863,7 +863,7 @@ class TestAMapChangeDuringARender:
         made = []
 
         def save_the_map_midway(text, voice, out_path, intro=None, tail_pause=0,
-                                respellings=None):
+                                respellings=None, lang=""):
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0" * 64)
             made.append(os.path.basename(out_path))
@@ -887,7 +887,7 @@ class TestAMapChangeDuringARender:
         made = []
 
         def save_the_map_midway(text, voice, out_path, intro=None, tail_pause=0,
-                                respellings=None):
+                                respellings=None, lang=""):
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0" * 64)
             made.append((os.path.basename(out_path), respellings))
@@ -920,7 +920,7 @@ class TestAnOpeningNoteSavedMidRender:
         made = []
 
         def edit_the_note_midway(text, voice, out_path, intro=None, tail_pause=0,
-                                 respellings=None):
+                                 respellings=None, lang=""):
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0" * 64)
             made.append(os.path.basename(out_path))
@@ -940,7 +940,7 @@ class TestAnOpeningNoteSavedMidRender:
         made = []
 
         def edit_the_note_midway(text, voice, out_path, intro=None, tail_pause=0,
-                                 respellings=None):
+                                 respellings=None, lang=""):
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0" * 64)
             made.append((os.path.basename(out_path), [p for p, _ in (intro or [])]))

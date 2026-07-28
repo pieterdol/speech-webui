@@ -102,6 +102,17 @@ _SLASH_NUMBERS = re.compile(r"(?<![\w/.])(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?(?![\
 # the same reason — "100, 200" has a space, and "1,2,3" hasn't got three digits anywhere.
 _GROUPED_NUMBER = re.compile(r"(?<![\d.,])\d{1,3}(?:,\d{3})+(?![\d,])")
 
+# The decimal point, on the other hand, is a word, and Kokoro's tokenizer drops it: "3.5 miles"
+# phonemises as "three five". So this is the one number rule that can't stay out of the
+# language — which is why it asks for one, and says nothing in a language it hasn't been told
+# the word for. Dutch is left out on purpose rather than for want of a word: there the decimal
+# is a comma, which espeak already reads as "komma", and a point between digits is a thousands
+# separator that it also reads correctly.
+DECIMAL_WORD = {"en": "point"}
+# Never after a currency symbol. Kokoro reads "$3.50" as "three fifty" by itself, which is how
+# the amount is said, and "3 point 50" would be worse than what it does unaided.
+_DECIMAL = re.compile(r"(?<![\d.$£€])(\d+)\.(\d+)(?![\d.])")
+
 # The same date written with hyphens — "10-02-1986". A hyphen needs a much narrower rule than a
 # slash, because between numbers it is usually a range and not a separator: "1914-1918", "pages
 # 10-20", "the 2020-21 season", "MS-13". So only the two forms carrying a four-digit year count
@@ -179,9 +190,17 @@ def respell_pattern(src):
                       re.IGNORECASE)
 
 
-def respell(text, extra=None):
+def respell(text, extra=None, lang=""):
     """`extra` is one book's own map, applied on top of the global one and winning where both
     name the same word. None — every caller outside book narration — is exactly the global map.
+
+    `lang` is the book's, for the one rule that depends on it: what a decimal point is called.
+    Empty is English, which is what the studio and chat speak; anything this hasn't got a word
+    for keeps its numbers as written.
+
+    Everything a caller compares — the repair scan asking whether a segment would be handed
+    something different — has to pass the same `lang` on both sides, or the language itself
+    reads as a change.
     """
     for pattern, full in _HONORIFIC:
         text = pattern.sub(full, text)
@@ -189,6 +208,9 @@ def respell(text, extra=None):
         text = pattern.sub(lambda m, f=full: _expand(m, f), text)
     text = _NUMBER_OF.sub("number", text)
     text = _GROUPED_NUMBER.sub(lambda m: m.group(0).replace(",", ""), text)
+    said = DECIMAL_WORD.get((lang or "en")[:2])
+    if said:
+        text = _DECIMAL.sub(rf"\1 {said} \2", text)
     text = _SLASH_NUMBERS.sub(_spoken_groups, text)
     text = _HYPHEN_DATE.sub(_spoken_groups, text)
     # A replacement is put in through a function, not as re.sub's template: a reader typing
