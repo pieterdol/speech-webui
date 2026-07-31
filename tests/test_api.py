@@ -10,12 +10,23 @@ import books
 import tts
 
 
+# Captured before the fixture below replaces it, for the one class that tests the worker itself
+# rather than the endpoint that starts it.
+REAL_CAST_WORKER = books.cast_worker
+
+
 @pytest.fixture(autouse=True)
 def no_background_work(monkeypatch):
     """The render endpoints answer immediately and hand the job to a daemon thread. A test
     that let one start would outlive the tmpdir it was writing into, and go on writing after
     pytest had removed it. These tests are about what the endpoint records and returns."""
     started = {"chapters": [], "runs": [], "cast": []}
+    # queue_render, not render_chapter: what an endpoint does now is put a chapter on the queue, and
+    # a worker picks it up on its own thread. Stubbed there, these tests stay synchronous — reading
+    # what a worker has got round to recording is a race, and was one.
+    monkeypatch.setattr(books, "queue_render",
+                        lambda book_id, i: started["chapters"].append((book_id, i))
+                        or {"done": threading.Event(), "dropped": False})
     monkeypatch.setattr(books, "render_chapter",
                         lambda book_id, i: started["chapters"].append((book_id, i)))
     monkeypatch.setattr(books, "render_all_worker",
@@ -1674,3 +1685,66 @@ class TestAttributingAChapter:
         books.update_book("b1", lambda b: b["chapters"][0].update(cast=2))
         client.post("/api/books/cast/voice", json={"id": "b1", "speaker": "Owen", "voice": ""})
         assert books.find_book("b1")["chapters"][0]["cast"] == 1
+
+
+class TestWorkingOutAChapterThatWasAlreadyNarrated:
+    """🎭 throws away audio made in one voice — that's what it's for — and a chapter that was
+    ready and is now silent is a hole in the middle of a book nobody would look for. So it goes
+    back on the queue, the way a pronunciation change re-narrates what it invalidates."""
+
+    SCENE = "“You are late,” said Marla.\n“The bridge was up.”\n"
+
+    @pytest.fixture(autouse=True)
+    def a_model_and_a_roster(self, monkeypatch):
+        monkeypatch.setattr(books, "kokoro_voices",
+                            lambda: ["af_heart", "af_bella", "am_adam"])
+        monkeypatch.setattr(books.cast, "attribute", lambda text, model=None, **kw: {
+            "model": model, "made": 0, "quotes": 2, "tagged": 1,
+            "lines": [{"n": 1, "speaker": "Marla", "gender": "female", "how": "tag"},
+                      {"n": 2, "speaker": "Owen", "gender": "male", "how": "model"}],
+            "speakers": [{"name": "Marla", "gender": "female", "lines": 1},
+                         {"name": "Owen", "gender": "male", "lines": 1}]})
+
+    def narrated(self, book_id="b1", index=0):
+        name = f"ch{index:03d}-s00.opus"
+        p = books.book_dir(book_id, "audio", name)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(b"\0" * 128)
+        books.update_book(book_id, lambda b: b["chapters"][index].update(
+            state="ready", segments=[{"file": name, "seconds": 9.0}], seconds=9.0))
+
+    def run_it(self, monkeypatch, index=0):
+        """cast_worker in the foreground, with the queue stubbed so nothing narrates."""
+        queued = []
+        monkeypatch.setattr(books, "queue_render",
+                            lambda b, i: queued.append((b, i)) or {"done": None})
+        jid = books.new_job("cast")
+        REAL_CAST_WORKER(jid, "b1", index, "test-model")
+        return books.jobs[jid], queued
+
+    def test_a_narrated_chapter_goes_back_on_the_queue(self, make_book, monkeypatch):
+        make_book(names=["One"], texts=[self.SCENE])
+        self.narrated()
+        job, queued = self.run_it(monkeypatch)
+        assert job["status"] == "done"
+        assert job["renarrating"] is True
+        assert queued == [("b1", 0)]
+        assert not os.path.exists(books.book_dir("b1", "audio", "ch000-s00.opus"))
+
+    def test_a_chapter_with_no_audio_is_left_for_when_you_reach_it(self, make_book, monkeypatch):
+        """It was never going to be heard yet, and minutes of GPU shouldn't start on their own."""
+        make_book(names=["One"], texts=[self.SCENE])
+        job, queued = self.run_it(monkeypatch)
+        assert job["status"] == "done"
+        assert job["renarrating"] is False
+        assert queued == []
+
+    def test_a_half_narrated_chapter_counts_as_narrated(self, make_book, monkeypatch):
+        """Parts on disk with a state that isn't ready — what a stopped render leaves — are audio
+        in one voice just the same."""
+        make_book(names=["One"], texts=[self.SCENE])
+        self.narrated()
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="pending"))
+        job, queued = self.run_it(monkeypatch)
+        assert job["renarrating"] is True
+        assert queued == [("b1", 0)]

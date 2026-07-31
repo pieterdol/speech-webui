@@ -5,6 +5,8 @@ Marla's is exactly what the pass is for. What is testable is everything around i
 finds, the answers code settles on its own, and the casting. So the model is replaced by a
 canned answer everywhere here, and the tests are about what happens to that answer.
 """
+import json
+
 import cast
 
 # Written for the shapes, not the story: a speech split by its tag, a tagged line, an
@@ -185,6 +187,66 @@ class TestAskingAboutALongChapter:
         assert [b for _w, b, _h in cut] == [0] + [sum(h for _w, _b, h in cut[:i + 1])
                                                   for i in range(len(cut) - 1)]
 
+    def test_it_does_not_ask_the_model_to_think_about_it(self):
+        """qwen3 reasons out loud unless told not to. Here that cost a window of a hundred runs
+        33,000 tokens of think block and no answer at all — and with the answer capped, an empty
+        one. Attribution is a judgement per marker, not a problem to work through."""
+        sent = {}
+
+        def fake_urlopen(req, timeout=None):
+            sent.update(json.loads(req.data.decode()))
+            raise RuntimeError("the request is what this is about")
+
+        import unittest.mock as mock
+        with mock.patch("urllib.request.urlopen", fake_urlopen), \
+             mock.patch("cast.model_thinks", lambda m: True):
+            try:
+                cast.ask("[1]“One.”", runs=1)
+            except RuntimeError:
+                pass
+        assert sent["think"] is False
+
+    def test_a_model_that_rejects_the_flag_is_not_sent_it(self):
+        """qwen2.5-coder refuses the request outright rather than ignoring the flag."""
+        sent = {}
+
+        def fake_urlopen(req, timeout=None):
+            sent.update(json.loads(req.data.decode()))
+            raise RuntimeError("the request is what this is about")
+
+        import unittest.mock as mock
+        with mock.patch("urllib.request.urlopen", fake_urlopen), \
+             mock.patch("cast.model_thinks", lambda m: False):
+            try:
+                cast.ask("[1]“One.”", runs=1)
+            except RuntimeError:
+                pass
+        assert "think" not in sent
+
+    def test_the_answer_is_bounded_by_how_many_runs_there_are(self):
+        """Asked for a JSON array a model can carry on emitting entries for ever, and one did:
+        33,000 tokens into a chapter of 130 runs, still going. What comes back short is handled —
+        the runs it didn't cover are unknown, and the narrator reads them."""
+        sent = {}
+
+        def fake_urlopen(req, timeout=None):
+            sent.update(json.loads(req.data.decode()))
+            raise RuntimeError("stop here — the request is what this is about")
+
+        import unittest.mock as mock
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            try:
+                cast.ask("[1]“One.” [2]“Two.”", runs=2)
+            except RuntimeError:
+                pass
+        assert sent["options"]["num_predict"] == cast.CAST_TOKENS_LEAST      # the floor, for two
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            try:
+                cast.ask("…", runs=200)
+            except RuntimeError:
+                pass
+        assert sent["options"]["num_predict"] == 40 * 200
+
     def test_the_model_is_asked_about_marked_text(self):
         """Without the markers there is nothing for it to answer about, and it doesn't say so —
         it spends minutes writing something else."""
@@ -320,3 +382,57 @@ class TestReadingItBackOut:
         except ValueError:
             return
         raise AssertionError("it read past the end of the attribution without complaining")
+
+
+class TestARepliedThatRanOffTheEnd:
+    """A model asked for a JSON array can carry on emitting entries instead of finishing one. The
+    token cap turns that into a truncated reply, and a truncated array is not a document json.loads
+    will look at — so the answers are read out of the text, and a window that came back mostly
+    unanswered is asked again in halves."""
+
+    def test_entries_before_the_cut_are_kept(self):
+        cut_off = ('{"quotes": [{"n": 1, "speaker": "Marla", "gender": "female"}, '
+                   '{"n": 2, "speaker": "Owen", "gender": "male"}, {"n": 3, "speak')
+        assert [a["n"] for a in cast.answers_in(cut_off)] == [1, 2]
+
+    def test_a_whole_reply_reads_the_same_way(self):
+        whole = '{"quotes": [{"n": 1, "speaker": "Marla", "gender": "female"}]}'
+        assert cast.answers_in(whole) == [{"n": 1, "speaker": "Marla", "gender": "female"}]
+
+    def test_nothing_at_all_is_no_answers_rather_than_a_crash(self):
+        """What a reply cut off before its first entry looks like."""
+        assert cast.answers_in("") == [] and cast.answers_in(None) == []
+
+    def test_a_window_that_came_back_short_is_asked_again_in_halves(self):
+        """And the halves are numbered so their answers still land on the right runs."""
+        long_chapter = CHAPTER * 300                  # two windows, plenty of runs
+        asked = []
+
+        def loops_on_a_big_window(window, **kw):
+            # On run count, not on length: what the model is given is the *marked* text, which is
+            # longer than the window attribute measures when it decides to split.
+            runs = len(cast.quote_spans(window))
+            asked.append(runs)
+            # 120 runs is about what a window is down to once attribute stops halving it
+            answered = runs if runs <= 120 else max(1, runs // 8)   # ran off the end on a big one
+            return [{"n": i + 1, "speaker": "Marla", "gender": "female"} for i in range(answered)]
+
+        got = cast.attribute(long_chapter, ask_fn=loops_on_a_big_window)
+        assert len(asked) > len(cast.windows(long_chapter, cast.quote_spans(long_chapter)))
+        assert min(asked) <= 120                      # it did split, down to windows it answers
+        assert [l["n"] for l in got["lines"]] == list(range(1, got["quotes"] + 1))
+        # every run the halves answered is attributed, none of them shifted
+        assert all(l["speaker"] == "Marla" for l in got["lines"])
+
+    def test_it_stops_splitting_rather_than_going_forever(self):
+        """A window nothing can be got out of is accepted as it is: the runs it didn't cover are
+        unknown, which the narrator reads."""
+        asked = []
+
+        def answers_nothing(window, **kw):
+            asked.append(len(window))
+            return []
+
+        got = cast.attribute(CHAPTER * 300, ask_fn=answers_nothing)
+        assert len(asked) < 100                       # bounded, not recursing on every half
+        assert all(l["speaker"] == cast.UNKNOWN for l in got["lines"])

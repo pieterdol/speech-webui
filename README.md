@@ -185,7 +185,7 @@ full book is hours of work.
   in this book's voice and a search for how the book actually spells a name. One save applies the
   lot, and re-narrates only the parts that said it the old way.
 - **Who speaks here** works out who says each quoted line of a chapter — `qwen3:14b` through Ollama,
-  about five minutes for a chapter with 260 of them — and gives each character a voice of their own,
+  about a minute for a chapter of 130 of them — and gives each character a voice of their own,
   the narrator keeping everything between the quotes. A character's voice can be changed or handed
   back to the narrator. Narrating it afterwards takes no longer than one voice does. Once a book has
   a cast it keeps it: any chapter narrated after that is worked out first, so playing on doesn't

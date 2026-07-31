@@ -3094,7 +3094,11 @@ async function castChapter(i, btn){
     setStatus("");
     await openBook(BOOK.id);
     const heard = (done.cast || []).filter(s => s.voice !== BOOK.voice).length;
-    toast(`✅ ${esc(done.text || "")} · ${heard} with a voice of their own`, 6000);
+    // Say the cost out loud when there was audio: it was made in one voice, so it has gone and
+    // the chapter is on the queue again.
+    toast(`✅ ${esc(done.text || "")} · ${heard} with a voice of their own`
+          + (done.renarrating ? " · narrating it again with them" : ""), 6000);
+    if(done.renarrating) watchRenders();
   }catch(e){
     toast("❌ " + esc(e.message), 5000);
   }

@@ -255,7 +255,14 @@ the gap.
 
 **Who speaks here** works out, chapter by chapter, who says each quoted line, and gives each character
 a voice of their own. The narration between the quotes stays with the book's narrator. It's opt-in per
-chapter and costs about **five minutes** of GPU for a chapter with 260 quoted lines.
+chapter and costs about **a minute** of GPU for a chapter of 130 quoted lines.
+
+**Thinking is off**, and that's the difference between a minute and not working at all. `qwen3`
+reasons out loud unless told otherwise, and on this it spends the reasoning instead of the answer:
+one window of a hundred runs went 33,000 tokens into a think block and never reached the JSON —
+still emitting at 40 tokens a second after the client had hung up — and with the answer capped it
+reached the cap *empty*. Told not to think, the same chapter came back in 49 seconds with every run
+answered. Attribution is a judgement per marker, not a problem to work through.
 
 **Narrating it afterwards costs nothing extra**, which is worth saying because it looks like it should:
 a voice change is a separate call to the engine, and a dialogue-heavy chapter is 500 calls where one
@@ -277,6 +284,12 @@ narration. Two more things code settles rather than asking:
 
 **A speech split by its tag is one voice.** `"…," said Marla, "…"` is two runs and one person; two runs
 with a full stop between them can be two people, and each is answered on its own.
+
+**The answer is capped**, at about four times what a window needs. Asked for a JSON array a model
+can decide never to stop writing one, and one did: 33,000 tokens into a chapter of 130 quoted lines,
+still emitting entries at 40 a second with nothing to stop it but the request timeout, and still going
+after the client had hung up. A cap makes that a truncated answer instead of a hung chapter, and
+truncated is already handled — the runs it didn't reach are `unknown`, which the narrator reads.
 
 **Model.** `qwen3:14b`, and the size earns its place: on a chapter of Austen 8b split a speech between
 two speakers, read an illustration caption as dialogue and wrote one speaker's name two ways, where 14b

@@ -2064,17 +2064,32 @@ def cast_worker(jid, book_id, index, model):
     job = jobs[jid]
     job["status"] = "reading"
     try:
+        # Whether it had audio, asked before the attribution throws it away. Working a chapter out
+        # invalidates what was narrated in one voice — that's the point — and a chapter that was
+        # ready and is now silent is a hole in the middle of a book nobody would think to look for,
+        # so it goes back on the queue. The same thing a pronunciation change does with what it
+        # invalidates. A chapter that had nothing is left alone: it was never going to be heard yet.
+        chapters = (find_book(book_id) or {}).get("chapters") or []
+        had_audio = bool(0 <= index < len(chapters)
+                         and (chapters[index].get("segments")
+                              or chapters[index].get("state") == "ready"))
         data = attribute_chapter(book_id, index, model,
                                  status=lambda s: job.update(status=s))
         book = find_book(book_id) or {}
         narrator = book.get("voice") or "af_heart"
         voices = book.get("cast") or {}
+        if had_audio:
+            queue_render(book_id, index)
         job.update(status="done",
                    text=f"{len(data['speakers'])} speakers in {data['quotes']} quoted lines",
                    cast=[s | {"voice": voices.get(s["name"]) or narrator}
                          for s in data["speakers"]],
-                   quotes=data["quotes"], tagged=data["tagged"])
+                   quotes=data["quotes"], tagged=data["tagged"], renarrating=had_audio)
     except Exception as e:
+        # Logged as well as reported: this takes minutes, and whoever asked for it has usually
+        # stopped watching the panel by the time it falls over — a job nobody is polling any more
+        # is a failure with nowhere to go, and the reason it fell over is worth having.
+        log.exception("cast: %s chapter %s failed", book_id, index)
         job.update(status="error", error=str(e)[:300])
 
 @app.post("/api/books/cast")

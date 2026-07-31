@@ -14,7 +14,7 @@ import re
 import time
 import urllib.request
 
-from chat import OLLAMA
+from chat import OLLAMA, model_thinks
 
 CAST_MODEL = "qwen3:14b"
 # Shorter than chat's, and for the same reason: a resident 14b holds 9.3 GB of the card's 16, and
@@ -31,7 +31,24 @@ CAST_WINDOW_CHARS = 24000
 # How many already-attributed runs the next window is told about. A window that opens mid-scene
 # has no other way to know who has been talking.
 CAST_CARRY = 6
-CAST_TIMEOUT = 1800
+# An answer is one short object per marked run — about 25 tokens of `{"n": 14, "speaker": …}` —
+# so this is roughly four times what a window needs. It is a bound on a runaway, not a budget:
+# asked for a JSON array, a model can carry on emitting entries for ever, and one did — 33,000
+# tokens into a chapter of 130 runs, still going at 40 tokens a second, with nothing to stop it
+# but the request timeout. Truncated is handled: collate reads what came back and the runs it
+# didn't cover are unknown, which the narrator reads.
+CAST_TOKENS_PER_RUN = 40
+CAST_TOKENS_LEAST = 256
+# When a window comes back with less than this much of it answered, it is asked again in halves. A
+# model that has started looping on one window usually doesn't on a smaller one, and the
+# alternative is most of a chapter read by the narrator because the answer ran off the end.
+CAST_MIN_COVERED = 0.6
+# Except this small, where splitting stops buying anything and the halves stop having the narration
+# that says who is speaking.
+CAST_LEAST_WINDOW = 6000
+# And a bound on the wall-clock, for the shapes that go wrong differently. Measured worst case for
+# a full window is under three minutes.
+CAST_TIMEOUT = 600
 
 # Not speech, and unknown speaker: both read by the narrator, and kept apart because they mean
 # different things to anyone reading the result — a caption is meant to be narrated, an
@@ -303,31 +320,64 @@ def windows(text, spans, limit=CAST_WINDOW_CHARS):
     return out or [(text, 0, 0)]
 
 
-def ask(window, model=CAST_MODEL, carry=(), url=None, timeout=CAST_TIMEOUT):
+def ask(window, model=CAST_MODEL, carry=(), url=None, timeout=CAST_TIMEOUT, runs=None):
     """The model's answers for one window: [{n, speaker, gender}], n counting from 1.
 
     `carry` is the last few (speaker, run) pairs from the window before, so a window that opens
-    mid-conversation knows who has been talking.
+    mid-conversation knows who has been talking. `runs` is how many marked runs the window has,
+    which is what the answer is allowed to be long enough for.
     """
     lead = ""
     if carry:
         lead = ("Just before this, in order:\n"
                 + "\n".join(f"{who}: {what}" for who, what in carry) + "\n\n")
+    if runs is None:
+        runs = len(quote_spans(window))
     body = {"model": model, "stream": False, "format": SCHEMA,
             "messages": [{"role": "system", "content": SYSTEM},
                          {"role": "user", "content": lead + "Chapter:\n\n" + window}],
             "keep_alive": CAST_KEEP_ALIVE,
             # Temperature 0: the same chapter has to come back the same way, or re-running the pass
             # would re-cast the book. num_ctx explicitly, because Ollama's default would quietly
-            # truncate a window and the runs it dropped would come back unanswered.
-            "options": {"temperature": 0, "num_ctx": CAST_NUM_CTX}}
+            # truncate a window and the runs it dropped would come back unanswered. num_predict
+            # because a model asked for a list can decide never to stop writing one.
+            "options": {"temperature": 0, "num_ctx": CAST_NUM_CTX,
+                        "num_predict": max(CAST_TOKENS_LEAST,
+                                           CAST_TOKENS_PER_RUN * runs)}}
+    # Not spent reasoning about it. qwen3 thinks out loud unless told not to, and here that is worse
+    # than wasted: a window of a hundred runs went 33,000 tokens into a think block and never
+    # reached the answer, and with a cap on the answer it reached it *empty*. Attribution is a
+    # judgement per marker, not a problem to work through — the measured accuracy was the same with
+    # thinking on, at four times the tokens. Asked of the model first, because qwen2.5-coder rejects
+    # the flag outright.
+    if model_thinks(model):
+        body["think"] = False
     req = urllib.request.Request((url or OLLAMA) + "/api/chat",
                                  data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         out = json.loads(r.read().decode())
-    answers = json.loads(out["message"]["content"]).get("quotes") or []
-    return [a for a in answers if isinstance(a.get("n"), int)]
+    return answers_in((out.get("message") or {}).get("content"))
+
+
+# One answer object, as the reply writes it. Read out of the text rather than out of the parsed
+# document because a reply cut off at the token cap is a truncated array, which json.loads refuses
+# whole — while every entry before the cut is a perfectly good answer, and throwing those away
+# turns a chapter that mostly worked into a chapter narrated in one voice.
+_OBJECT = re.compile(r"\{[^{}]*\}")
+
+
+def answers_in(content):
+    """The answer objects a reply contains, whether or not the reply is whole JSON."""
+    out = []
+    for m in _OBJECT.finditer(content or ""):
+        try:
+            obj = json.loads(m.group(0))
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("n"), int):
+            out.append(obj)
+    return out
 
 
 def collate(answers, count):
@@ -359,14 +409,26 @@ def attribute(text, model=CAST_MODEL, url=None, ask_fn=None):
     asker = ask_fn or ask
     spans = quote_spans(text)
     answers, carry = [], []
-    for window, before, here in windows(text, spans):
+    todo = list(windows(text, spans))
+    while todo:
+        window, before, here = todo.pop(0)
         # Marked with the window's own numbering, from one: what comes back is per marker, and a
         # window is all the model ever sees, so numbering it chapter-wide would only give it four
         # hundred to count through.
         ask_about = marked(window, quote_spans(window))
-        got = collate(asker(ask_about, model=model, carry=carry, url=url), here)
+        got = asker(ask_about, model=model, carry=carry, url=url, runs=here)
+        covered = len({a["n"] for a in got if 1 <= a["n"] <= here})
+        # Most of a window unanswered means the reply ran off the end of the token cap rather than
+        # finishing — a model that has started looping on a list keeps going. Halved, it usually
+        # answers; the alternative is handing that much of the chapter back to the narrator.
+        if here and covered < here * CAST_MIN_COVERED and len(window) > CAST_LEAST_WINDOW:
+            cut = window.rfind("\n", 0, len(window) // 2) + 1 or len(window) // 2
+            first, second = window[:cut], window[cut:]
+            in_first = len(quote_spans(first))
+            todo[:0] = [(first, before, in_first), (second, before + in_first, here - in_first)]
+            continue
         # Window-local numbering to chapter-wide, so the caller only ever sees run numbers.
-        answers += [dict(a, n=a["n"] + before) for a in got]
+        answers += [dict(a, n=a["n"] + before) for a in collate(got, here)]
         # What the next window is told: the last few runs of this one and who said them.
         carry = [(a["speaker"], text[spans[a["n"] - 1][0]:spans[a["n"] - 1][1]][:120])
                  for a in answers[-CAST_CARRY:]]
