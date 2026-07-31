@@ -212,19 +212,21 @@
   .say .arrow { flex:none; color:var(--muted); }
   /* One character and the voice reading them. The name gets a column of its own rather than
      sharing the row's free space with a <select>: a select sizes itself to its widest option, so
-     on a phone the name was squeezed to an ellipsis — and a growing list is read by its names. */
-  .cast { display:grid; grid-template-columns:minmax(0,1fr) 46px; gap:4px 8px; align-items:center;
-          padding:8px 0; font-size:14px; border-top:1px solid var(--line); }
-  .cast:first-child { border-top:none; }
-  .cast .who { grid-column:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .cast .who .n { color:var(--muted); font-size:12px; margin-left:6px; }
-  .cast select { grid-column:1; min-width:0; }
-  .cast .iconbtn { grid-column:2; grid-row:1 / span 2; height:100%; }
+     on a phone the name was squeezed to an ellipsis — and a growing list is read by its names.
+     Scoped to the list it belongs to: a bare .cast also matched the 🎭 button on a chapter row,
+     which turned it into a grid a whole row wide. */
+  #castList .castrow { display:grid; grid-template-columns:minmax(0,1fr) 46px; gap:4px 8px;
+                       align-items:center; padding:8px 0; font-size:14px;
+                       border-top:1px solid var(--line); }
+  #castList .castrow:first-child { border-top:none; }
+  #castList .who { grid-column:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #castList select { grid-column:1; min-width:0; }
+  #castList .iconbtn { grid-column:2; grid-row:1 / span 2; height:100%; }
   /* Side by side once there's room for both to be readable. */
   @media (min-width: 560px) {
-    .cast { grid-template-columns:minmax(8em,1fr) minmax(0,1.2fr) 46px; }
-    .cast select { grid-column:2; }
-    .cast .iconbtn { grid-column:3; grid-row:1; }
+    #castList .castrow { grid-template-columns:minmax(8em,1fr) minmax(0,1.2fr) 46px; }
+    #castList select { grid-column:2; }
+    #castList .iconbtn { grid-column:3; grid-row:1; }
   }
   /* ---- chat ---- */
   .chatbar { display:flex; gap:8px; align-items:center; }
@@ -3011,7 +3013,7 @@ function renderCast(){
     return;
   }
   box.innerHTML = names.map(n =>
-    `<div class="cast"><div class="who">${esc(n)}</div>
+    `<div class="castrow"><div class="who">${esc(n)}</div>
        <select class="castVoice" data-who="${esc(n)}"></select>
        <button class="iconbtn hearCast" data-who="${esc(n)}" title="Hear this voice"
                aria-label="Hear this voice">▶</button></div>`).join("");
