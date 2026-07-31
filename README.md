@@ -159,8 +159,9 @@ full book is hours of work.
 - **🎧 hears how a chapter will start** — its announcement and the first ~600 characters, about a
   minute of audio — before committing hours to the wrong narrator, title or pronunciation.
 - **Narrator** — the same picker as everywhere else, Kokoro English and Piper Dutch. A book declaring
-  `nl` gets a Dutch voice by default. Changing it after rendering discards that book's audio, so it
-  asks first.
+  `nl` gets a Dutch voice by default. Changing it discards whatever the book has narrated —
+  half-made chapters as much as finished ones, since a render carries on from the parts it finds —
+  so it asks first, and re-makes only the chapter you'd carry on from.
 - **Rendering** is per chapter, in **~10-minute parts**, each appearing as soon as it's finished.
   Renders are serialized across every book, and a tap says whether it started or queued.
 - **Narrate the whole book** or **Narrate part** works through everything un-narrated in the

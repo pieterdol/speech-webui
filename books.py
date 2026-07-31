@@ -1638,7 +1638,13 @@ def api_book_update():
                   and bool(d["announce"]) != bool(book.get("announce", True))))
     chapters = book.get("chapters") or []
     # Nothing rendered yet means nothing to throw away: just change it.
-    if resets and not any(c.get("state") == "ready" for c in chapters):
+    #
+    # "Has any chapter audio", not "is any chapter finished". A chapter a stopped render or a
+    # restart left half made has real parts on disk, and a render reuses every part it finds — so
+    # asking only about finished ones let a narrator change through without discarding them, and
+    # the next render of that chapter carried on in the new voice from parts made in the old one.
+    # One chapter of the book, read by two people, with nothing saying so.
+    if resets and not any(c.get("state") == "ready" or c.get("segments") for c in chapters):
         resets = False
         d.pop("confirm", None)
     resume = None
@@ -1648,7 +1654,9 @@ def api_book_update():
         # had been narrated if you'd rendered ahead of yourself
         resume = max([(book.get("position") or {}).get("chapter", 0)] + ready) if chapters else 0
     if resets and not d.get("confirm"):
-        rendered = sum(1 for c in book.get("chapters") or [] if c.get("state") == "ready")
+        # Counted the same way the question above is asked, or a book whose only audio is a
+        # half-made chapter would offer to discard "0 chapter(s)" and then discard it.
+        rendered = sum(1 for c in chapters if c.get("state") == "ready" or c.get("segments"))
         name = (book.get("chapters") or [{}])[resume].get("name", f"chapter {resume + 1}") \
                if book.get("chapters") else ""
         return jsonify(ok=False, needs_confirm=True, rendered=rendered, resume=resume,

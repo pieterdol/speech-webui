@@ -291,6 +291,81 @@ class TestAutoExportSetting:
         assert books.find_book("b1")["chapters"][0]["state"] == "ready"
 
 
+class TestChangingTheNarrator:
+    """A voice change invalidates the audio, so it asks first and then discards the lot. What
+    counts as audio is the whole question here: a render reuses every part it finds on disk."""
+
+    @pytest.fixture(autouse=True)
+    def a_voice_roster(self, monkeypatch):
+        monkeypatch.setattr(tts, "kokoro_voices", lambda: ["af_heart", "bm_george"])
+
+    def part(self, book_id="b1", index=0, state="ready"):
+        """One chapter with real audio on disk and the index entry to match."""
+        name = f"ch{index:03d}-s00.opus"
+        p = books.book_dir(book_id, "audio", name)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(b"\0" * 128)
+        books.update_book(book_id, lambda b: b["chapters"][index].update(
+            state=state, segments=[{"file": name, "seconds": 9.0}], seconds=9.0))
+        return p
+
+    def switch(self, client, **extra):
+        return client.post("/api/books/update",
+                           json={"id": "b1", "voice": "bm_george", **extra})
+
+    def test_nothing_narrated_changes_without_asking(self, client, make_book):
+        make_book(names=["One", "Two"], texts=["word " * 10] * 2)
+        got = self.switch(client).get_json()
+        assert got["ok"] is True and not got.get("needs_confirm")
+        assert books.find_book("b1")["voice"] == "bm_george"
+
+    def test_a_narrated_chapter_makes_it_ask(self, client, make_book):
+        make_book(names=["One", "Two"], texts=["word " * 10] * 2)
+        self.part()
+        r = self.switch(client)
+        assert r.status_code == 409
+        assert r.get_json()["rendered"] == 1
+        assert books.find_book("b1")["voice"] == "af_heart"        # unchanged until confirmed
+
+    def test_a_half_narrated_chapter_makes_it_ask_too(self, client, make_book):
+        """The bug this class exists for. A stopped render or a restart leaves a chapter with
+        parts on disk and a state that isn't ready — real audio in the old voice, which the next
+        render of that chapter would reuse and carry on from in the new one."""
+        make_book(names=["One", "Two"], texts=["word " * 10] * 2)
+        self.part(state="pending")
+        r = self.switch(client)
+        assert r.status_code == 409
+        assert r.get_json()["rendered"] == 1        # not "0 chapters" about audio it will delete
+
+    def test_confirming_discards_every_part_and_renarrates_where_you_are(
+            self, client, make_book, no_background_work):
+        make_book(names=["One", "Two"], texts=["word " * 10] * 2)
+        self.part(index=0, state="pending")
+        self.part(index=1)
+        got = self.switch(client, confirm=True).get_json()
+        assert got["ok"] is True
+        assert books.find_book("b1")["voice"] == "bm_george"
+        assert not os.path.isdir(books.book_dir("b1", "audio")) \
+            or os.listdir(books.book_dir("b1", "audio")) == []
+        assert [c["state"] for c in books.find_book("b1")["chapters"]] == ["pending", "pending"]
+        # the one you'd carry on from is re-made now; the rest come back as you reach them
+        assert no_background_work["chapters"] == [("b1", 1)]
+
+    def test_the_same_voice_again_is_not_a_change(self, client, make_book):
+        make_book(names=["One"], texts=["word " * 10])
+        self.part()
+        r = client.post("/api/books/update", json={"id": "b1", "voice": "af_heart"})
+        assert r.status_code == 200 and not r.get_json().get("needs_confirm")
+        assert books.find_book("b1")["chapters"][0]["state"] == "ready"
+
+    def test_turning_the_announcement_off_takes_the_same_route(self, client, make_book):
+        """The other setting the audio was made with, and the same rule about half-made parts."""
+        make_book(names=["One"], texts=["word " * 10], announce=True)
+        self.part(state="pending")
+        r = client.post("/api/books/update", json={"id": "b1", "announce": False})
+        assert r.status_code == 409
+
+
 class TestRetryingFailures:
     """A bulk run steps past a chapter that errored, so failures accumulate without anything
     saying so. One button asks for all of them again."""
