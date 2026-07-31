@@ -5,7 +5,6 @@ point the whole layer at a tmpdir.
 """
 import hashlib, html, json, os, re, shutil, subprocess, tempfile, threading, time
 import urllib.parse, uuid
-from contextlib import contextmanager
 
 from flask import Response, jsonify, request, send_from_directory
 
@@ -37,11 +36,18 @@ SEGMENT_CHARS = 8000      # ≈10 min of speech at the measured ~13.6 characters
 # in a couple of places; twenty is a word common enough to be a mistake.
 RESPELL_CONFIRM_AT = 2
 CHUNK_CHARS   = 600       # one Kokoro/Piper call ≈45 s of audio ≈17 s of work
-render_lock   = threading.Lock()      # one book render at a time
-# render_lock serializes renders, but a lock says nothing about who is holding it or who is
-# stacked up behind them — so tapping three chapters looked identical to tapping one, and a
-# chapter waiting its turn was indistinguishable from a chapter nobody had asked for.
-render_state      = {"current": None, "waiting": []}    # each entry: (book_id, chapter index)
+
+# ---- the render queue ----
+# One list, in order, and one worker draining it. Chapters used to be a thread each, blocked on a
+# lock: the order was whatever Python handed out, a hundred queued chapters were a hundred blocked
+# threads, and nothing could be taken off — a thread waiting on a lock can't be interrupted, which
+# is the point of a lock. An explicit list is cancellable, and it says what will happen next.
+#
+# Entries are (book_id, chapter index). `current` is the one being narrated, and is not in the
+# list. `tokens` is one per queued job, so whoever asked can wait for it and be told if it was
+# taken off — the whole-book run needs both.
+render_queue      = []
+render_state      = {"current": None, "tokens": {}, "worker": None}
 render_state_lock = threading.Lock()
 
 def load_books():
@@ -534,30 +540,86 @@ def respell_repair_plan(book, old, new):
             plan[i] = gone
     return plan
 
-@contextmanager
-def render_slot(book_id, index):
-    """Books this render in as waiting, then — once the caller says the lock is theirs — as
-    the one in progress, and clears it however the render ends, including the early returns
-    for a chapter that turned out to be ready already.
+def queue_render(book_id, index):
+    """Put a chapter on the queue and make sure something is draining it.
 
-    Yields the function that marks the switch. Taken as `with render_slot(...), render_lock:`
-    so the render body keeps the one level of indentation it had."""
+    Returns that job's token — {done, dropped} — so a caller who has to know when the chapter is
+    finished can wait on it, and can tell being narrated from being taken off the queue. Asking
+    twice for a chapter already queued hands back the same token rather than queueing it again:
+    two of the same job is work done twice, and the second one used to be a second blocked thread.
+
+    A chapter already being narrated *is* queued again, on purpose. It's how a repair works — a
+    pronunciation saved mid-render leaves that chapter pending on the way out, and the pass that
+    fills the gap has to be allowed to ask for it. The panel shows one line for it either way.
+    """
     job = (book_id, index)
     with render_state_lock:
-        render_state["waiting"].append(job)
-    def started():
+        token = render_state["tokens"].get(job)
+        if token is None:
+            token = {"done": threading.Event(), "dropped": False}
+            render_state["tokens"][job] = token
+            render_queue.append(job)
+        # Whether a worker exists is asked of the thread rather than kept in a flag, because a flag
+        # left set by a worker that died — for any reason, including a bug in a render — wedges
+        # everything queued behind it for the life of the process. `worker` is cleared by the worker
+        # itself, under this lock, at the moment it decides the queue is empty: so a job appended
+        # before that decision is seen by it, and one appended after finds nothing running and
+        # starts a new one. There is no window where both are true.
+        worker = render_state["worker"]
+        if worker is None or not worker.is_alive():
+            worker = threading.Thread(target=render_worker, daemon=True)
+            render_state["worker"] = worker
+            worker.start()
+    return token
+
+def render_worker():
+    """Narrate whatever is on the queue, in order, then stop being.
+
+    One at a time because the engine is one machine, and it ends when the queue is empty rather
+    than idling for the life of the process — the next thing queued starts another. That also
+    keeps "one book renders at a time" a fact about the shape of this rather than something a lock
+    is asked to promise.
+    """
+    while True:
         with render_state_lock:
-            if job in render_state["waiting"]:
-                render_state["waiting"].remove(job)
+            if not render_queue:
+                render_state["worker"] = None    # see queue_render: this is where it hands over
+                return
+            job = render_queue.pop(0)
             render_state["current"] = job
-    try:
-        yield started
-    finally:
-        with render_state_lock:
-            if job in render_state["waiting"]:
-                render_state["waiting"].remove(job)
-            if render_state["current"] == job:
-                render_state["current"] = None
+            token = render_state["tokens"].pop(job, None)
+        try:
+            render_chapter(*job)
+        except Exception:
+            # A render that throws has already recorded the error on its own chapter; what must
+            # not happen is the queue behind it stopping with it.
+            log.exception("narrating %s chapter %s fell over", *job)
+        finally:
+            with render_state_lock:
+                if render_state["current"] == job:
+                    render_state["current"] = None
+            if token:
+                token["done"].set()
+
+def drop_from_queue(book_id, index):
+    """Take a chapter off the queue, and say whether there was one to take off.
+
+    Only one that is waiting. The chapter being narrated now isn't cancellable: stopping it
+    part-way through a ten-minute part would leave a file nothing finishes, which is why a single
+    chapter has never had a stop button.
+    """
+    job = (book_id, index)
+    with render_state_lock:
+        if job not in render_queue:
+            return False
+        render_queue.remove(job)
+        token = render_state["tokens"].pop(job, None)
+    if token:
+        # Woken and told what happened, so a whole-book run waiting on this chapter steps over it
+        # instead of asking for it again — which would put it straight back and make ✕ do nothing.
+        token["dropped"] = True
+        token["done"].set()
+    return True
 
 def render_cancelled(book_id, gen):
     """Whether this render should stop and throw away what it made — the narrator changed
@@ -589,7 +651,7 @@ def render_status():
     """What the narrator is on and what is behind it. Composed from books.json each time
     rather than kept in step with it, so it can't drift from the chapters it describes."""
     with render_state_lock:
-        current, waiting = render_state["current"], list(render_state["waiting"])
+        current, waiting = render_state["current"], list(render_queue)
     books = {b["id"]: b for b in load_books()}
 
     def entry(job, state):
@@ -601,8 +663,8 @@ def render_status():
                 "name": c.get("name") or f"Chapter {i + 1}", "words": c.get("words") or 0,
                 "done": len(c.get("segments") or []), "total": c.get("total") or 0}
 
-    # Two threads can be waiting on the same chapter — you tapped it and the bulk run reached
-    # it too — and the second one finds it already made and returns. One line in the queue.
+    # A chapter can be queued while it is also the one being narrated — a repair asks for the
+    # chapter a render is on, so that the pass after it fills the gap. One line for it either way.
     seen = set([current] if current else [])
     queue_ = []
     for j in waiting:
@@ -621,15 +683,15 @@ def render_status():
     return {"current": entry(current, "narrating") if current else None, "queue": queue_}
 
 def render_depth():
-    """How many chapters are being narrated or waiting on the lock right now.
+    """How many chapters are being narrated or waiting their turn right now.
 
     Not render_status()'s queue, which is longer on purpose — it projects the rest of a
     whole-book run so the page can list it. As an answer to "when does the chapter I just
     tapped start" that projection is nonsense: it would say 190 for a book with 190 chapters
-    left, when the tapped one competes for the lock with the single chapter the run is on.
+    left, when a run only ever has the one chapter it is on actually queued.
     """
     with render_state_lock:
-        return int(bool(render_state["current"])) + len(render_state["waiting"])
+        return int(bool(render_state["current"])) + len(render_queue)
 
 def busy_with(book_id):
     """Why this book can't be renumbered right now, or "" when it can.
@@ -646,159 +708,162 @@ def busy_with(book_id):
         return "a chapter of this book is being narrated — it has to finish first"
     with render_state_lock:
         queued = ([render_state["current"]] if render_state["current"] else []) \
-                 + list(render_state["waiting"])
+                 + list(render_queue)
     if any(b == book_id for b, _i in queued):
         return "a chapter of this book is waiting to be narrated — it has to finish first"
     return ""
 
 def render_chapter(book_id, index):
     """Render one chapter to opus, a segment at a time. Marks progress in books.json as it
-    goes so the page can show it."""
-    with render_slot(book_id, index) as started, render_lock:
-        started()                       # the lock is ours: waiting becomes narrating
-        book = find_book(book_id)
-        if not book:
-            return
-        chapters = book.get("chapters") or []
-        if not (0 <= index < len(chapters)):
-            return
-        chapter = chapters[index]
-        if chapter.get("state") == "ready" or chapter.get("skip"):
-            return
-        # A book that is being read by a cast keeps being read by one. Worked out here rather than
-        # in the endpoints because every way a chapter gets narrated comes through this function —
-        # a tap, a whole-book run, and the one that actually caught this: playing a chapter asks
-        # for the next to be narrated, which read it in a single voice.
-        #
-        # Inside the lock, so two renders can't ask about the same chapter at once, and reported as
-        # this book's render already: it's a couple of minutes of a job that takes twenty. A model
-        # that isn't there is not a failure — the chapter is narrated in one voice, which is what
-        # it would have been anyway.
-        if cast_wanted(book, index):
-            try:
-                attribute_chapter(book_id, index)
-            except Exception as e:
-                log.info("cast: couldn't work out who speaks in %s chapter %s: %s",
-                         book_id, index, e)
-            book = find_book(book_id)
-            chapters = (book or {}).get("chapters") or []
-            if not (book and 0 <= index < len(chapters)):
-                return                     # deleted while we were asking
-            chapter = chapters[index]
-            if chapter.get("skip"):
-                return
-        # Read after the lock, with the rest of the chapter: a queued render can have waited an
-        # hour, and a section put back in the meantime moves every later chapter's position
-        # without moving its files. So which files this render is about is decided from the book
-        # as it is now, not from the index the caller happened to hold.
-        key = chapter_key(chapter)
-        voice = book.get("voice") or "af_heart"
-        # This book's own pronunciations, on top of the global map. Read here and passed down
-        # rather than looked up inside respell(), because the same function serves the studio and
-        # chat, where there is no book — and because the repair scan has to be able to ask what
-        # this map would have produced.
-        respellings = book.get("respell") or {}
-        # And the book's language, for the one rule that turns on it: what a decimal point is
-        # called. Passed down the same way and for the same reason.
-        lang = book.get("language") or ""
-        # Bumped whenever the narrator changes. A chapter that was already being rendered when
-        # you switched would otherwise finish in the old voice and be marked ready, leaving one
-        # chapter of the book in the wrong voice with nothing to show for it.
-        gen = book.get("gen", 0)
-        txt_path = text_file(book_id, key)
-        try:
-            with open(txt_path) as f:
-                text = f.read()
-        except OSError as e:
-            update_book(book_id, lambda b: b["chapters"][index].update(
-                state="error", error=f"missing text: {e}"[:200]))
-            return
-        # Whatever the lead-in is about to say comes off the top of the text, so nothing is read
-        # out twice: the chapter's own heading, and the book's title and author where the page
-        # above the first chapter prints them.
-        text = chapter_text(book, index, text)
-        intro = chapter_intro(book, index)
+    goes so the page can show it.
 
-        # The lead-in lives in the chapter's first segment, and a resumed render keeps whatever
-        # files are already on disk — so a chapter left half-made before the announcement
-        # changed would keep an opening that no longer matches. Only the first one has to go.
-        #
-        # Recorded respelled, because respelled is what the engine is given: "11/22/63: A Novel"
-        # goes in as "11, 22, 63: A Novel", and a change to how a phrase is pronounced leaves the
-        # written form identical. Comparing what's written would call that opening current when
-        # it no longer is.
-        spoken = [respell(p, respellings, lang) for p, _ in intro]
-        # Split before publishing the state, not after: how many parts a chapter comes to is
-        # pure text work, and knowing it up front is the difference between "part 1 of 2" and
-        # ten minutes of "starting…" in the queue panel.
-        #
-        # Split on the *written* text, never the respelled form. Respelling first would make the
-        # segment count — and so every filename — depend on the pronunciation map, which would
-        # mean changing one word invalidated the whole book by construction.
-        segments = split_segments(text)
-        # Who reads which line, for a chapter that has been attributed. Read here with the rest of
-        # the book and passed down, so one render speaks one cast the whole way through: a
-        # character given a different voice halfway would otherwise change voice halfway.
-        lines, voices = chapter_cast(book, index, segments)
-        cast_used = cast_applied(lines, voices)
-        update_book(book_id, lambda b: b["chapters"][index].update(
-            state="rendering", error=None, done=0, segments=[], intro=spoken,
-            total=len(segments)))
-        audio_dir = book_dir(book_id, "audio")
-        os.makedirs(audio_dir, exist_ok=True)
-        if chapter.get("intro") != spoken:
-            stale = audio_file(book_id, key, 0)
-            if os.path.exists(stale):
-                os.remove(stale)
-        made = []
-        at = 0                  # how far into the attribution the segments have got
+    Narrates in the calling thread and does not queue: render_worker is what calls this, one job at
+    a time, which is what makes "one book renders at a time" true. Anything that wants a chapter
+    narrated asks queue_render for it.
+    """
+    book = find_book(book_id)
+    if not book:
+        return
+    chapters = book.get("chapters") or []
+    if not (0 <= index < len(chapters)):
+        return
+    chapter = chapters[index]
+    if chapter.get("state") == "ready" or chapter.get("skip"):
+        return
+    # A book that is being read by a cast keeps being read by one. Worked out here rather than
+    # in the endpoints because every way a chapter gets narrated comes through this function —
+    # a tap, a whole-book run, and the one that actually caught this: playing a chapter asks
+    # for the next to be narrated, which read it in a single voice.
+    #
+    # Part of narrating the chapter rather than a job of its own, so it is one line in the queue
+    # and the panel says this book is being narrated: it's a couple of minutes on top of twenty. A
+    # model that isn't there is not a failure — the chapter is narrated in one voice, which is what
+    # it would have been anyway.
+    if cast_wanted(book, index):
         try:
-            for si, seg_text in enumerate(segments):
-                # Between segments, not only at the end: deleting a book or changing the
-                # narrator used to leave the whole rest of the chapter still to render before
-                # anything noticed, which on a long chapter is most of an hour.
-                if render_cancelled(book_id, gen):
-                    break
-                name = audio_name(key, si)
-                out  = os.path.join(audio_dir, name)
-                # Walked for every segment, including the ones already on disk: the run numbers
-                # are the chapter's, so a resumed render has to count past what it is skipping.
-                runs = None
-                if lines:
-                    runs, at = cast.voiced_runs(seg_text, lines, at, voice, voices)
-                if not os.path.exists(out):
-                    # the closing pause belongs to the chapter, so only the last part gets it
-                    _render_segment(seg_text, voice, out,
-                                    intro=intro if si == 0 else None,
-                                    tail_pause=CHAPTER_END_PAUSE if si == len(segments) - 1 else 0,
-                                    respellings=respellings, lang=lang, runs=runs)
-                made.append({"file": name, "seconds": audio_seconds(out)})
-                # publish each finished segment: you can start listening to segment 1 while
-                # segment 2 is still being made
-                update_book(book_id, lambda b, m=list(made), n=len(segments):
-                            b["chapters"][index].update(segments=m, done=len(m), total=n))
-            if not render_cancelled(book_id, gen):
-                # The book can have changed while this ran — a render holds the lock for the
-                # whole chapter, so a respelling saved during segment 2 of 8 leaves the six after
-                # it made the old way, and an opening note saved during segment 1 leaves the
-                # announcement saying the old thing. Checked here rather than in every endpoint
-                # that can move either: a chapter is only ready when what's on disk is what the
-                # book now says it should be. See stragglers.
-                if stragglers(book_id, index, respellings, cast_used):
-                    return
-                update_book(book_id, lambda b: b["chapters"][index].update(
-                    state="ready", error=None,
-                    seconds=round(sum(s["seconds"] for s in made), 1)))
-                return
+            attribute_chapter(book_id, index)
         except Exception as e:
-            # A book deleted mid-render takes its directory with it, so ffmpeg failing with
-            # "No such file or directory" is the delete working, not a fault to report.
-            if not render_cancelled(book_id, gen):
-                update_book(book_id, lambda b: b["chapters"][index].update(
-                    state="error", error=str(e)[:200]))
+            log.info("cast: couldn't work out who speaks in %s chapter %s: %s",
+                     book_id, index, e)
+        book = find_book(book_id)
+        chapters = (book or {}).get("chapters") or []
+        if not (book and 0 <= index < len(chapters)):
+            return                     # deleted while we were asking
+        chapter = chapters[index]
+        if chapter.get("skip"):
+            return
+    # Read now, with the rest of the chapter: a queued render can have waited an hour, and a
+    # section put back in the meantime moves every later chapter's position without moving its
+    # files. So which files this render is about is decided from the book
+    # as it is now, not from the index the caller happened to hold.
+    key = chapter_key(chapter)
+    voice = book.get("voice") or "af_heart"
+    # This book's own pronunciations, on top of the global map. Read here and passed down
+    # rather than looked up inside respell(), because the same function serves the studio and
+    # chat, where there is no book — and because the repair scan has to be able to ask what
+    # this map would have produced.
+    respellings = book.get("respell") or {}
+    # And the book's language, for the one rule that turns on it: what a decimal point is
+    # called. Passed down the same way and for the same reason.
+    lang = book.get("language") or ""
+    # Bumped whenever the narrator changes. A chapter that was already being rendered when
+    # you switched would otherwise finish in the old voice and be marked ready, leaving one
+    # chapter of the book in the wrong voice with nothing to show for it.
+    gen = book.get("gen", 0)
+    txt_path = text_file(book_id, key)
+    try:
+        with open(txt_path) as f:
+            text = f.read()
+    except OSError as e:
+        update_book(book_id, lambda b: b["chapters"][index].update(
+            state="error", error=f"missing text: {e}"[:200]))
+        return
+    # Whatever the lead-in is about to say comes off the top of the text, so nothing is read
+    # out twice: the chapter's own heading, and the book's title and author where the page
+    # above the first chapter prints them.
+    text = chapter_text(book, index, text)
+    intro = chapter_intro(book, index)
+
+    # The lead-in lives in the chapter's first segment, and a resumed render keeps whatever
+    # files are already on disk — so a chapter left half-made before the announcement
+    # changed would keep an opening that no longer matches. Only the first one has to go.
+    #
+    # Recorded respelled, because respelled is what the engine is given: "11/22/63: A Novel"
+    # goes in as "11, 22, 63: A Novel", and a change to how a phrase is pronounced leaves the
+    # written form identical. Comparing what's written would call that opening current when
+    # it no longer is.
+    spoken = [respell(p, respellings, lang) for p, _ in intro]
+    # Split before publishing the state, not after: how many parts a chapter comes to is
+    # pure text work, and knowing it up front is the difference between "part 1 of 2" and
+    # ten minutes of "starting…" in the queue panel.
+    #
+    # Split on the *written* text, never the respelled form. Respelling first would make the
+    # segment count — and so every filename — depend on the pronunciation map, which would
+    # mean changing one word invalidated the whole book by construction.
+    segments = split_segments(text)
+    # Who reads which line, for a chapter that has been attributed. Read here with the rest of
+    # the book and passed down, so one render speaks one cast the whole way through: a
+    # character given a different voice halfway would otherwise change voice halfway.
+    lines, voices = chapter_cast(book, index, segments)
+    cast_used = cast_applied(lines, voices)
+    update_book(book_id, lambda b: b["chapters"][index].update(
+        state="rendering", error=None, done=0, segments=[], intro=spoken,
+        total=len(segments)))
+    audio_dir = book_dir(book_id, "audio")
+    os.makedirs(audio_dir, exist_ok=True)
+    if chapter.get("intro") != spoken:
+        stale = audio_file(book_id, key, 0)
+        if os.path.exists(stale):
+            os.remove(stale)
+    made = []
+    at = 0                  # how far into the attribution the segments have got
+    try:
+        for si, seg_text in enumerate(segments):
+            # Between segments, not only at the end: deleting a book or changing the
+            # narrator used to leave the whole rest of the chapter still to render before
+            # anything noticed, which on a long chapter is most of an hour.
+            if render_cancelled(book_id, gen):
+                break
+            name = audio_name(key, si)
+            out  = os.path.join(audio_dir, name)
+            # Walked for every segment, including the ones already on disk: the run numbers
+            # are the chapter's, so a resumed render has to count past what it is skipping.
+            runs = None
+            if lines:
+                runs, at = cast.voiced_runs(seg_text, lines, at, voice, voices)
+            if not os.path.exists(out):
+                # the closing pause belongs to the chapter, so only the last part gets it
+                _render_segment(seg_text, voice, out,
+                                intro=intro if si == 0 else None,
+                                tail_pause=CHAPTER_END_PAUSE if si == len(segments) - 1 else 0,
+                                respellings=respellings, lang=lang, runs=runs)
+            made.append({"file": name, "seconds": audio_seconds(out)})
+            # publish each finished segment: you can start listening to segment 1 while
+            # segment 2 is still being made
+            update_book(book_id, lambda b, m=list(made), n=len(segments):
+                        b["chapters"][index].update(segments=m, done=len(m), total=n))
+        if not render_cancelled(book_id, gen):
+            # The book can have changed while this ran — a render holds the lock for the
+            # whole chapter, so a respelling saved during segment 2 of 8 leaves the six after
+            # it made the old way, and an opening note saved during segment 1 leaves the
+            # announcement saying the old thing. Checked here rather than in every endpoint
+            # that can move either: a chapter is only ready when what's on disk is what the
+            # book now says it should be. See stragglers.
+            if stragglers(book_id, index, respellings, cast_used):
                 return
-        # Cancelled, however we got here: finished, broke out of the loop, or threw.
-        discard_render(book_id, index, audio_dir, made)
+            update_book(book_id, lambda b: b["chapters"][index].update(
+                state="ready", error=None,
+                seconds=round(sum(s["seconds"] for s in made), 1)))
+            return
+    except Exception as e:
+        # A book deleted mid-render takes its directory with it, so ffmpeg failing with
+        # "No such file or directory" is the delete working, not a fault to report.
+        if not render_cancelled(book_id, gen):
+            update_book(book_id, lambda b: b["chapters"][index].update(
+                state="error", error=str(e)[:200]))
+            return
+    # Cancelled, however we got here: finished, broke out of the loop, or threw.
+    discard_render(book_id, index, audio_dir, made)
 
 PART_SEP = epub.PART_SEP     # how epub.py joins a part name to its chapter label
 
@@ -1106,9 +1171,9 @@ def book_parts(book):
 def render_all_worker(book_id):
     """Narrate every chapter the run covers, in order, until done or told to stop.
 
-    Deliberately calls render_chapter per chapter rather than holding render_lock for the
-    whole book: an 8-hour job that blocked every other render would be intolerable, and this
-    way tapping a single chapter gets its turn between two chapters of the bulk run.
+    Deliberately queues one chapter at a time and waits for it, rather than putting the whole book
+    on the queue: an 8-hour job nothing could get in front of would be intolerable, and this way a
+    chapter tapped while the run is going is next in line rather than 190th.
 
     Takes no scope of its own — run_scope reads it from the book's slot each time round, so a
     part added to the run while it's going is picked up by the worker already in flight. One
@@ -1117,16 +1182,24 @@ def render_all_worker(book_id):
     # Told apart from being stopped, and from the book going away: only a run that worked
     # through everything it covers has produced the audiobook the book may have asked for.
     finished = False
+    # Chapters taken off the queue by hand while this run was waiting on them. Stepped over rather
+    # than asked for again: a run that re-queued them would put each one straight back and make ✕
+    # do nothing at all. ⊘ is how you leave one out of the run for good.
+    passed_over = set()
     while True:
         book = find_book(book_id)
         if not book or not (book.get("render_all") or {}).get("running"):
             break
         # only "pending" — a chapter that errored is skipped rather than retried forever
-        nxt = next((c["i"] for c in run_scope(book) if c.get("state") == "pending"), None)
+        nxt = next((c["i"] for c in run_scope(book)
+                    if c.get("state") == "pending" and c["i"] not in passed_over), None)
         if nxt is None:
             finished = True
             break
-        render_chapter(book_id, nxt)
+        token = queue_render(book_id, nxt)
+        token["done"].wait()
+        if token["dropped"]:
+            passed_over.add(nxt)
         # Counted over what the run covers, not the whole book. Reporting 3 of 192 for a run
         # that only ever intended four chapters made a part run look like a whole-book one.
         book = find_book(book_id) or {}
@@ -1580,7 +1653,7 @@ def api_book_insert():
     if stale:
         update_book(book["id"], reopen)
         for i in stale:
-            threading.Thread(target=render_chapter, args=(book["id"], i), daemon=True).start()
+            queue_render(book["id"], i)
     return jsonify(ok=True, book=find_book(book["id"]), at=pos, name=name, reopened=stale)
 
 @app.get("/api/books/<book_id>/find")
@@ -1735,9 +1808,9 @@ def api_book_update():
         shutil.rmtree(book_dir(book["id"], "audio"), ignore_errors=True)
         # Re-make just the one you'd carry on from, so the new narrator is ready to listen to
         # without re-rendering everything you'd already been through.
-        threading.Thread(target=render_chapter, args=(book["id"], resume), daemon=True).start()
+        queue_render(book["id"], resume)
     if renamed:
-        threading.Thread(target=render_chapter, args=(book["id"], opens), daemon=True).start()
+        queue_render(book["id"], opens)
     return jsonify(ok=True, book=find_book(book["id"]), resume=resume, renamed=renamed)
 
 def apply_respell_repair(book_id, plan):
@@ -1813,7 +1886,7 @@ def api_book_respell():
     fresh = find_book(book["id"]) or {}
     skipped = {c["i"] for c in fresh.get("chapters") or [] if c.get("skip")}
     for i in sorted(set(plan) - skipped):
-        threading.Thread(target=render_chapter, args=(book["id"], i), daemon=True).start()
+        queue_render(book["id"], i)
     return jsonify(ok=True, book=fresh, chapters=sorted(plan), parts=parts,
                    added=added, edited=edited, removed=removed)
 
@@ -1882,7 +1955,7 @@ def api_book_render():
     for i in wanted:
         if 0 <= i < len(chapters) and not chapters[i].get("skip") \
                 and chapters[i].get("state") in ("pending", "error"):
-            threading.Thread(target=render_chapter, args=(book["id"], i), daemon=True).start()
+            queue_render(book["id"], i)
             started.append(i)
     return jsonify(ok=True, started=started, ahead=ahead)
 
@@ -1917,7 +1990,7 @@ def api_book_retry():
     if failed:
         update_book(book["id"], reopen)
         for i in failed:
-            threading.Thread(target=render_chapter, args=(book["id"], i), daemon=True).start()
+            queue_render(book["id"], i)
     return jsonify(ok=True, started=failed, ahead=ahead, book=find_book(book["id"]))
 
 # ---- more than one voice ----
@@ -2131,7 +2204,7 @@ def api_book_skip():
     if stale:
         update_book(book["id"], reopen)
         for i in stale:
-            threading.Thread(target=render_chapter, args=(book["id"], i), daemon=True).start()
+            queue_render(book["id"], i)
     return jsonify(ok=True, book=find_book(book["id"]), reopened=stale)
 
 @app.post("/api/books/clear")
@@ -2275,6 +2348,30 @@ def api_book_render_stop():
     # leaving a half-made chapter behind
     update_book(d["id"], lambda b: b.setdefault("render_all", {}).update(running=False))
     return jsonify(ok=True)
+
+@app.post("/api/books/render_cancel")
+def api_book_render_cancel():
+    """Take one chapter off the queue.
+
+    For a chapter *waiting its turn*. The one being narrated now isn't cancellable — stopping it
+    part-way through a ten-minute part would leave a file nothing finishes — and a chapter a
+    whole-book run hasn't reached yet isn't on the queue at all: it's a line the panel projects
+    from the run, and *Stop narrating the book* is what ends that.
+    """
+    d = request.get_json(force=True, silent=True) or {}
+    book = find_book(d.get("id") or "")
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    try:
+        index = int(d.get("chapter"))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, msg="which chapter?"), 400
+    if not drop_from_queue(book["id"], index):
+        # Not on it, or its turn came while the tap was in flight — both mean the same thing to
+        # whoever tapped, and the queue that comes back says so.
+        return jsonify(ok=False, msg="that chapter isn't waiting to be narrated",
+                       narrating=render_status()), 409
+    return jsonify(ok=True, narrating=render_status())
 
 @app.post("/api/books/export")
 def api_book_export():

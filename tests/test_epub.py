@@ -637,12 +637,12 @@ class TestPuttingASectionBack:
                                                                monkeypatch):
         """A queued render has already been handed a position and only reads the book when the
         lock reaches it, so it would narrate whatever had moved into that position."""
-        monkeypatch.setitem(books.render_state, "waiting", [(added, 2)])
+        monkeypatch.setattr(books, "render_queue", [(added, 2)])
         assert self.put(client, added).status_code == 409
 
     def test_another_book_in_the_engine_is_no_business_of_this(self, client, added,
                                                               monkeypatch):
-        monkeypatch.setitem(books.render_state, "waiting", [("someone-else", 2)])
+        monkeypatch.setattr(books, "render_queue", [("someone-else", 2)])
         assert self.put(client, added).get_json()["ok"] is True
 
     def test_the_same_section_twice_is_refused(self, client, added):

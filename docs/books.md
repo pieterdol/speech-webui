@@ -112,10 +112,24 @@ stopped, a single chapter can't, so anything over ten minutes of work asks first
 **The queue is global**: renders are serialized *across* books, so what's holding this one up can be
 another book, and the *Narrating now* panel names it when it isn't the one you're looking at. A tap
 therefore has to say which of two things happened — *Narrating "X" — roughly 40 min of work* or
-*Queued "X" — 2 chapters to narrate first* — and the depth it reports is what's actually holding the
-lock, not the whole-book run's remaining chapters. Only chapters *asked for* are marked `⏳ queued`; a
-chapter a bulk run will reach on its own keeps its Narrate button, because tapping it is how you pull
-it forward past the rest of the run.
+*Queued "X" — 2 chapters to narrate first* — and the depth it reports is what is actually queued, not
+the whole-book run's remaining chapters. Only chapters *asked for* are marked `⏳ queued`; a chapter a
+bulk run will reach on its own keeps its Narrate button, because tapping it is how you pull it forward
+past the rest of the run.
+
+**One list, in order, and one worker draining it.** A queued chapter used to be a thread blocked on a
+lock, which meant the order was whatever Python handed out, a hundred queued chapters were a hundred
+blocked threads, and nothing could be taken off — a thread waiting on a lock can't be interrupted,
+which is the point of a lock. Now the queue is a list: it says what happens next, in the order it was
+asked for, and **✕ takes a chapter off it**. The worker ends when the list empties and the next thing
+queued starts another, so "one book renders at a time" is the shape of the thing rather than a promise
+a lock is asked to keep. A chapter that throws is recorded on its own row and the queue carries on.
+
+**The chapter being narrated can't be taken off** — stopping it part-way through a ten-minute part
+would leave a file nothing finishes, which is why a single chapter has never had a stop button. A
+whole-book run queues one chapter at a time and waits for it, so a chapter you tap during a run is
+next rather than 190th; ✕ on the chapter a run is waiting for makes the run step over it rather than
+ask again, and ⊘ is how you leave one out for good.
 
 **Failures accumulate quietly.** A bulk run steps past an `error` chapter rather than trying it again
 — a chapter whose text has gone would otherwise hold the run up all night — so a run can report itself

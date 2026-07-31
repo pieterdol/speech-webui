@@ -163,7 +163,9 @@ full book is hours of work.
   half-made chapters as much as finished ones, since a render carries on from the parts it finds —
   so it asks first, and re-makes only the chapter you'd carry on from.
 - **Rendering** is per chapter, in **~10-minute parts**, each appearing as soon as it's finished.
-  Renders are serialized across every book, and a tap says whether it started or queued.
+  Renders are serialized across every book, and a tap says whether it started or queued. The queue
+  is a list you can see and edit: **✕** takes a chapter off it. The one being narrated carries on —
+  a single chapter has no stop button, since stopping mid-part leaves a file nothing finishes.
 - **Narrate the whole book** or **Narrate part** works through everything un-narrated in the
   background. It's hours, so it says the time it will finish, not only how long it takes, and a run
   can be widened while it runs.

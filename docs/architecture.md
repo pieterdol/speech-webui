@@ -58,9 +58,17 @@ F5-TTS saturates all 12 cores. Chat gets its own `chat_lock`: Ollama offloads th
 GPU, so a reply and a Kokoro render use different hardware and are free to overlap — putting chat
 behind `run_lock` would make it wait out a two-minute clone for no reason.
 
+**Chapters are narrated from a queue, not by a thread each.** `render_queue` is an ordered list and
+`render_worker` drains it one chapter at a time, ending when the list empties; `queue_render` is what
+every endpoint calls, and it hands back a token so a caller who needs to know when that chapter is
+finished — the whole-book run — can wait on it and be told if it was taken off the queue instead. That
+is what makes the order predictable, cancelling possible, and "one book renders at a time" structural:
+there is no render lock, because there is only ever one worker. `render_chapter` itself narrates in the
+calling thread and queues nothing, which is also what lets a test call it directly.
+
 **Rendering shares the machine, and survives interruption.** `run_lock` is taken per ~600-character
 chunk and released between them, so a chat reply or a transcription slots in between rather than
-waiting out a chapter; one book renders at a time. Between segments a render checks whether its book
+waiting out a chapter. Between segments a render checks whether its book
 still exists and whether the narrator has changed, so a delete or a voice switch takes effect within
 one segment and what that render made is thrown away. A render killed by a restart instead keeps its
 finished parts: they're real audio, they play, they can be exported, and re-rendering the chapter

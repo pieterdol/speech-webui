@@ -31,6 +31,25 @@ def delete_book(book_id):
 LONG = "\n".join(["word " * 200] * 40)          # splits into several segments
 
 
+@pytest.fixture
+def held(monkeypatch):
+    """A render that stops in its first part until let go, so the queue behind it can be looked at.
+
+    `started` is set once a render is actually in the engine; `release` lets every render finish."""
+    state = {"started": threading.Event(), "release": threading.Event()}
+
+    def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang="",
+             runs=None):
+        state["started"].set()
+        state["release"].wait(timeout=10)
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        open(out_path, "wb").write(b"\0")
+
+    monkeypatch.setattr(books, "_render_segment", _seg)
+    monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
+    return state
+
+
 class TestRenderChapter:
     def test_marks_ready_and_keeps_every_part(self, make_book, fake_tts):
         make_book(texts=[LONG])
@@ -516,66 +535,106 @@ class TestQueue:
     def test_idle(self):
         assert books.render_status() == {"current": None, "queue": []}
 
-    def test_waiting_and_current(self, make_book, monkeypatch):
+    def test_waiting_and_current(self, make_book, held):
         make_book(names=["One", "Two", "Three"], texts=["word " * 40] * 3)
-        started = threading.Event()
-        release = threading.Event()
-
-        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang="", runs=None):
-            started.set()
-            release.wait(timeout=10)
-            os.makedirs(os.path.dirname(out_path), exist_ok=True)
-            open(out_path, "wb").write(b"\0")
-
-        monkeypatch.setattr(books, "_render_segment", _seg)
-        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
-
-        threads = [threading.Thread(target=books.render_chapter, args=("b1", i))
-                   for i in range(3)]
-        for t in threads:
-            t.start()
-        assert started.wait(timeout=10)
-        time.sleep(0.2)                       # let the other two stack up behind the lock
+        tokens = [books.queue_render("b1", i) for i in range(3)]
+        assert held["started"].wait(timeout=10)
 
         st = books.render_status()
         assert st["current"] is not None
         assert st["current"]["state"] == "narrating"
         assert len(st["queue"]) == 2
         assert all(e["state"] == "waiting" for e in st["queue"])
+        # in the order they were asked for, which is the point of a list
+        assert [e["chapter"] for e in st["queue"]] == [1, 2]
 
-        release.set()
-        for t in threads:
-            t.join(timeout=20)
+        held["release"].set()
+        for t in tokens:
+            assert t["done"].wait(timeout=20)
         assert books.render_status() == {"current": None, "queue": []}
 
-    def test_a_chapter_asked_for_twice_is_one_line(self, make_book, monkeypatch):
+    def test_the_same_chapter_asked_for_twice_is_queued_once(self, make_book, held):
+        """Two of the same job is the same work done twice — and used to be a second blocked
+        thread."""
+        make_book(names=["One", "Two"], texts=["word " * 40] * 2)
+        books.queue_render("b1", 0)
+        assert held["started"].wait(timeout=10)
+        first = books.queue_render("b1", 1)
+        again = books.queue_render("b1", 1)
+        assert again is first
+        assert [e["chapter"] for e in books.render_status()["queue"]] == [1]
+        held["release"].set()
+        assert first["done"].wait(timeout=20)
+
+    def test_a_chapter_can_be_taken_off_the_queue(self, make_book, held):
+        make_book(names=["One", "Two", "Three"], texts=["word " * 40] * 3)
+        books.queue_render("b1", 0)
+        assert held["started"].wait(timeout=10)
+        two, three = books.queue_render("b1", 1), books.queue_render("b1", 2)
+
+        assert books.drop_from_queue("b1", 1) is True
+        assert [e["chapter"] for e in books.render_status()["queue"]] == [2]
+        assert two["dropped"] is True and two["done"].is_set()
+
+        held["release"].set()
+        assert three["done"].wait(timeout=20)
+        assert chapter("b1", 1)["state"] == "pending"        # never narrated
+        assert chapter("b1", 2)["state"] == "ready"
+
+    def test_the_one_being_narrated_cannot_be_taken_off(self, make_book, held):
+        """Stopping it part-way through a part would leave a file nothing finishes."""
         make_book(names=["One"], texts=["word " * 40])
-        started = threading.Event()
-        release = threading.Event()
+        token = books.queue_render("b1", 0)
+        assert held["started"].wait(timeout=10)
+        assert books.drop_from_queue("b1", 0) is False
+        held["release"].set()
+        assert token["done"].wait(timeout=20)
+        assert chapter("b1")["state"] == "ready"
 
-        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang="", runs=None):
-            started.set()
-            release.wait(timeout=10)
-            os.makedirs(os.path.dirname(out_path), exist_ok=True)
-            open(out_path, "wb").write(b"\0")
+    def test_one_worker_however_many_chapters(self, make_book, held):
+        """A hundred queued chapters used to be a hundred blocked threads."""
+        make_book(names=[f"Chapter {i}" for i in range(6)], texts=["word " * 40] * 6)
+        before = threading.active_count()
+        tokens = [books.queue_render("b1", i) for i in range(6)]
+        assert held["started"].wait(timeout=10)
+        assert threading.active_count() - before == 1
+        held["release"].set()
+        for t in tokens:
+            assert t["done"].wait(timeout=30)
 
-        monkeypatch.setattr(books, "_render_segment", _seg)
-        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
-        threads = [threading.Thread(target=books.render_chapter, args=("b1", 0))
-                   for _ in range(3)]
-        for t in threads:
-            t.start()
-        assert started.wait(timeout=10)
-        time.sleep(0.2)
+    def test_a_chapter_that_throws_does_not_stop_the_queue(self, make_book, monkeypatch):
+        """Whatever went wrong is recorded on its own chapter; the ones behind it still get
+        narrated."""
+        made = []
+
+        def explode_on_the_first(book_id, index):
+            if index == 0:
+                raise RuntimeError("something went wrong")
+            made.append(index)
+
+        make_book(names=["One", "Two"], texts=["word " * 40] * 2)
+        monkeypatch.setattr(books, "render_chapter", explode_on_the_first)
+        books.queue_render("b1", 0)
+        second = books.queue_render("b1", 1)
+        assert second["done"].wait(timeout=20)
+        assert made == [1]
+
+    def test_a_chapter_queued_while_it_is_being_narrated_is_one_line(self, make_book, held):
+        """A repair asks for the chapter a render is on, so that the pass after it fills the gap.
+        The panel shouldn't then list it twice."""
+        make_book(names=["One"], texts=["word " * 40])
+        first = books.queue_render("b1", 0)
+        assert held["started"].wait(timeout=10)
+        again = books.queue_render("b1", 0)          # queued behind itself, deliberately
 
         st = books.render_status()
         keys = [(e["book"], e["chapter"]) for e in st["queue"]]
         assert len(keys) == len(set(keys))
-        assert ("b1", 0) not in keys          # it's the current one, not also queued
+        assert ("b1", 0) not in keys          # it's the current one, not also a queued line
 
-        release.set()
-        for t in threads:
-            t.join(timeout=20)
+        held["release"].set()
+        assert first["done"].wait(timeout=20)
+        assert again["done"].wait(timeout=20)
 
     def test_a_bulk_run_shows_what_it_has_yet_to_reach(self, make_book):
         make_book(names=[f"Chapter {i}" for i in range(4)], texts=["word " * 40] * 4)
@@ -598,31 +657,16 @@ class TestRenderDepth:
     def test_idle(self):
         assert books.render_depth() == 0
 
-    def test_counts_the_one_narrating_and_the_ones_behind_it(self, make_book, monkeypatch):
+    def test_counts_the_one_narrating_and_the_ones_behind_it(self, make_book, held):
         make_book(names=["One", "Two", "Three"], texts=["word " * 40] * 3)
-        started = threading.Event()
-        release = threading.Event()
-
-        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang="", runs=None):
-            started.set()
-            release.wait(timeout=10)
-            os.makedirs(os.path.dirname(out_path), exist_ok=True)
-            open(out_path, "wb").write(b"\0")
-
-        monkeypatch.setattr(books, "_render_segment", _seg)
-        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
-        threads = [threading.Thread(target=books.render_chapter, args=("b1", i))
-                   for i in range(3)]
-        for t in threads:
-            t.start()
-        assert started.wait(timeout=10)
-        time.sleep(0.2)                       # let the other two stack up behind the lock
+        tokens = [books.queue_render("b1", i) for i in range(3)]
+        assert held["started"].wait(timeout=10)
 
         assert books.render_depth() == 3      # one narrating, two waiting
 
-        release.set()
-        for t in threads:
-            t.join(timeout=20)
+        held["release"].set()
+        for t in tokens:
+            assert t["done"].wait(timeout=20)
         assert books.render_depth() == 0
 
     def test_a_bulk_run_counts_as_the_chapter_it_is_on(self, make_book):
@@ -1195,3 +1239,29 @@ class TestKeepingTheCastGoing:
         books.update_book("b1", lambda b: b["chapters"][0].update(skip=True))
         books.render_chapter("b1", 0)
         assert asked == []
+
+
+class TestTheWorkerCannotWedgeTheQueue:
+    """The failure mode of one worker rather than a thread each: if the worker stops and nothing
+    notices, everything behind it waits for the life of the process."""
+
+    def test_a_worker_that_died_is_replaced(self, make_book, fake_tts, monkeypatch):
+        make_book(names=["One", "Two"], texts=["word " * 40] * 2)
+        # a worker slot left pointing at a thread that is no longer running, as a crashed one does
+        dead = threading.Thread(target=lambda: None)
+        dead.start()
+        dead.join()
+        monkeypatch.setitem(books.render_state, "worker", dead)
+        token = books.queue_render("b1", 0)
+        assert token["done"].wait(timeout=20)
+        assert chapter("b1")["state"] == "ready"
+
+    def test_it_hands_over_rather_than_racing_the_next_job(self, make_book, fake_tts):
+        """Queueing while the worker is deciding it has nothing left must not leave the job with
+        nobody to run it — the handover happens under the one lock."""
+        for _ in range(20):
+            make_book(names=["One"], texts=["word " * 40])
+            token = books.queue_render("b1", 0)
+            assert token["done"].wait(timeout=20)
+            books.write_books([])
+        assert books.render_queue == []

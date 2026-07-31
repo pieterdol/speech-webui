@@ -2,6 +2,7 @@
 response carries are as much a part of it as the body."""
 import io
 import os
+import threading
 
 import pytest
 
@@ -868,23 +869,63 @@ class TestQueueFeedback:
         the way as this book's."""
         make_book()
         monkeypatch.setitem(books.render_state, "current", ("other", 7))
-        monkeypatch.setitem(books.render_state, "waiting", [("other", 8), ("b1", 3)])
+        monkeypatch.setattr(books, "render_queue", [("other", 8), ("b1", 3)])
         assert client.post("/api/books/render", json={"id": "b1", "chapter": 0}
                            ).get_json()["ahead"] == 3
 
     def test_the_tap_is_not_counted_as_ahead_of_itself(self, client, make_book, monkeypatch):
         """Read before the render thread goes. Counting after it would report the first tap on
         an idle machine as one deep, which reads as "queued" when it started immediately."""
-        monkeypatch.setitem(books.render_state, "waiting", [])
+        monkeypatch.setattr(books, "render_queue", [])
 
         def joins_the_queue(book_id, i):
             with books.render_state_lock:
-                books.render_state["waiting"].append((book_id, i))
+                books.render_queue.append((book_id, i))
+            return {"done": threading.Event(), "dropped": False}
 
-        monkeypatch.setattr(books, "render_chapter", joins_the_queue)
+        monkeypatch.setattr(books, "queue_render", joins_the_queue)
         make_book()
         assert client.post("/api/books/render", json={"id": "b1", "chapter": 0}
                            ).get_json()["ahead"] == 0
+
+
+class TestTakingAChapterOffTheQueue:
+    """The queue is a list now, so it can be edited. What can't be taken off is the chapter being
+    narrated: stopping it part-way through a part leaves a file nothing finishes."""
+
+    def cancel(self, client, chapter, book="b1"):
+        return client.post("/api/books/render_cancel", json={"id": book, "chapter": chapter})
+
+    def test_it_comes_off_and_the_queue_says_so(self, client, make_book, monkeypatch):
+        make_book(names=["One", "Two"], texts=["word " * 10] * 2)
+        monkeypatch.setattr(books, "render_queue", [("b1", 0), ("b1", 1)])
+        got = self.cancel(client, 0).get_json()
+        assert got["ok"] is True
+        assert [e["chapter"] for e in got["narrating"]["queue"]] == [1]
+        assert books.render_queue == [("b1", 1)]
+
+    def test_a_chapter_that_is_not_queued(self, client, make_book, monkeypatch):
+        """Or whose turn came while the tap was in flight — the same thing to whoever tapped, and
+        the queue that comes back with the refusal says which."""
+        make_book(names=["One"], texts=["word " * 10])
+        monkeypatch.setattr(books, "render_queue", [])
+        r = self.cancel(client, 0)
+        assert r.status_code == 409
+        assert r.get_json()["narrating"]["queue"] == []
+
+    def test_the_one_being_narrated_is_not_on_the_queue(self, client, make_book, monkeypatch):
+        make_book(names=["One"], texts=["word " * 10])
+        monkeypatch.setattr(books, "render_queue", [])
+        monkeypatch.setitem(books.render_state, "current", ("b1", 0))
+        assert self.cancel(client, 0).status_code == 409
+
+    def test_unknown_book(self, client, make_book):
+        assert self.cancel(client, 0, book="nope").status_code == 404
+
+    def test_which_chapter(self, client, make_book):
+        make_book(names=["One"], texts=["word " * 10])
+        assert client.post("/api/books/render_cancel",
+                           json={"id": "b1"}).status_code == 400
 
 
 class TestAddingToARun:

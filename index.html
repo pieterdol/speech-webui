@@ -131,6 +131,9 @@
   .seg.can:hover .n { color:var(--accent); }
   .seg.wait { color:var(--muted); }
   .seg.on .n { color:var(--accent); font-weight:600; }
+  /* ✕ on a queued chapter. Small and quiet: the queue is a list you read, not one you work in. */
+  .seg .drop { flex:none; padding:2px 7px; font-size:12px; border-radius:7px;
+               border:1px solid var(--line); background:#2a2640; color:var(--muted); }
   /* One chapter that failed. What the engine or ffmpeg said is a sentence rather than a word,
      so unlike a .seg row it goes under the name and is allowed to wrap. */
   .fail { padding:7px 0; border-top:1px solid var(--line); font-size:13px; }
@@ -2000,6 +2003,21 @@ let QUEUE_OPEN = false;
 
 const workMin = words => Math.max(1, Math.round(words / 146 / 2.4));
 
+// Take a queued chapter off the queue. Its own book, not necessarily the one on screen: the queue
+// is global, so what you're waiting on can belong to a book you aren't looking at.
+async function dropFromQueue(e, btn){
+  btn.disabled = true;
+  const r = await fetch("/api/books/render_cancel", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: e.book, chapter: e.chapter})});
+  const d = await r.json();
+  if(d.narrating) NARRATING = d.narrating;
+  renderNarrating();
+  if(BOOK) renderChapterList();
+  if(!r.ok) return toast("❌ " + esc(d.msg || "couldn't take it off the queue"));
+  toast(`Took “${esc(e.name)}” off the queue.`);
+}
+
 function renderNarrating(){
   const now = NARRATING.current, q = NARRATING.queue || [];
   $("#narrating").style.display = (now || q.length) ? "block" : "none";
@@ -2027,8 +2045,14 @@ function renderNarrating(){
   q.forEach(e => {
     const row = document.createElement("div");
     row.className = "seg wait";
+    // ✕ only on one actually waiting on the lock. A line the panel projects from a whole-book run
+    // isn't on the queue yet — there's nothing to take off — and that's what Stop is for.
     row.innerHTML = `<div class="n">${where(e)}${esc(e.name)}</div>
-      <div class="d">${e.state === "waiting" ? "next up" : `~${workMin(e.words)} min`}</div>`;
+      <div class="d">${e.state === "waiting" ? "next up" : `~${workMin(e.words)} min`}</div>
+      ${e.state === "waiting" ? `<button class="drop" title="Take it off the queue"
+                                         aria-label="Take it off the queue">✕</button>` : ""}`;
+    const drop = row.querySelector(".drop");
+    if(drop) drop.addEventListener("click", ()=> dropFromQueue(e, drop));
     list.appendChild(row);
   });
 }
