@@ -7,6 +7,8 @@ import os
 import threading
 import time
 
+import pytest
+
 import books
 
 
@@ -1107,3 +1109,89 @@ class TestACastChangeDuringARender:
         monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
         books.render_chapter("b1", 0)
         assert chapter("b1")["state"] == "ready"
+
+
+class TestKeepingTheCastGoing:
+    """A book being read by seven voices has to stay that way when the listener reaches a chapter
+    nobody has worked out yet — which is every chapter, since playing one asks for the next to be
+    narrated. So the render asks for the attribution itself."""
+
+    SCENE = "“Who is there?” said Marla.\n“Nobody,” said Owen.\n"
+
+    @pytest.fixture(autouse=True)
+    def a_voice_roster(self, monkeypatch):
+        monkeypatch.setattr(books, "kokoro_voices",
+                            lambda: ["af_heart", "af_bella", "am_adam"])
+
+    @pytest.fixture
+    def asked(self, monkeypatch):
+        """The model, replaced by an answer for every run it's given."""
+        calls = []
+
+        def attribute(text, model=None, **kw):
+            calls.append(text)
+            lines = [{"n": i + 1, "speaker": ["Marla", "Owen"][i % 2],
+                      "gender": ["female", "male"][i % 2], "how": "tag"}
+                     for i in range(len(books.cast.quote_spans(text)))]
+            return {"model": model, "made": 0, "quotes": len(lines), "lines": lines,
+                    "tagged": len(lines),
+                    "speakers": [{"name": "Marla", "gender": "female", "lines": 1},
+                                 {"name": "Owen", "gender": "male", "lines": 1}]}
+
+        monkeypatch.setattr(books.cast, "attribute", attribute)
+        return calls
+
+    def test_a_chapter_nobody_has_worked_out_is_worked_out_first(self, make_book, fake_tts, asked):
+        make_book(names=["One"], texts=[self.SCENE], cast={"Marla": "af_bella"})
+        books.render_chapter("b1", 0)
+        assert len(asked) == 1
+        # “Who is there?” / said Marla. / “Nobody,” / said Owen.
+        assert [v for _t, v in fake_tts[0]["runs"]] == ["af_bella", "af_heart", "am_adam",
+                                                        "af_heart"]
+        assert chapter("b1")["state"] == "ready"
+
+    def test_the_new_speaker_joins_the_book_s_cast(self, make_book, fake_tts, asked):
+        """Owen was not in the map before this chapter, and has to sound the same in the next."""
+        make_book(names=["One"], texts=[self.SCENE], cast={"Marla": "af_bella"})
+        books.render_chapter("b1", 0)
+        assert books.find_book("b1")["cast"] == {"Marla": "af_bella", "Owen": "am_adam"}
+        assert chapter("b1")["cast"] == 2
+
+    def test_a_chapter_already_worked_out_is_not_asked_about_again(self, make_book, fake_tts,
+                                                                  asked):
+        make_book(names=["One"], texts=[self.SCENE], cast={"Marla": "af_bella"})
+        books.write_attribution("b1", 0, {"quotes": 2, "speakers": [], "lines": [
+            {"n": 1, "speaker": "Marla", "gender": "female", "how": "tag"},
+            {"n": 2, "speaker": "Marla", "gender": "female", "how": "tag"}]})
+        books.render_chapter("b1", 0)
+        assert asked == []
+        assert [v for _t, v in fake_tts[0]["runs"]] == ["af_bella", "af_heart", "af_bella",
+                                                        "af_heart"]
+
+    def test_a_book_with_no_cast_is_left_alone(self, make_book, fake_tts, asked):
+        """Nobody asked this book for voices, and minutes of GPU per chapter is not something to
+        start on its own."""
+        make_book(names=["One"], texts=[self.SCENE])
+        books.render_chapter("b1", 0)
+        assert asked == []
+        assert fake_tts[0]["runs"] is None
+        assert chapter("b1")["state"] == "ready"
+
+    def test_a_model_that_is_not_there_narrates_it_in_one_voice(self, make_book, fake_tts,
+                                                               monkeypatch):
+        """Ollama being down is not a reason to fail a chapter — one voice is what it would have
+        been anyway."""
+        def refuse(text, model=None, **kw):
+            raise RuntimeError("Ollama isn't reachable")
+
+        monkeypatch.setattr(books.cast, "attribute", refuse)
+        make_book(names=["One"], texts=[self.SCENE], cast={"Marla": "af_bella"})
+        books.render_chapter("b1", 0)
+        assert chapter("b1")["state"] == "ready"
+        assert fake_tts[0]["runs"] is None
+
+    def test_a_chapter_left_out_is_never_asked_about(self, make_book, fake_tts, asked):
+        make_book(names=["One"], texts=[self.SCENE], cast={"Marla": "af_bella"})
+        books.update_book("b1", lambda b: b["chapters"][0].update(skip=True))
+        books.render_chapter("b1", 0)
+        assert asked == []

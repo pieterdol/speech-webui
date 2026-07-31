@@ -283,6 +283,20 @@ characters sharing a voice is worse than one narrator reading both.
 is the only way to see an attribution is wrong without listening to an hour of narration. Changing a
 character's voice re-narrates the chapters they speak in and no others.
 
+**A book with a cast keeps it.** Once one chapter has been worked out, any chapter narrated after it
+is worked out first — the render asks for that itself rather than reading it in one voice. That
+matters because narration is mostly not asked for by hand: playing a chapter asks for the next one, to
+stay ahead of the listener, and without this reaching chapter two of a seven-voice book quietly went
+back to one. It costs a couple of minutes on top of a chapter that takes twenty, it happens inside the
+render lock so two renders can't ask about the same chapter at once, and a model that isn't there is
+not a failure — the chapter is narrated in one voice, which is what it would have been anyway. A book
+with **no** cast is left alone: nobody asked it for voices, and minutes of GPU per chapter is not
+something to start on its own.
+
+What this doesn't do is go back over chapters **already narrated** in one voice. Their audio is real
+and nothing throws that away without being asked; ↻ on the row is how you redo one, and the row saying
+`🎭 7 voices` is how you tell which is which.
+
 The attribution is one list per chapter in `books/<id>/cast/chNNN.json`, keyed by run number; the
 voices are `cast` on the book. Rendering **checks the count of runs before it trusts it**: a chapter
 re-scanned since would otherwise shift every voice after the change by one, which sounds like a broken

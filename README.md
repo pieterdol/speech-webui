@@ -185,7 +185,9 @@ full book is hours of work.
 - **Who speaks here** works out who says each quoted line of a chapter — `qwen3:14b` through Ollama,
   about five minutes for a chapter with 260 of them — and gives each character a voice of their own,
   the narrator keeping everything between the quotes. A character's voice can be changed or handed
-  back to the narrator. Narrating it afterwards takes no longer than one voice does.
+  back to the narrator. Narrating it afterwards takes no longer than one voice does. Once a book has
+  a cast it keeps it: any chapter narrated after that is worked out first, so playing on doesn't
+  drop back to a single voice. Chapters already narrated are left alone — ↻ redoes one.
 - **Export as audiobook (.m4b)** builds one file from whatever is narrated: chapter markers, cover
   art, title and author, AAC 48 kbps mono. Every export the book still has is listed with what went
   into it. On the phone it's handed to the iOS share sheet rather than downloaded, which passes it

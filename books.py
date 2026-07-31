@@ -665,6 +665,28 @@ def render_chapter(book_id, index):
         chapter = chapters[index]
         if chapter.get("state") == "ready" or chapter.get("skip"):
             return
+        # A book that is being read by a cast keeps being read by one. Worked out here rather than
+        # in the endpoints because every way a chapter gets narrated comes through this function —
+        # a tap, a whole-book run, and the one that actually caught this: playing a chapter asks
+        # for the next to be narrated, which read it in a single voice.
+        #
+        # Inside the lock, so two renders can't ask about the same chapter at once, and reported as
+        # this book's render already: it's a couple of minutes of a job that takes twenty. A model
+        # that isn't there is not a failure — the chapter is narrated in one voice, which is what
+        # it would have been anyway.
+        if cast_wanted(book, index):
+            try:
+                attribute_chapter(book_id, index)
+            except Exception as e:
+                log.info("cast: couldn't work out who speaks in %s chapter %s: %s",
+                         book_id, index, e)
+            book = find_book(book_id)
+            chapters = (book or {}).get("chapters") or []
+            if not (book and 0 <= index < len(chapters)):
+                return                     # deleted while we were asking
+            chapter = chapters[index]
+            if chapter.get("skip"):
+                return
         # Read after the lock, with the rest of the chapter: a queued render can have waited an
         # hour, and a section put back in the meantime moves every later chapter's position
         # without moving its files. So which files this render is about is decided from the book
@@ -1908,6 +1930,58 @@ def voices_here(speakers, casting):
     voices when one of them has gone is the kind of stale number nobody thinks to distrust."""
     return sum(1 for s in speakers or [] if (casting or {}).get(s["name"]))
 
+def attribute_chapter(book_id, index, model=cast.CAST_MODEL, status=lambda _s: None):
+    """Work out who speaks each line of one chapter, store it, and give the new speakers a voice.
+
+    Shared by 🎭 and by the render, which asks for this itself rather than reading a chapter in one
+    voice — see cast_wanted. `status` reports the slow part to whoever is watching.
+    """
+    book = find_book(book_id)
+    if not book:
+        raise RuntimeError("unknown book")
+    chapters = book.get("chapters") or []
+    if not (0 <= index < len(chapters)):
+        raise RuntimeError("no such chapter")
+    key = key_at(book, index)
+    with open(text_file(book_id, key)) as f:
+        raw = f.read()
+    # The text the render will speak, not the file: the heading comes off the top of it, and
+    # a run number has to mean the same thing in both or every voice after it is wrong.
+    text = chapter_text(book, index, raw)
+    status(f"asking {model}")
+    data = cast.attribute(text, model=model)
+    write_attribution(book_id, key, data)
+    roster = kokoro_voices()
+    narrator = book.get("voice") or "af_heart"
+
+    # The map is the book's, not the chapter's: a character who speaks in four chapters has
+    # to sound the same in all four, so attributing another chapter adds to it and never
+    # re-casts anyone already in it.
+    def apply(b):
+        b["cast"] = cast.assign_voices(data["speakers"], narrator, roster, b.get("cast"))
+        # How many of this chapter's speakers ended up with a voice of their own. On the
+        # chapter because that's what the page has: it's the difference between offering to
+        # work this chapter out and saying it already knows.
+        #
+        # Whatever audio this chapter has was made in one voice, so it no longer says what the
+        # book now says it should. Same rule as a pronunciation change.
+        b["chapters"][index].update(state="pending", error=None, segments=[],
+                                    cast=voices_here(data["speakers"], b["cast"]))
+
+    update_book(book_id, apply)
+    drop_chapter_audio(book_id, index)
+    return data
+
+def cast_wanted(book, index):
+    """Whether a chapter should be worked out before it is narrated.
+
+    True for a book that has a cast and a chapter that isn't in it yet. Playing a chapter asks for
+    the next one to be narrated — that's what keeps the reader ahead of the listener — and without
+    this, reaching chapter two of a book being read by seven voices quietly went back to one. A
+    book with no cast is left alone: nobody asked it for voices, and minutes of GPU per chapter is
+    not something to start on its own."""
+    return bool(book.get("cast")) and not load_attribution(book["id"], key_at(book, index))
+
 def cast_worker(jid, book_id, index, model):
     """Work out who speaks each line of one chapter, and give each of them a voice.
 
@@ -1917,39 +1991,11 @@ def cast_worker(jid, book_id, index, model):
     job = jobs[jid]
     job["status"] = "reading"
     try:
-        book = find_book(book_id)
-        if not book:
-            raise RuntimeError("unknown book")
-        chapters = book.get("chapters") or []
-        if not (0 <= index < len(chapters)):
-            raise RuntimeError("no such chapter")
-        key = key_at(book, index)
-        with open(text_file(book_id, key)) as f:
-            raw = f.read()
-        # The text the render will speak, not the file: the heading comes off the top of it, and
-        # a run number has to mean the same thing in both or every voice after it is wrong.
-        text = chapter_text(book, index, raw)
-        job["status"] = f"asking {model}"
-        data = cast.attribute(text, model=model)
-        write_attribution(book_id, key, data)
-        roster = kokoro_voices()
+        data = attribute_chapter(book_id, index, model,
+                                 status=lambda s: job.update(status=s))
+        book = find_book(book_id) or {}
         narrator = book.get("voice") or "af_heart"
-        # The map is the book's, not the chapter's: a character who speaks in four chapters has
-        # to sound the same in all four, so attributing another chapter adds to it and never
-        # re-casts anyone already in it.
-        def apply(b):
-            b["cast"] = cast.assign_voices(data["speakers"], narrator, roster, b.get("cast"))
-            # How many of this chapter's speakers ended up with a voice of their own. On the
-            # chapter because that's what the page has: it's the difference between offering to
-            # work this chapter out and saying it already knows.
-            #
-            # Whatever audio this chapter has was made in one voice, so it no longer says what the
-            # book now says it should. Same rule as a pronunciation change.
-            b["chapters"][index].update(state="pending", error=None, segments=[],
-                                        cast=voices_here(data["speakers"], b["cast"]))
-        update_book(book_id, apply)
-        drop_chapter_audio(book_id, index)
-        voices = (find_book(book_id) or {}).get("cast") or {}
+        voices = book.get("cast") or {}
         job.update(status="done",
                    text=f"{len(data['speakers'])} speakers in {data['quotes']} quoted lines",
                    cast=[s | {"voice": voices.get(s["name"]) or narrator}
