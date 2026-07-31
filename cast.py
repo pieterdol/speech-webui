@@ -43,6 +43,9 @@ CAST_TOKENS_LEAST = 256
 # model that has started looping on one window usually doesn't on a smaller one, and the
 # alternative is most of a chapter read by the narrator because the answer ran off the end.
 CAST_MIN_COVERED = 0.6
+# The consolidation pass answers one short line per speaker, and its input is a dozen lines however
+# long the chapter is — so a flat cap rather than one scaled to the chapter.
+CAST_SAME_TOKENS = 1024
 # Except this small, where splitting stops buying anything and the halves stop having the narration
 # that says who is speaking.
 CAST_LEAST_WINDOW = 6000
@@ -352,12 +355,112 @@ def ask(window, model=CAST_MODEL, carry=(), url=None, timeout=CAST_TIMEOUT, runs
     # the flag outright.
     if model_thinks(model):
         body["think"] = False
+    return answers_in(reply(body, url, timeout))
+
+
+def reply(body, url=None, timeout=CAST_TIMEOUT):
+    """The content of one Ollama chat reply, as text."""
     req = urllib.request.Request((url or OLLAMA) + "/api/chat",
                                  data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         out = json.loads(r.read().decode())
-    return answers_in((out.get("message") or {}).get("content"))
+    return ((out.get("message") or {}).get("content")) or ""
+
+
+# ---- one person, written two ways ----
+
+SAME_SYSTEM = """You are given the speakers found in one chapter of a book, each with how many
+lines they have and one of them.
+
+Some of them are one person written two ways: a character is "the man" for as long as the chapter
+hasn't named him and "Leighton Vance" once it has, and in a story told in the first person the
+teller turns up as both their name and "the narrator". They have to end up as one person, because
+each one gets a voice of its own and a character who changes voice halfway through sounds like two
+people.
+
+For each speaker, answer with the one name from the list to use for them:
+- their own name, where nobody else in the list is the same person;
+- somebody else's name from the list, where they are that person. Prefer the one that is an actual
+  name over a description of them.
+Never invent a name that isn't in the list, and never merge two people who merely sound similar —
+two brothers, a mother and daughter, a crowd of soldiers — into one."""
+
+SAME_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "speakers": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"speaker": {"type": "string"}, "use": {"type": "string"}},
+                "required": ["speaker", "use"],
+            },
+        },
+    },
+    "required": ["speakers"],
+}
+
+
+def same_person(examples, model=CAST_MODEL, url=None, timeout=CAST_TIMEOUT):
+    """{speaker as answered: name to use}, asked of the model.
+
+    `examples` is [{name, gender, lines, said}] — `said` being a few of their lines, because "the
+    man" and "Leighton Vance" are only recognisable as one person from what they say. A few rather
+    than one: the line that settles it is the one where he says "I'm Leighton Vance", which is
+    never his first.
+    """
+    listing = "\n".join(
+        f'{e["name"]} ({e["gender"]}, {e["lines"]} line{"" if e["lines"] == 1 else "s"}): '
+        + " … ".join(e.get("said") or [e.get("line", "")]) for e in examples)
+    # Not thinking, though this is the one question here that looks like it deserves to. Measured:
+    # with thinking it merged nothing at all and took three times as long, the reasoning having
+    # spent the token cap before any answer was written — the same failure as the main pass, on a
+    # smaller scale. Without it, it catches the labels that are recognisably one person and leaves
+    # the rest, which is worth having and cheap.
+    body = {"model": model, "stream": False, "format": SAME_SCHEMA,
+            "messages": [{"role": "system", "content": SAME_SYSTEM},
+                         {"role": "user", "content": "Speakers:\n\n" + listing}],
+            "keep_alive": CAST_KEEP_ALIVE,
+            "options": {"temperature": 0, "num_ctx": CAST_NUM_CTX,
+                        "num_predict": CAST_SAME_TOKENS}}
+    if model_thinks(model):
+        body["think"] = False
+    content = reply(body, url, timeout)
+    try:
+        answered = json.loads(content).get("speakers") or []
+    except ValueError:
+        answered = [o for o in _objects_in(content) if "speaker" in o and "use" in o]
+    return {clean_name(a.get("speaker")): clean_name(a.get("use")) for a in answered
+            if a.get("speaker") and a.get("use")}
+
+
+def merge_same(names, said, genders):
+    """{name: name to use}, keeping only the merges that are safe to make.
+
+    The model is allowed to say two labels are one person; it is not allowed to invent a name, to
+    disagree with itself about gender, or to leave a chain for the caller to resolve. Everything it
+    says that isn't one of those is dropped rather than argued with, because a wrong merge is two
+    characters read in one voice — the failure the whole pass exists to avoid.
+    """
+    keep = {}
+    for name, use in (said or {}).items():
+        if name not in names or use not in names or name == use:
+            continue
+        if genders.get(name) != genders.get(use):
+            continue
+        keep[name] = use
+    # A chain — a → b → c — is followed to its end, and a loop is dropped whole: with a → b and
+    # b → a there is no answer to which of the two the chapter calls them.
+    out = {}
+    for name in keep:
+        seen, at = {name}, keep[name]
+        while at in keep and at not in seen:
+            seen.add(at)
+            at = keep[at]
+        if at not in keep:                  # ran to a name nobody redirects: that's the one
+            out[name] = at
+    return out
 
 
 # One answer object, as the reply writes it. Read out of the text rather than out of the parsed
@@ -367,17 +470,22 @@ def ask(window, model=CAST_MODEL, carry=(), url=None, timeout=CAST_TIMEOUT, runs
 _OBJECT = re.compile(r"\{[^{}]*\}")
 
 
-def answers_in(content):
-    """The answer objects a reply contains, whether or not the reply is whole JSON."""
+def _objects_in(content):
+    """Every JSON object in a reply, whole or truncated."""
     out = []
     for m in _OBJECT.finditer(content or ""):
         try:
             obj = json.loads(m.group(0))
         except ValueError:
             continue
-        if isinstance(obj, dict) and isinstance(obj.get("n"), int):
+        if isinstance(obj, dict):
             out.append(obj)
     return out
+
+
+def answers_in(content):
+    """The answer objects a reply contains, whether or not the reply is whole JSON."""
+    return [o for o in _objects_in(content) if isinstance(o.get("n"), int)]
 
 
 def collate(answers, count):
@@ -399,12 +507,13 @@ def collate(answers, count):
     return out
 
 
-def attribute(text, model=CAST_MODEL, url=None, ask_fn=None):
+def attribute(text, model=CAST_MODEL, url=None, ask_fn=None, same_fn=None):
     """Who speaks every quoted run in a chapter.
 
-    Returns {model, made, quotes, lines, speakers, tagged}: `lines` is one entry per run in order
-    with the speaker and where the answer came from, `speakers` is the cast, and `tagged` counts
-    how many of the answers code settled rather than the model.
+    Returns {model, made, quotes, lines, speakers, merged, tagged}: `lines` is one entry per run in
+    order with the speaker and where the answer came from, `speakers` is the cast, `merged` says
+    which labels turned out to be one person, and `tagged` counts how many of the answers code
+    settled rather than the model.
     """
     asker = ask_fn or ask
     spans = quote_spans(text)
@@ -464,8 +573,39 @@ def attribute(text, model=CAST_MODEL, url=None, ask_fn=None):
             if i != lead and lines[i]["speaker"] != lines[lead]["speaker"]:
                 lines[i].update(speaker=lines[lead]["speaker"], gender=lines[lead]["gender"],
                                 how="split")
+    # Last, and asked about the cast rather than the chapter: which of these labels are one person.
+    # A chapter names a character part-way through and the runs before that come back as "the man",
+    # so the cast list ends up with a description and a name for the same voice. It can't be settled
+    # while reading — at run 4 the chapter genuinely hasn't said — and the prompt can't carry it
+    # either: told to use the name for the earlier lines too, the model stopped using names at all
+    # and answered "the man" for three quarters of the chapter. So it is one more question, once the
+    # cast is known, over a list small enough to be cheap.
+    merged = {}
+    if len(set(l["speaker"] for l in lines) - {NOT_SPEECH, UNKNOWN, ""}) > 1:
+        cast_now = speakers_in(lines)
+        # Their first line, their longest, and their last: three cheap picks, and between them they
+        # nearly always include the one that names the speaker — "I'm Leighton Vance, chief
+        # executive" is a long line and never a first one.
+        spoken = {}
+        for l in lines:
+            spoken.setdefault(l["speaker"], []).append(
+                text[spans[l["n"] - 1][0]:spans[l["n"] - 1][1]][:200])
+        picks = {}
+        for name, said_lines in spoken.items():
+            picks[name] = list(dict.fromkeys(
+                [said_lines[0], max(said_lines, key=len), said_lines[-1]]))
+        try:
+            said = (same_fn or same_person)(
+                [s | {"said": picks.get(s["name"], [])} for s in cast_now], model=model, url=url)
+        except Exception:
+            said = {}          # one more voice in the list is not worth failing a chapter over
+        merged = merge_same({s["name"] for s in cast_now}, said,
+                            {s["name"]: s["gender"] for s in cast_now})
+        for line in lines:
+            if line["speaker"] in merged:
+                line.update(speaker=merged[line["speaker"]], how="merged")
     return {"model": model, "made": int(time.time()), "quotes": len(spans), "lines": lines,
-            "speakers": speakers_in(lines),
+            "speakers": speakers_in(lines), "merged": merged,
             "tagged": sum(1 for l in lines if l["how"] == "tag")}
 
 

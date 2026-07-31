@@ -2148,8 +2148,12 @@ def api_book_cast_voice():
     voice = (d.get("voice") or "").strip()
     if voice and not tts_engine_of(voice):
         return jsonify(ok=False, msg=f"unknown voice: {voice}"), 400
-    if voice and voice in {v for k, v in (book.get("cast") or {}).items() if k != who}:
-        return jsonify(ok=False, msg="another character already has that voice"), 409
+    # Two characters may share a voice when you say so. The pass never hands out a voice twice, and
+    # refusing it here as well looked tidy until the reason to share turned up: a chapter names a
+    # character part-way through, so his earlier lines come back under a description — "the man" and
+    # "Leighton Vance", two entries for one person. Asking the model which labels are one person
+    # catches some of those and not all, and pointing both at one voice is how you finish the job.
+    shared = sorted(k for k, v in (book.get("cast") or {}).items() if k != who and v == voice)
     # Read once, here: which chapters they speak in decides both what gets re-narrated and what
     # each row now says, and the files are on disk rather than in the index.
     attributed = {c["i"]: load_attribution(book["id"], chapter_key(c)) or {}
@@ -2178,7 +2182,7 @@ def api_book_cast_voice():
     update_book(book["id"], apply)
     for i in reset:
         drop_chapter_audio(book["id"], i)
-    return jsonify(ok=True, book=find_book(book["id"]), reset=reset)
+    return jsonify(ok=True, book=find_book(book["id"]), reset=reset, shared=shared)
 
 @app.post("/api/books/skip")
 def api_book_skip():

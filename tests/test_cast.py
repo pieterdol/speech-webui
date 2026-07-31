@@ -436,3 +436,91 @@ class TestARepliedThatRanOffTheEnd:
         got = cast.attribute(CHAPTER * 300, ask_fn=answers_nothing)
         assert len(asked) < 100                       # bounded, not recursing on every half
         assert all(l["speaker"] == cast.UNKNOWN for l in got["lines"])
+
+
+class TestOnePersonWrittenTwoWays:
+    """A chapter names a character part-way through, so the runs before that come back as "the
+    man" and the ones after as "Leighton Vance" — two entries in the cast, two voices, one person
+    changing voice halfway through.
+
+    It can't be settled while reading: at run 4 the chapter genuinely hasn't said. Nor by the
+    prompt — told to use the name for the earlier lines too, the model stopped using names at all
+    and answered "the man" for three quarters of the chapter. And not by thinking, which is what
+    used to consolidate these: it cost six times the tokens and ran away on one chapter entirely.
+    So it's one more question, asked about the cast rather than the chapter."""
+
+    def lines(self, *speakers):
+        return [{"n": i, "speaker": s, "gender": g, "how": "model"}
+                for i, (s, g) in enumerate(speakers, 1)]
+
+    def test_a_description_folds_into_the_name(self):
+        chapter = ('“Turn around,” he says.\n'
+                   '“I am Leighton Vance,” he says.\n'
+                   '“Where am I?” I ask.\n')
+        got = cast.attribute(
+            chapter,
+            ask_fn=canned(("the man", "male"), ("Leighton Vance", "male"), ("Jason", "male")),
+            same_fn=lambda examples, **kw: {"the man": "Leighton Vance"})
+        assert [l["speaker"] for l in got["lines"]] == ["Leighton Vance", "Leighton Vance", "Jason"]
+        assert got["merged"] == {"the man": "Leighton Vance"}
+        assert {s["name"] for s in got["speakers"]} == {"Leighton Vance", "Jason"}
+
+    def test_a_name_it_made_up_is_refused(self):
+        """It may say two of the cast are one person; it may not introduce a third."""
+        assert cast.merge_same({"the man", "Owen"}, {"the man": "Leighton Vance"},
+                               {"the man": "male", "Owen": "male"}) == {}
+
+    def test_two_people_of_different_genders_are_never_one(self):
+        assert cast.merge_same({"the man", "Marla"}, {"the man": "Marla"},
+                               {"the man": "male", "Marla": "female"}) == {}
+
+    def test_a_chain_is_followed_to_its_end(self):
+        """"a man" → "the man" → "Leighton Vance" is one person under three labels."""
+        names = {"a man", "the man", "Leighton Vance"}
+        genders = dict.fromkeys(names, "male")
+        assert cast.merge_same(names, {"a man": "the man", "the man": "Leighton Vance"},
+                               genders) == {"a man": "Leighton Vance",
+                                            "the man": "Leighton Vance"}
+
+    def test_a_loop_is_dropped_rather_than_picked(self):
+        """With "the man" → "Owen" and "Owen" → "the man" there is no answer to which the chapter
+        calls him, and guessing would be a coin toss recorded as a decision."""
+        names = {"the man", "Owen"}
+        assert cast.merge_same(names, {"the man": "Owen", "Owen": "the man"},
+                               dict.fromkeys(names, "male")) == {}
+
+    def test_a_speaker_left_alone_stays_itself(self):
+        names = {"the cabbie", "Owen"}
+        assert cast.merge_same(names, {"the cabbie": "the cabbie", "Owen": "Owen"},
+                               dict.fromkeys(names, "male")) == {}
+
+    def test_the_question_is_not_asked_about_a_single_speaker(self):
+        """Nothing to merge into, and a chapter with one voice in it shouldn't pay for a call."""
+        asked = []
+        cast.attribute("“Alone here,” said Marla.\n", ask_fn=canned(("Marla", "female")),
+                       same_fn=lambda examples, **kw: asked.append(examples) or {})
+        assert asked == []
+
+    def test_a_pass_that_falls_over_costs_nothing(self):
+        """One more line in the cast list is not worth failing a chapter over."""
+        def refuse(examples, **kw):
+            raise RuntimeError("Ollama isn't reachable")
+
+        got = cast.attribute(CHAPTER, ask_fn=canned(
+            ("Marla", "female"), ("Marla", "female"), ("Owen", "male"), ("Marla", "female")),
+            same_fn=refuse)
+        assert got["merged"] == {}
+        assert {s["name"] for s in got["speakers"]} == {"Marla", "Owen"}
+
+    def test_it_is_asked_with_a_few_of_their_lines(self):
+        """"the man" and "Leighton Vance" are only recognisable as one person from what they say."""
+        seen = []
+        cast.attribute(CHAPTER, ask_fn=canned(
+            ("Marla", "female"), ("Marla", "female"), ("Owen", "male"), ("Marla", "female")),
+            same_fn=lambda examples, **kw: seen.append(examples) or {})
+        assert [e["name"] for e in seen[0]] == ["Marla", "Owen"]
+        # first, longest and last, which between them nearly always include the line that names
+        # them: "I'm Leighton Vance, chief executive" is a long line and never a first one
+        assert seen[0][0]["said"][0].startswith("“Put the kettle on")
+        assert "“before the pipes freeze.”" in seen[0][0]["said"]
+        assert seen[0][1]["said"] == ["“There is no gas.”"]

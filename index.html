@@ -3060,9 +3060,11 @@ async function setCastVoice(who, voice){
   BOOK = d.book;
   renderCast();
   // What it cost, said out loud: the audio those chapters had was in the old voice and has gone.
-  toast(d.reset.length ? `✅ ${esc(who)} → ${esc(voice || "the narrator")} · re-narrating`
-                         + ` ${d.reset.length} chapter${d.reset.length === 1 ? "" : "s"}`
-                       : `✅ ${esc(who)} → ${esc(voice || "the narrator")}`);
+  // And who else now has that voice — sharing one is allowed, and worth knowing you've done.
+  toast(`✅ ${esc(who)} → ${esc(voice || "the narrator")}`
+        + ((d.shared || []).length ? ` · same voice as ${esc(d.shared.join(", "))}` : "")
+        + (d.reset.length ? ` · re-narrating ${d.reset.length}`
+                            + ` chapter${d.reset.length === 1 ? "" : "s"}` : ""));
   if(d.reset.length) renderChapterList();
 }
 $("#castList").addEventListener("change", e => {

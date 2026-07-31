@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import books        # noqa: E402
+import cast         # noqa: E402
 import chat         # noqa: E402
 import clips        # noqa: E402
 import core         # noqa: E402
@@ -200,6 +201,19 @@ def fake_tts(monkeypatch):
     monkeypatch.setattr(books, "_render_segment", _render_segment)
     monkeypatch.setattr(books, "audio_seconds", lambda p: 12.5)
     return calls
+
+
+@pytest.fixture(autouse=True)
+def no_real_model(monkeypatch):
+    """No test asks Ollama anything.
+
+    cast.attribute takes an ask_fn for the per-window questions, but the pass at the end that asks
+    which of the speakers are one person has no such seam — production always wants it — so on a
+    machine where Ollama happens to be up it would answer for real, slowly and differently each
+    time, and on one where it isn't it would quietly answer nothing. Answered "nothing to merge"
+    here; a test about merging passes its own same_fn.
+    """
+    monkeypatch.setattr(cast, "same_person", lambda examples, **kw: {})
 
 
 @pytest.fixture

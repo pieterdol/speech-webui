@@ -1637,14 +1637,19 @@ class TestAttributingAChapter:
         client.post("/api/books/cast/voice", json={"id": "b1", "speaker": "Marla", "voice": ""})
         assert books.find_book("b1")["cast"] == {}
 
-    def test_two_characters_cannot_share_a_voice(self, client, make_book):
+    def test_two_characters_may_share_a_voice_when_you_say_so(self, client, make_book):
+        """The pass never hands a voice out twice. By hand it's allowed, because the reason to do
+        it is real: a chapter names a character part-way through, so his earlier lines come back
+        under a description — two entries for one person, and one voice is what makes them one
+        person again."""
         make_book(names=["One"], texts=[self.SCENE],
                   cast={"Marla": "af_bella", "Owen": "am_adam"})
         self.attributed()
-        r = client.post("/api/books/cast/voice",
-                        json={"id": "b1", "speaker": "Owen", "voice": "af_bella"})
-        assert r.status_code == 409
-        assert books.find_book("b1")["cast"]["Owen"] == "am_adam"
+        got = client.post("/api/books/cast/voice",
+                          json={"id": "b1", "speaker": "Owen", "voice": "af_bella"}).get_json()
+        assert got["ok"] is True
+        assert got["shared"] == ["Marla"]           # said out loud rather than done quietly
+        assert books.find_book("b1")["cast"]["Owen"] == "af_bella"
 
     def test_an_unknown_voice_is_refused(self, client, make_book):
         make_book(names=["One"], texts=[self.SCENE], cast={"Marla": "af_bella"})

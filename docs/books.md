@@ -285,6 +285,27 @@ narration. Two more things code settles rather than asking:
 **A speech split by its tag is one voice.** `"…," said Marla, "…"` is two runs and one person; two runs
 with a full stop between them can be two people, and each is answered on its own.
 
+**One person written two ways.** A chapter names a character part-way through, so the runs before that
+come back as `the man` and the ones after as `Leighton Vance`: two entries in the cast, two voices, one
+person changing voice halfway. It can't be settled while reading — at run 4 the chapter genuinely
+hasn't said — so there's **one more question at the end**, asked about the cast rather than the
+chapter: each speaker with a few of their lines, which of these are the same person. First, longest and
+last, because the line that settles it is the one where he says *"I'm Leighton Vance, chief
+executive"*, and that is never anyone's first line.
+
+Code keeps only the safe answers: a name that isn't in the list is refused, a merge across genders is
+refused, a chain is followed to its end and a loop is dropped whole. A wrong merge is two characters
+read in one voice, which is the failure the pass exists to avoid.
+
+**It catches some and not all**, measured on one chapter: `a woman` → Amanda Lucas and `a man` → `the
+man`, while `the man` stayed beside Leighton Vance and `the narrator` beside Jason Dessen. Two things
+that look like they'd fix that don't. Telling the model in the prompt to use the name for the earlier
+lines as well made it stop using names at all — three quarters of a chapter came back as `the man`. And
+letting the consolidation pass *think* made it merge nothing and take three times as long, the
+reasoning having spent the token cap before it wrote an answer. So the last word is yours: **two
+characters may share a voice** when you set one by hand, which is how `the man` and Leighton Vance
+become one person. Nothing assigns a voice twice on its own.
+
 **The answer is capped**, at about four times what a window needs. Asked for a JSON array a model
 can decide never to stop writing one, and one did: 33,000 tokens into a chapter of 130 quoted lines,
 still emitting entries at 40 a second with nothing to stop it but the request timeout, and still going
@@ -298,7 +319,7 @@ chapter is asked about a **window at a time** — 24,000 characters, cut on line
 split — and each window is told who spoke the last few runs of the one before it.
 
 **Casting.** A character gets a voice of the narrator's own accent and their own gender, never the
-narrator's and never one already taken, with the most-spoken cast first so it's the passers-by who go
+narrator's and never one already taken by somebody else, with the most-spoken cast first so it's the passers-by who go
 without when the voices run out. The map lives on the book, so somebody who speaks in four chapters
 sounds the same in all four, and attributing another chapter adds to it without re-casting anyone
 you've already heard. A speaker whose gender the chapter never shows keeps the narrator's voice:

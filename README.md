@@ -186,8 +186,9 @@ full book is hours of work.
   lot, and re-narrates only the parts that said it the old way.
 - **Who speaks here** works out who says each quoted line of a chapter — `qwen3:14b` through Ollama,
   about a minute for a chapter of 130 of them — and gives each character a voice of their own,
-  the narrator keeping everything between the quotes. A character's voice can be changed or handed
-  back to the narrator. Narrating it afterwards takes no longer than one voice does. Once a book has
+  the narrator keeping everything between the quotes. A character's voice can be changed, handed back
+  to the narrator, or pointed at another character's — which is what a book that calls somebody "the
+  man" for a page and then names him needs. Narrating it afterwards takes no longer than one voice does. Once a book has
   a cast it keeps it: any chapter narrated after that is worked out first, so playing on doesn't
   drop back to a single voice. Chapters already narrated are left alone — ↻ redoes one.
 - **Export as audiobook (.m4b)** builds one file from whatever is narrated: chapter markers, cover
