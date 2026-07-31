@@ -567,6 +567,13 @@
         fixed by spelling it the way it should sound — “Vermeer” as “Vermayr”. ▶ speaks the
         spoken form first, so you can get it right before anything is narrated. Whole words,
         any capitalisation. Saving re-narrates only the parts that said it the old way.</div>
+      <label>Who reads whom</label>
+      <div id="castList"></div>
+      <div class="hint">Each character gets a voice of their own; the narrator reads everything
+        between the quotes. 🎭 on a chapter works out who says which line — a few minutes of GPU
+        per chapter — and adds whoever it finds here. Changing a voice re-narrates the chapters that
+        character speaks in, and <em>the narrator</em> hands their lines back. Narrating a chapter
+        with a cast takes no longer than narrating it in one voice.</div>
       <div id="epubRow" style="display:none"></div>
       <label for="bookCoverFile">Replace the cover</label>
       <input type="file" id="bookCoverFile" accept="image/*">
@@ -1793,6 +1800,7 @@ async function openBook(id){
   // across would be a change you'd forgotten you were making.
   RESPELL = {...(BOOK.respell || {})};
   renderRespellings();
+  renderCast();
   renderEpub();
   $("#bookOpening").value = BOOK.opening || "";
   showAbout();
@@ -2179,9 +2187,17 @@ function chapterRow(c, grouped){
   // hours to find out the narrator says the hero's name wrong. Never where there's already audio
   // — tapping the row plays that — and not while it's being made.
   const taste = !c.skip && !segs.length && c.state !== "rendering";
+  // 🎭: who speaks in this chapter, so each character can be read in their own voice. Offered on
+  // any chapter that isn't left out and isn't being narrated, including one already worked out —
+  // asking again is how you redo an attribution you didn't believe.
+  const players = !c.skip && c.state !== "rendering";
+  if(c.cast) note += ` · 🎭 ${c.cast} voice${c.cast === 1 ? "" : "s"}`;
   el.innerHTML = `<div class="cliphead"><div class="nm">${esc(chapterLabel(c, grouped))}</div>
       ${redo ? `<button class="skip redo" title="Narrate this again from nothing"
                         aria-label="Narrate this again">↻</button>` : ""}
+      ${players ? `<button class="skip cast" title="${c.cast ? "Work out who speaks here again"
+                                                            : "Work out who speaks here"}"
+                          aria-label="Work out who speaks here">🎭</button>` : ""}
       ${taste ? `<button class="skip taste" title="Hear how this chapter will start"
                          aria-label="Hear how this chapter will start">🎧</button>` : ""}
       <button class="skip" title="${c.skip ? "Narrate this after all"
@@ -2194,8 +2210,10 @@ function chapterRow(c, grouped){
     <div class="tr">${plays ? '<span class="play">▶</span> ' : ""}${esc(note)}</div>`;
   el.querySelector(".cliphead").addEventListener("click", ()=> chapterTapped(c.i));
   el.querySelector(".tr").addEventListener("click", ()=> chapterTapped(c.i));
-  el.querySelector(".skip:not(.redo):not(.taste)").addEventListener("click",
+  el.querySelector(".skip:not(.redo):not(.taste):not(.cast)").addEventListener("click",
                                              e => { e.stopPropagation(); toggleSkip(c.i); });
+  const who = el.querySelector(".cast");
+  if(who) who.addEventListener("click", e => { e.stopPropagation(); castChapter(c.i, who); });
   const again = el.querySelector(".redo");
   if(again) again.addEventListener("click", e => { e.stopPropagation(); redoChapter(c.i); });
   const hear = el.querySelector(".taste");
@@ -2961,6 +2979,85 @@ function renderRespellings(){
   btn.disabled = !n;
   btn.textContent = n ? `Save ${n} change${n === 1 ? "" : "s"} and re-narrate`
                       : "Saved";
+}
+
+// ---- who reads whom ----
+// The map belongs to the book, not to a chapter: somebody who speaks in four chapters has to sound
+// the same in all four. So this list grows as chapters are worked out, and changing a voice here
+// re-narrates the chapters that character is in and no others.
+const CAST_LABELS = {reading: "Reading the chapter…"};
+function renderCast(){
+  const casting = (BOOK && BOOK.cast) || {};
+  const names = Object.keys(casting).sort((a, b) => a.localeCompare(b));
+  const box = $("#castList");
+  if(!names.length){
+    box.innerHTML = `<div class="hint">Nobody yet — 🎭 on a chapter finds out who is in it.</div>`;
+    return;
+  }
+  box.innerHTML = names.map(n =>
+    `<div class="say"><div class="w">${esc(n)}</div><div class="arrow">→</div>
+       <select class="castVoice" data-who="${esc(n)}"></select>
+       <button class="iconbtn hearCast" data-who="${esc(n)}" title="Hear this voice"
+               aria-label="Hear this voice">▶</button></div>`).join("");
+  box.querySelectorAll(".castVoice").forEach(sel => {
+    // Kokoro only: the pool a character is cast from is the narrator's own accent, and Piper's
+    // Dutch voices aren't in it.
+    fillVoices(sel, "kokoro", "", casting[sel.dataset.who]);
+    pickOption(sel, casting[sel.dataset.who]);
+    const back = document.createElement("option");
+    back.value = ""; back.textContent = "the narrator";
+    sel.insertBefore(back, sel.firstChild);
+  });
+}
+async function setCastVoice(who, voice){
+  const r = await fetch("/api/books/cast/voice", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: BOOK.id, speaker: who, voice})});
+  const d = await r.json();
+  if(!r.ok){ toast("❌ " + esc(d.msg || r.status), 4000); return renderCast(); }
+  BOOK = d.book;
+  renderCast();
+  // What it cost, said out loud: the audio those chapters had was in the old voice and has gone.
+  toast(d.reset.length ? `✅ ${esc(who)} → ${esc(voice || "the narrator")} · re-narrating`
+                         + ` ${d.reset.length} chapter${d.reset.length === 1 ? "" : "s"}`
+                       : `✅ ${esc(who)} → ${esc(voice || "the narrator")}`);
+  if(d.reset.length) renderChapterList();
+}
+$("#castList").addEventListener("change", e => {
+  const sel = e.target.closest(".castVoice");
+  if(sel && BOOK) setCastVoice(sel.dataset.who, sel.value);
+});
+$("#castList").addEventListener("click", e => {
+  const btn = e.target.closest(".hearCast");
+  if(!btn || !BOOK) return;
+  const sel = $("#castList").querySelector(`.castVoice[data-who="${btn.dataset.who}"]`);
+  // Handed back to the narrator, ▶ plays the narrator: that is who reads them now.
+  previewVoice(sel.value ? sel : $("#bookVoice"), btn);
+});
+
+// 🎭 on a chapter. A couple of minutes of GPU, so it says what it's doing and doesn't block the
+// page: what comes back is the cast, which lands in the list above.
+async function castChapter(i, btn){
+  if(!BOOK) return;
+  const label = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>';
+  try{
+    const r = await fetch("/api/books/cast", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({id: BOOK.id, chapter: i})});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.msg || r.status);
+    const done = await waitForJob(d.job_id, CAST_LABELS, setStatus);
+    setStatus("");
+    await openBook(BOOK.id);
+    const heard = (done.cast || []).filter(s => s.voice !== BOOK.voice).length;
+    toast(`✅ ${esc(done.text || "")} · ${heard} with a voice of their own`, 6000);
+  }catch(e){
+    toast("❌ " + esc(e.message), 5000);
+  }
+  btn.disabled = false;
+  btn.innerHTML = label;
 }
 
 // ---- what extraction left out ----

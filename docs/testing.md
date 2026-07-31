@@ -16,6 +16,13 @@ pronunciation invalidates — including a save landing mid-render. What a sectio
 renumbers and what it deliberately doesn't move, since a position and a filename mean different
 things only there.
 
+Who speaks which line: the runs code finds in a chapter — straight quotes, speech carried over a
+paragraph break, a file whose quotation marks don't balance — the answers code settles rather than
+asking (a named speaker in the tag, gender from a pronoun, a speech split by its tag), the casting
+rules, and what rendering does with an attribution the text has moved under. The model is a canned
+answer throughout: whether it knows who says "Then light a candle" is the one thing the pass exists to
+find out and the one thing no assertion can hold.
+
 The pure functions — reading a chapter number out of a heading, cutting text into segments, chunks,
 sentences and phoneme batches, what gets announced before the prose. The stores behind clips, presets
 and chats. And the HTTP contracts, including the cache headers on narration audio.

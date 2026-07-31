@@ -9,6 +9,7 @@ from contextlib import contextmanager
 
 from flask import Response, jsonify, request, send_from_directory
 
+import cast
 import epub
 import openlib
 from core import (app, index_lock, jobs, log, log_transfer, new_job, run_lock, safe_path,
@@ -16,7 +17,7 @@ from core import (app, index_lock, jobs, log, log_transfer, new_job, run_lock, s
 from media import audio_seconds, pad_with_silence
 from textprep import (ONES, TENS, clean_respell, cut_sentences, respell,
                       respell_diff, respell_pattern, spoken_initials)
-from tts import piper_voice_ids, tts_engine_of, tts_say
+from tts import kokoro_voices, piper_voice_ids, tts_engine_of, tts_say
 
 BOOKS_DIR  = os.path.join(HERE, "books")
 BOOKS_FILE = os.path.join(HERE, "books.json")
@@ -91,6 +92,24 @@ def audio_name(key, si):
     """What one part is called. Stored in the chapter's `segments` and asked for by the page, so
     it survives a renumbering the way the files themselves do."""
     return f"ch{key:03d}-s{si:02d}.opus"
+
+def cast_file(book_id, key):
+    """Who speaks each quoted run of one chapter. Under the chapter's storage number like its
+    text and its audio, and on disk rather than in books.json for the same reason the prose is:
+    a chapter has a couple of hundred quoted runs, and the index is rewritten after every
+    segment of every render."""
+    return book_dir(book_id, "cast", f"ch{key:03d}.json")
+
+def load_attribution(book_id, key):
+    try:
+        with open(cast_file(book_id, key)) as f:
+            return json.load(f)
+    except Exception:
+        return None            # never attributed, or unreadable: read it in one voice
+
+def write_attribution(book_id, key, data):
+    os.makedirs(book_dir(book_id, "cast"), exist_ok=True)
+    write_json(cast_file(book_id, key), data)
 
 def renumber(chapters):
     """Make every chapter's `i` its position again, in place, keeping its storage number.
@@ -423,7 +442,54 @@ def stale_segments(book, index, old, new):
             hits.add(0)
     return hits
 
-def stragglers(book_id, index, used):
+def chapter_cast(book, index, segments):
+    """(attribution lines, {speaker: voice}) for a chapter about to be narrated, or (None, None).
+
+    None the moment anything fails to line up: no attribution, nobody in it with a voice of their
+    own, or a count of quoted runs that no longer matches the segments about to be spoken. One
+    voice is the safe answer — it's what the book sounded like before this existed — where using
+    an attribution the text has moved under would put every voice after the change on the wrong
+    line, which sounds like the cast is broken rather than the file being stale.
+    """
+    voices = book.get("cast") or {}
+    if not voices:
+        return None, None
+    lines = (load_attribution(book["id"], key_at(book, index)) or {}).get("lines") or []
+    # Counted over the segments rather than the chapter text, because that is what rendering walks
+    # and it can differ: a paragraph longer than a whole segment is packed by sentence, which can
+    # fall inside a quotation.
+    if not lines or len(lines) != sum(len(cast.quote_spans(s)) for s in segments):
+        return None, None
+    if not any(voices.get(l.get("speaker")) for l in lines):
+        return None, None
+    return lines, voices
+
+def cast_applied(lines, voices):
+    """{speaker: voice} for the people who actually get one in this chapter — which is what a
+    render is answerable for, rather than the book's whole map.
+
+    Reduced this far so that attributing chapter five doesn't throw away the render of chapter six
+    that was running at the time: that adds names to the map without touching anybody already in
+    it, and nobody in chapter six sounds different for it."""
+    if not lines:
+        return {}
+    return {l["speaker"]: voices[l["speaker"]] for l in lines if (voices or {}).get(l["speaker"])}
+
+def cast_would_apply(book, index):
+    """The same, worked out from the book as it is now. Asked through chapter_segments so it can't
+    disagree with the render about which attribution lines up and which doesn't — and asked at all
+    only for a book that has a cast, since the answer for the rest is a text file read and split
+    for nothing."""
+    if not (book.get("cast") or {}):
+        return {}
+    lines, voices = chapter_cast(book, index, chapter_segments(book, index))
+    return cast_applied(lines, voices)
+
+def cast_changed(book, index, used):
+    """Whether anyone who speaks in this chapter would now be read by a different voice."""
+    return cast_would_apply(book, index) != (used or {})
+
+def stragglers(book_id, index, used, cast_used=None):
     """Parts of this chapter, just made, that the book no longer agrees with.
 
     True when it found some, having deleted them and left the chapter pending for another pass.
@@ -433,14 +499,21 @@ def stragglers(book_id, index, used):
     way out, which makes one invariant of it: a chapter is only ready when what is on disk is
     what the book now says it should be.
 
-    Two things can have moved: the pronunciation map, which affects any part, and the opening
-    announcement, which affects the first. Both are asked at once, because stale_segments already
-    compares the recorded announcement against the one the book would produce now — and it is
-    asked even when the map is untouched, which is how an opening note edited while the opening
-    was still rendering used to slip through and be marked ready saying the old thing."""
+    Three things can have moved: the pronunciation map, which affects any part, the opening
+    announcement, which affects the first, and who reads which character. The first two are asked
+    at once, because stale_segments already compares the recorded announcement against the one the
+    book would produce now — and it is asked even when the map is untouched, which is how an
+    opening note edited while the opening was still rendering used to slip through and be marked
+    ready saying the old thing. A voice moving under a character takes the whole chapter: their
+    lines are anywhere in it."""
     book = find_book(book_id)
     if not book:
         return False
+    if cast_changed(book, index, cast_used):
+        drop_chapter_audio(book_id, index)
+        update_book(book_id, lambda b: b["chapters"][index].update(
+            state="pending", error=None, seconds=None))
+        return True
     plan = respell_repair_plan(book, used or {}, book.get("respell") or {})
     if index not in plan:
         return False
@@ -641,6 +714,11 @@ def render_chapter(book_id, index):
         # segment count — and so every filename — depend on the pronunciation map, which would
         # mean changing one word invalidated the whole book by construction.
         segments = split_segments(text)
+        # Who reads which line, for a chapter that has been attributed. Read here with the rest of
+        # the book and passed down, so one render speaks one cast the whole way through: a
+        # character given a different voice halfway would otherwise change voice halfway.
+        lines, voices = chapter_cast(book, index, segments)
+        cast_used = cast_applied(lines, voices)
         update_book(book_id, lambda b: b["chapters"][index].update(
             state="rendering", error=None, done=0, segments=[], intro=spoken,
             total=len(segments)))
@@ -651,6 +729,7 @@ def render_chapter(book_id, index):
             if os.path.exists(stale):
                 os.remove(stale)
         made = []
+        at = 0                  # how far into the attribution the segments have got
         try:
             for si, seg_text in enumerate(segments):
                 # Between segments, not only at the end: deleting a book or changing the
@@ -660,12 +739,17 @@ def render_chapter(book_id, index):
                     break
                 name = audio_name(key, si)
                 out  = os.path.join(audio_dir, name)
+                # Walked for every segment, including the ones already on disk: the run numbers
+                # are the chapter's, so a resumed render has to count past what it is skipping.
+                runs = None
+                if lines:
+                    runs, at = cast.voiced_runs(seg_text, lines, at, voice, voices)
                 if not os.path.exists(out):
                     # the closing pause belongs to the chapter, so only the last part gets it
                     _render_segment(seg_text, voice, out,
                                     intro=intro if si == 0 else None,
                                     tail_pause=CHAPTER_END_PAUSE if si == len(segments) - 1 else 0,
-                                    respellings=respellings, lang=lang)
+                                    respellings=respellings, lang=lang, runs=runs)
                 made.append({"file": name, "seconds": audio_seconds(out)})
                 # publish each finished segment: you can start listening to segment 1 while
                 # segment 2 is still being made
@@ -678,7 +762,7 @@ def render_chapter(book_id, index):
                 # announcement saying the old thing. Checked here rather than in every endpoint
                 # that can move either: a chapter is only ready when what's on disk is what the
                 # book now says it should be. See stragglers.
-                if stragglers(book_id, index, respellings):
+                if stragglers(book_id, index, respellings, cast_used):
                     return
                 update_book(book_id, lambda b: b["chapters"][index].update(
                     state="ready", error=None,
@@ -1166,13 +1250,16 @@ def export_worker(jid, book_id, part=None):
 
 
 def _render_segment(text, voice, out_path, intro=None, tail_pause=0, respellings=None,
-                    lang=""):
+                    lang="", runs=None):
     """One segment = many TTS calls concatenated. run_lock is taken per chunk, not for the
     whole segment, so hours of narration don't starve everything else.
 
     `intro` is [(phrase, pause_after)] spoken first — the part name and chapter number.
     `tail_pause` is silence appended at the very end, for the last segment of a chapter.
-    `respellings` is the book's own pronunciation map, on top of the global one."""
+    `respellings` is the book's own pronunciation map, on top of the global one.
+    `runs` is [(piece, voice)] for a chapter with a cast, covering the same text in order; the
+    pieces are chunked one at a time so a voice change lands on the quotation mark rather than
+    wherever the chunker would have cut."""
     tmpdir = tempfile.mkdtemp(prefix="book-")
     parts = []
     try:
@@ -1181,10 +1268,12 @@ def _render_segment(text, voice, out_path, intro=None, tail_pause=0, respellings
             with run_lock:
                 tts_say(voice, respell(phrase, respellings, lang), 1.0, raw)
             parts.append(pad_with_silence(raw, pause, os.path.join(tmpdir, f"intro-{ii}-pad.wav")))
-        for ci, chunk in enumerate(split_chunks(text)):
+        pieces = [(c, v) for piece, v in (runs or [(text, voice)])
+                  for c in split_chunks(piece)]
+        for ci, (chunk, chunk_voice) in enumerate(pieces):
             wav = os.path.join(tmpdir, f"{ci:04d}.wav")
             with run_lock:
-                tts_say(voice, respell(chunk, respellings, lang), 1.0, wav)
+                tts_say(chunk_voice, respell(chunk, respellings, lang), 1.0, wav)
             parts.append(wav)
         if not parts:
             raise RuntimeError("nothing to say in this segment")
@@ -1801,6 +1890,154 @@ def api_book_retry():
             threading.Thread(target=render_chapter, args=(book["id"], i), daemon=True).start()
     return jsonify(ok=True, started=failed, ahead=ahead, book=find_book(book["id"]))
 
+# ---- more than one voice ----
+
+def voices_here(speakers, casting):
+    """How many of a chapter's speakers have a voice of their own — what the page shows on the row.
+
+    Recomputed wherever the map moves rather than stored once: handing one character back to the
+    narrator changes the answer for every chapter they speak in, and a row still claiming seven
+    voices when one of them has gone is the kind of stale number nobody thinks to distrust."""
+    return sum(1 for s in speakers or [] if (casting or {}).get(s["name"]))
+
+def cast_worker(jid, book_id, index, model):
+    """Work out who speaks each line of one chapter, and give each of them a voice.
+
+    A job rather than a reply to the request: a chapter is asked about a window at a time and
+    comes back in a minute or two, which is longer than anything should hold a connection.
+    """
+    job = jobs[jid]
+    job["status"] = "reading"
+    try:
+        book = find_book(book_id)
+        if not book:
+            raise RuntimeError("unknown book")
+        chapters = book.get("chapters") or []
+        if not (0 <= index < len(chapters)):
+            raise RuntimeError("no such chapter")
+        key = key_at(book, index)
+        with open(text_file(book_id, key)) as f:
+            raw = f.read()
+        # The text the render will speak, not the file: the heading comes off the top of it, and
+        # a run number has to mean the same thing in both or every voice after it is wrong.
+        text = chapter_text(book, index, raw)
+        job["status"] = f"asking {model}"
+        data = cast.attribute(text, model=model)
+        write_attribution(book_id, key, data)
+        roster = kokoro_voices()
+        narrator = book.get("voice") or "af_heart"
+        # The map is the book's, not the chapter's: a character who speaks in four chapters has
+        # to sound the same in all four, so attributing another chapter adds to it and never
+        # re-casts anyone already in it.
+        def apply(b):
+            b["cast"] = cast.assign_voices(data["speakers"], narrator, roster, b.get("cast"))
+            # How many of this chapter's speakers ended up with a voice of their own. On the
+            # chapter because that's what the page has: it's the difference between offering to
+            # work this chapter out and saying it already knows.
+            #
+            # Whatever audio this chapter has was made in one voice, so it no longer says what the
+            # book now says it should. Same rule as a pronunciation change.
+            b["chapters"][index].update(state="pending", error=None, segments=[],
+                                        cast=voices_here(data["speakers"], b["cast"]))
+        update_book(book_id, apply)
+        drop_chapter_audio(book_id, index)
+        voices = (find_book(book_id) or {}).get("cast") or {}
+        job.update(status="done",
+                   text=f"{len(data['speakers'])} speakers in {data['quotes']} quoted lines",
+                   cast=[s | {"voice": voices.get(s["name"]) or narrator}
+                         for s in data["speakers"]],
+                   quotes=data["quotes"], tagged=data["tagged"])
+    except Exception as e:
+        job.update(status="error", error=str(e)[:300])
+
+@app.post("/api/books/cast")
+def api_book_cast():
+    """Attribute one chapter's speech, so it can be narrated by more than one voice."""
+    d = request.get_json(force=True, silent=True) or {}
+    book = find_book(d.get("id") or "")
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    try:
+        index = int(d.get("chapter"))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, msg="which chapter?"), 400
+    if not (0 <= index < len(book.get("chapters") or [])):
+        return jsonify(ok=False, msg="no such chapter"), 404
+    jid = new_job("cast")
+    model = (d.get("model") or cast.CAST_MODEL).strip()
+    threading.Thread(target=cast_worker, args=(jid, book["id"], index, model),
+                     daemon=True).start()
+    return jsonify(ok=True, job_id=jid)
+
+@app.get("/api/books/<book_id>/cast/<int:index>")
+def api_book_cast_get(book_id, index):
+    """What was worked out for one chapter: the cast with their voices, and every line with who
+    says it — which is the only way to see an attribution is wrong without listening to an hour
+    of it."""
+    book = find_book(book_id)
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    data = load_attribution(book_id, key_at(book, index))
+    if not data:
+        return jsonify(ok=False, msg="not attributed yet"), 404
+    narrator = book.get("voice") or "af_heart"
+    voices = book.get("cast") or {}
+    return jsonify(ok=True, model=data.get("model"), made=data.get("made"),
+                   quotes=data.get("quotes"), tagged=data.get("tagged"),
+                   narrator=narrator,
+                   cast=[s | {"voice": voices.get(s["name"]) or narrator}
+                         for s in data.get("speakers") or []],
+                   lines=data.get("lines") or [])
+
+@app.post("/api/books/cast/voice")
+def api_book_cast_voice():
+    """Give one character a different voice, or hand their lines back to the narrator.
+
+    Every chapter already narrated with them in it goes back to pending: their voice is in that
+    audio, and the point of changing it is not to hear the old one again.
+    """
+    d = request.get_json(force=True, silent=True) or {}
+    book = find_book(d.get("id") or "")
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    who = (d.get("speaker") or "").strip()
+    if not who:
+        return jsonify(ok=False, msg="which speaker?"), 400
+    voice = (d.get("voice") or "").strip()
+    if voice and not tts_engine_of(voice):
+        return jsonify(ok=False, msg=f"unknown voice: {voice}"), 400
+    if voice and voice in {v for k, v in (book.get("cast") or {}).items() if k != who}:
+        return jsonify(ok=False, msg="another character already has that voice"), 409
+    # Read once, here: which chapters they speak in decides both what gets re-narrated and what
+    # each row now says, and the files are on disk rather than in the index.
+    attributed = {c["i"]: load_attribution(book["id"], chapter_key(c)) or {}
+                  for c in book.get("chapters") or []}
+    speaks = [i for i, data in attributed.items()
+              if any(l.get("speaker") == who for l in data.get("lines") or [])]
+    chapters = book.get("chapters") or []
+    # Only the ones with audio to lose. A chapter not narrated yet simply gets the new voice when
+    # its turn comes.
+    reset = [i for i in speaks
+             if chapters[i].get("segments") or chapters[i].get("state") == "ready"]
+
+    def apply(b):
+        casting = dict(b.get("cast") or {})
+        if voice:
+            casting[who] = voice
+        else:
+            casting.pop(who, None)      # no voice of their own: the narrator reads their lines
+        b["cast"] = casting
+        for i, data in attributed.items():
+            if data.get("speakers"):
+                b["chapters"][i]["cast"] = voices_here(data["speakers"], casting)
+        for i in reset:
+            b["chapters"][i].update(state="pending", error=None, segments=[])
+
+    update_book(book["id"], apply)
+    for i in reset:
+        drop_chapter_audio(book["id"], i)
+    return jsonify(ok=True, book=find_book(book["id"]), reset=reset)
+
 @app.post("/api/books/skip")
 def api_book_skip():
     """Leave a chapter out of the narration, or put it back.
@@ -1907,6 +2144,12 @@ def api_book_rescan():
               # the chapters have to line up for the audio to be kept, and they
               # line up for what was left out of the narration too
               "skip": spine[i].get("skip", False) if same else False,
+              # Who speaks in it goes with the audio, for the same reason: the attribution is
+              # keyed by run number, which only means anything while the text is the one it was
+              # made from. A chapter that moved keeps the file and loses the claim — rendering
+              # counts the runs before it trusts one anyway, and 🎭 asks again in a couple of
+              # minutes.
+              "cast": spine[i].get("cast") if same else None,
               "error": spine[i].get("error") if same else None}
              for i, c in enumerate(chapters)]
     for c, entry in zip(chapters, fresh):

@@ -181,6 +181,10 @@ full book is hours of work.
 - **Say these words differently** is the book's own pronunciation list, with ▶ to hear a respelling
   in this book's voice and a search for how the book actually spells a name. One save applies the
   lot, and re-narrates only the parts that said it the old way.
+- **Who speaks here** works out who says each quoted line of a chapter — `qwen3:14b` through Ollama,
+  about five minutes for a chapter with 260 of them — and gives each character a voice of their own,
+  the narrator keeping everything between the quotes. A character's voice can be changed or handed
+  back to the narrator. Narrating it afterwards takes no longer than one voice does.
 - **Export as audiobook (.m4b)** builds one file from whatever is narrated: chapter markers, cover
   art, title and author, AAC 48 kbps mono. Every export the book still has is listed with what went
   into it. On the phone it's handed to the iOS share sheet rather than downloaded, which passes it

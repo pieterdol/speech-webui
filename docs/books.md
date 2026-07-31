@@ -237,6 +237,59 @@ first: one common word would correctly re-narrate everything. A run in flight is
 save lands mid-chapter, that chapter is left pending rather than marked ready, and the next pass fills
 the gap.
 
+## More than one voice
+
+**Who speaks here** works out, chapter by chapter, who says each quoted line, and gives each character
+a voice of their own. The narration between the quotes stays with the book's narrator. It's opt-in per
+chapter and costs about **five minutes** of GPU for a chapter with 260 quoted lines.
+
+**Narrating it afterwards costs nothing extra**, which is worth saying because it looks like it should:
+a voice change is a separate call to the engine, and a dialogue-heavy chapter is 500 calls where one
+voice is 80. Measured on the same chapter, seven voices came out at 2.6× realtime against 2.4× read in
+one, and 42.2 minutes of audio against 42.6. Kokoro's fixed cost is a second or two per call and a run
+is long enough that generation dominates it.
+
+The work is split between code and the model on purpose. **Code finds the quoted runs**; the model is
+only ever asked *who says number 14* about runs already marked in the text. Asked instead to quote a
+character's first line back, a local model gets it wrong about half the time — it answers with
+narration. Two more things code settles rather than asking:
+
+- **A named speaker wins.** Where the chapter says "said Bingley" or "Daniela says" right after a run,
+  that's the answer, whatever the model thought. Only names the model already found count, or "said
+  the man in the mask" would cast a character called *The*.
+- **Gender from the pronoun.** "he says" makes a speaker male even where the model answered *unknown* —
+  it reads the question as "has this person been identified", and ninety lines of a man in a mask
+  otherwise go to the narrator for want of a voice.
+
+**A speech split by its tag is one voice.** `"…," said Marla, "…"` is two runs and one person; two runs
+with a full stop between them can be two people, and each is answered on its own.
+
+**Model.** `qwen3:14b`, and the size earns its place: on a chapter of Austen 8b split a speech between
+two speakers, read an illustration caption as dialogue and wrote one speaker's name two ways, where 14b
+got all twenty-one runs right. It costs no more wall-clock, spending fewer tokens to get there. A long
+chapter is asked about a **window at a time** — 24,000 characters, cut on line boundaries so no run is
+split — and each window is told who spoke the last few runs of the one before it.
+
+**Casting.** A character gets a voice of the narrator's own accent and their own gender, never the
+narrator's and never one already taken, with the most-spoken cast first so it's the passers-by who go
+without when the voices run out. The map lives on the book, so somebody who speaks in four chapters
+sounds the same in all four, and attributing another chapter adds to it without re-casting anyone
+you've already heard. A speaker whose gender the chapter never shows keeps the narrator's voice:
+guessing is wrong half the time, and a man read in a woman's voice is worse than the narrator reading
+his line. **Dutch stays single-voiced** — Piper has one or two voices installed at all, and two
+characters sharing a voice is worse than one narrator reading both.
+
+**Every line is listed** with who says it and whether code or the model decided, because reading them
+is the only way to see an attribution is wrong without listening to an hour of narration. Changing a
+character's voice re-narrates the chapters they speak in and no others.
+
+The attribution is one list per chapter in `books/<id>/cast/chNNN.json`, keyed by run number; the
+voices are `cast` on the book. Rendering **checks the count of runs before it trusts it**: a chapter
+re-scanned since would otherwise shift every voice after the change by one, which sounds like a broken
+cast rather than a stale file, so a mismatch reads the chapter in one voice. A voice moved under a
+chapter mid-render leaves it pending rather than ready, the same way a pronunciation change does — and
+a character's lines are anywhere in a chapter, so that takes all of it rather than one part.
+
 ## Export
 
 **Export as audiobook (.m4b)** builds one file from whatever is narrated: chapter markers, cover art,

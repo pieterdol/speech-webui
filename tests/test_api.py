@@ -6,6 +6,7 @@ import os
 import pytest
 
 import books
+import tts
 
 
 @pytest.fixture(autouse=True)
@@ -13,11 +14,15 @@ def no_background_work(monkeypatch):
     """The render endpoints answer immediately and hand the job to a daemon thread. A test
     that let one start would outlive the tmpdir it was writing into, and go on writing after
     pytest had removed it. These tests are about what the endpoint records and returns."""
-    started = {"chapters": [], "runs": []}
+    started = {"chapters": [], "runs": [], "cast": []}
     monkeypatch.setattr(books, "render_chapter",
                         lambda book_id, i: started["chapters"].append((book_id, i)))
     monkeypatch.setattr(books, "render_all_worker",
                         lambda book_id: started["runs"].append(book_id))
+    # Working out who speaks would reach Ollama for minutes. What the endpoint is answerable for is
+    # starting it with the right arguments.
+    monkeypatch.setattr(books, "cast_worker",
+                        lambda jid, book_id, i, model: started["cast"].append((book_id, i, model)))
     return started
 
 
@@ -1424,3 +1429,132 @@ class TestNarratingAChapterAgain:
                           json={"id": "b1", "chapter": 0, "redo": True}).get_json()
         assert got["started"] == []
         assert no_background_work["chapters"] == []
+
+
+class TestAttributingAChapter:
+    """Who speaks which line, over HTTP. The model isn't called here — that's a job on a thread
+    and a couple of minutes of GPU; what these are about is what the endpoints record and hand
+    back, and what changing a voice throws away."""
+
+    SCENE = "“You are late,” said Marla.\n“The bridge was up.”\n"
+
+    @pytest.fixture(autouse=True)
+    def a_voice_roster(self, monkeypatch):
+        """Setting a voice checks it exists, which asks the engine, and no test starts one."""
+        monkeypatch.setattr(tts, "kokoro_voices",
+                            lambda: ["af_heart", "af_bella", "af_nova", "am_adam"])
+
+    def attributed(self, book_id="b1", index=0, speakers=("Marla", "Owen")):
+        lines = [{"n": 1, "speaker": speakers[0], "gender": "female", "how": "tag"},
+                 {"n": 2, "speaker": speakers[1], "gender": "male", "how": "model"}]
+        books.write_attribution(book_id, index, {
+            "model": "qwen3:14b", "made": 1, "quotes": 2, "lines": lines, "tagged": 1,
+            "speakers": [{"name": speakers[0], "gender": "female", "lines": 1},
+                         {"name": speakers[1], "gender": "male", "lines": 1}]})
+
+    def narrated(self, book_id="b1", index=0):
+        """A chapter with audio on disk, as a finished render leaves it."""
+        name = f"ch{index:03d}-s00.opus"
+        p = books.book_dir(book_id, "audio", name)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(b"\0" * 128)
+        books.update_book(book_id, lambda b: b["chapters"][index].update(
+            state="ready", segments=[{"file": name, "seconds": 9.0}], seconds=9.0))
+
+    def test_it_answers_with_a_job_to_poll(self, client, make_book, monkeypatch):
+        started = []
+        monkeypatch.setattr(books.threading, "Thread",
+                            lambda target, args, daemon: type("T", (), {
+                                "start": lambda self: started.append(args)})())
+        make_book(names=["One"], texts=[self.SCENE])
+        got = client.post("/api/books/cast", json={"id": "b1", "chapter": 0}).get_json()
+        assert got["ok"] is True and got["job_id"]
+        assert started[0][1:] == ("b1", 0, "qwen3:14b")
+
+    def test_unknown_book(self, client):
+        assert client.post("/api/books/cast",
+                           json={"id": "nope", "chapter": 0}).status_code == 404
+
+    def test_no_such_chapter(self, client, make_book):
+        make_book(names=["One"], texts=[self.SCENE])
+        assert client.post("/api/books/cast",
+                           json={"id": "b1", "chapter": 9}).status_code == 404
+
+    def test_a_chapter_never_attributed_has_nothing_to_show(self, client, make_book):
+        make_book(names=["One"], texts=[self.SCENE])
+        assert client.get("/api/books/b1/cast/0").status_code == 404
+
+    def test_it_hands_back_the_cast_with_their_voices_and_every_line(self, client, make_book):
+        """Every line, because reading them is the only way to see an attribution is wrong
+        without listening to an hour of narration."""
+        make_book(names=["One"], texts=[self.SCENE], cast={"Marla": "af_bella"})
+        self.attributed()
+        got = client.get("/api/books/b1/cast/0").get_json()
+        assert got["model"] == "qwen3:14b" and got["quotes"] == 2
+        assert got["cast"][0] == {"name": "Marla", "gender": "female", "lines": 1,
+                                 "voice": "af_bella"}
+        assert got["cast"][1]["voice"] == "af_heart"      # no voice of their own: the narrator
+        assert [l["speaker"] for l in got["lines"]] == ["Marla", "Owen"]
+
+    def test_a_voice_can_be_changed(self, client, make_book):
+        make_book(names=["One"], texts=[self.SCENE], cast={"Marla": "af_bella"})
+        self.attributed()
+        got = client.post("/api/books/cast/voice",
+                          json={"id": "b1", "speaker": "Marla", "voice": "am_adam"}).get_json()
+        assert got["ok"] is True
+        assert books.find_book("b1")["cast"] == {"Marla": "am_adam"}
+
+    def test_handing_a_character_back_to_the_narrator(self, client, make_book):
+        make_book(names=["One"], texts=[self.SCENE], cast={"Marla": "af_bella"})
+        self.attributed()
+        client.post("/api/books/cast/voice", json={"id": "b1", "speaker": "Marla", "voice": ""})
+        assert books.find_book("b1")["cast"] == {}
+
+    def test_two_characters_cannot_share_a_voice(self, client, make_book):
+        make_book(names=["One"], texts=[self.SCENE],
+                  cast={"Marla": "af_bella", "Owen": "am_adam"})
+        self.attributed()
+        r = client.post("/api/books/cast/voice",
+                        json={"id": "b1", "speaker": "Owen", "voice": "af_bella"})
+        assert r.status_code == 409
+        assert books.find_book("b1")["cast"]["Owen"] == "am_adam"
+
+    def test_an_unknown_voice_is_refused(self, client, make_book):
+        make_book(names=["One"], texts=[self.SCENE], cast={"Marla": "af_bella"})
+        self.attributed()
+        r = client.post("/api/books/cast/voice",
+                        json={"id": "b1", "speaker": "Marla", "voice": "af_nobody"})
+        assert r.status_code == 400
+
+    def test_changing_a_voice_re_narrates_the_chapters_they_speak_in(self, client, make_book):
+        """Their old voice is in that audio, and the point of changing it is not to hear the old
+        one again."""
+        make_book(names=["One", "Two"], texts=[self.SCENE, "Nobody spoke.\n"],
+                  cast={"Marla": "af_bella"})
+        self.attributed()
+        self.narrated(index=0)
+        self.narrated(index=1)
+        got = client.post("/api/books/cast/voice",
+                          json={"id": "b1", "speaker": "Marla", "voice": "af_nova"}).get_json()
+        assert got["reset"] == [0]
+        assert books.find_book("b1")["chapters"][0]["state"] == "pending"
+        assert books.find_book("b1")["chapters"][1]["state"] == "ready"     # she isn't in it
+        assert not os.path.exists(books.book_dir("b1", "audio", "ch000-s00.opus"))
+        assert os.path.exists(books.book_dir("b1", "audio", "ch001-s00.opus"))
+
+    def test_a_chapter_with_no_audio_yet_is_not_reset(self, client, make_book):
+        make_book(names=["One"], texts=[self.SCENE], cast={"Marla": "af_bella"})
+        self.attributed()
+        got = client.post("/api/books/cast/voice",
+                          json={"id": "b1", "speaker": "Marla", "voice": "af_nova"}).get_json()
+        assert got["reset"] == []
+
+    def test_the_count_on_the_row_follows_the_map(self, client, make_book):
+        """A row still claiming two voices when one of them has been handed back is the kind of
+        stale number nobody thinks to distrust."""
+        make_book(names=["One"], texts=[self.SCENE],
+                  cast={"Marla": "af_bella", "Owen": "am_adam"})
+        self.attributed()
+        books.update_book("b1", lambda b: b["chapters"][0].update(cast=2))
+        client.post("/api/books/cast/voice", json={"id": "b1", "speaker": "Owen", "voice": ""})
+        assert books.find_book("b1")["chapters"][0]["cast"] == 1

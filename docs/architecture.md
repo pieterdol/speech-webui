@@ -116,8 +116,10 @@ whole URL table out and fails on any difference.
 rather than taking them from core. That's what lets a test point the whole book layer at a tmpdir by
 patching two names on one module.
 
-The import order is `core` → `textprep`/`media` → `clips` → `tts` → `stt`/`chat`/`books`, and nothing
-imports upwards. Functions are grouped by feature rather than wrapped in classes: this is functions
+The import order is `core` → `textprep`/`media` → `clips` → `tts` → `stt`/`chat` → `cast` → `books`,
+and nothing imports upwards. `cast.py` — who speaks which line of a chapter — sits below `books.py`
+and above `chat.py`, whose Ollama helpers it borrows; it owns no storage and no routes, so it is pure
+text work plus one HTTP call and can be exercised without a book. Functions are grouped by feature rather than wrapped in classes: this is functions
 over a JSON document and a few locks, and there's no object model in it straining to get out.
 
 `speech.py` is the entry point and is deliberately not named `app.py`, so `restart.sh` can't collide
@@ -140,6 +142,7 @@ are the same number, which is why nothing else in the app had to change. Every p
 | `OPENLIBRARY` | environment | `0` stops a book looking itself up when it's added, and then nothing leaves this machine on its own. **↻** in ⚙ still asks, since tapping it is the request |
 | `keep_alive` | `speech.py`, per request | How long Ollama keeps a model in VRAM; overrides `OLLAMA_KEEP_ALIVE` |
 | `num_ctx` | `speech.py` | Chat context, 8192 tokens |
+| `CAST_MODEL`, `CAST_WINDOW_CHARS` | `cast.py` | Which model works out who speaks each line, and how much chapter it is asked about at once — see [books.md](books.md) |
 | `STRICT_TESTS` | environment | Fail instead of skipping when a tool is missing — see [testing.md](testing.md) |
 | port 8600 | `speech.py` | The app itself |
 | port 8443 | `serve.sh` | The tailnet HTTPS front, because 443 on this tailnet is already taken |

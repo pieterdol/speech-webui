@@ -43,7 +43,7 @@ class TestRenderChapter:
         split happens before the state is written."""
         seen = []
 
-        def slow_segment(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang=""):
+        def slow_segment(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang="", runs=None):
             seen.append(dict(books.find_book("b1")["chapters"][0]))
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0")
@@ -58,7 +58,7 @@ class TestRenderChapter:
     def test_each_part_is_published_as_it_finishes(self, make_book, monkeypatch):
         counts = []
 
-        def watch(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang=""):
+        def watch(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang="", runs=None):
             counts.append(len(books.find_book("b1")["chapters"][0]["segments"]))
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0")
@@ -175,7 +175,7 @@ class TestAnnouncementInvalidation:
 
 class TestCancellation:
     def slow_tts(self, monkeypatch, delay=0.15):
-        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang=""):
+        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang="", runs=None):
             time.sleep(delay)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0" * 64)
@@ -197,7 +197,7 @@ class TestCancellation:
 
     def test_it_stops_within_a_segment_not_at_the_end(self, make_book, monkeypatch):
         made = []
-        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang=""):
+        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang="", runs=None):
             made.append(out_path)
             time.sleep(0.15)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -519,7 +519,7 @@ class TestQueue:
         started = threading.Event()
         release = threading.Event()
 
-        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang=""):
+        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang="", runs=None):
             started.set()
             release.wait(timeout=10)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -551,7 +551,7 @@ class TestQueue:
         started = threading.Event()
         release = threading.Event()
 
-        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang=""):
+        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang="", runs=None):
             started.set()
             release.wait(timeout=10)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -601,7 +601,7 @@ class TestRenderDepth:
         started = threading.Event()
         release = threading.Event()
 
-        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang=""):
+        def _seg(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang="", runs=None):
             started.set()
             release.wait(timeout=10)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -841,7 +841,7 @@ class TestAMapChangeDuringARender:
         seen = []
 
         def save_the_map_midway(text, voice, out_path, intro=None, tail_pause=0,
-                                respellings=None, lang=""):
+                                respellings=None, lang="", runs=None):
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0" * 64)
             seen.append(os.path.basename(out_path))
@@ -863,7 +863,7 @@ class TestAMapChangeDuringARender:
         made = []
 
         def save_the_map_midway(text, voice, out_path, intro=None, tail_pause=0,
-                                respellings=None, lang=""):
+                                respellings=None, lang="", runs=None):
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0" * 64)
             made.append(os.path.basename(out_path))
@@ -887,7 +887,7 @@ class TestAMapChangeDuringARender:
         made = []
 
         def save_the_map_midway(text, voice, out_path, intro=None, tail_pause=0,
-                                respellings=None, lang=""):
+                                respellings=None, lang="", runs=None):
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0" * 64)
             made.append((os.path.basename(out_path), respellings))
@@ -920,7 +920,7 @@ class TestAnOpeningNoteSavedMidRender:
         made = []
 
         def edit_the_note_midway(text, voice, out_path, intro=None, tail_pause=0,
-                                 respellings=None, lang=""):
+                                 respellings=None, lang="", runs=None):
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0" * 64)
             made.append(os.path.basename(out_path))
@@ -940,7 +940,7 @@ class TestAnOpeningNoteSavedMidRender:
         made = []
 
         def edit_the_note_midway(text, voice, out_path, intro=None, tail_pause=0,
-                                 respellings=None, lang=""):
+                                 respellings=None, lang="", runs=None):
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             open(out_path, "wb").write(b"\0" * 64)
             made.append((os.path.basename(out_path), [p for p, _ in (intro or [])]))
@@ -962,5 +962,148 @@ class TestAnOpeningNoteSavedMidRender:
         """The scan runs on every chapter now, not only when the map moved, so the ordinary path
         has to come out ready."""
         make_book(names=["Chapter One"], texts=[LONG], announce=True, opening="A notice.")
+        books.render_chapter("b1", 0)
+        assert chapter("b1")["state"] == "ready"
+
+
+class TestNarratingWithACast:
+    """A chapter that has been attributed reads its quoted lines in the speakers' voices. What
+    reaches the engine is the whole test: the runs, in order, each with the voice that says it."""
+
+    SCENE = ("The hallway smelled of rain.\n"
+             "“You are late,” said Marla.\n"
+             "“The bridge was up.”\n")
+
+    def attributed(self, book_id="b1", speakers=("Marla", "Owen")):
+        """The pass's output, written where the render looks for it."""
+        lines = [{"n": 1, "speaker": speakers[0], "gender": "female", "how": "tag"},
+                 {"n": 2, "speaker": speakers[1], "gender": "male", "how": "model"}]
+        books.write_attribution(book_id, 0, {"model": "test", "made": 0, "quotes": len(lines),
+                                             "lines": lines, "speakers": [], "tagged": 1})
+
+    def test_each_speaker_is_read_in_their_own_voice(self, make_book, fake_tts):
+        make_book(names=["One"], texts=[self.SCENE],
+                  cast={"Marla": "af_bella", "Owen": "am_adam"})
+        self.attributed()
+        books.render_chapter("b1", 0)
+        # rain / “You are late,” / said Marla. / “The bridge was up.”
+        assert [v for _t, v in fake_tts[0]["runs"]] == ["af_heart", "af_bella", "af_heart",
+                                                        "am_adam"]
+
+    def test_the_narration_between_them_stays_with_the_narrator(self, make_book, fake_tts):
+        make_book(names=["One"], texts=[self.SCENE], cast={"Marla": "af_bella"})
+        self.attributed()
+        books.render_chapter("b1", 0)
+        runs = fake_tts[0]["runs"]
+        assert runs[0][0].strip() == "The hallway smelled of rain."
+        assert runs[0][1] == "af_heart"
+        # "said Marla." is narration too, and it is not read in Marla's voice
+        assert ("said Marla.", "af_heart") in [(t.strip(), v) for t, v in runs]
+
+    def test_a_book_with_no_cast_is_narrated_as_before(self, make_book, fake_tts):
+        make_book(names=["One"], texts=[self.SCENE])
+        self.attributed()
+        books.render_chapter("b1", 0)
+        assert fake_tts[0]["runs"] is None
+
+    def test_a_chapter_nobody_in_it_has_a_voice_for_is_narrated_as_before(self, make_book,
+                                                                         fake_tts):
+        """The book has a cast; this chapter's speakers aren't in it. Splitting the text into runs
+        that are all one voice would only cut the chunker up for nothing."""
+        make_book(names=["One"], texts=[self.SCENE], cast={"Someone else": "af_bella"})
+        self.attributed()
+        books.render_chapter("b1", 0)
+        assert fake_tts[0]["runs"] is None
+
+    def test_an_attribution_the_text_has_moved_under_is_not_used(self, make_book, fake_tts):
+        """A stale attribution would put every voice after the change on the wrong line. One
+        voice is the safe answer — it's what the book sounded like before."""
+        make_book(names=["One"], texts=[self.SCENE + "“And a third line,” said Owen.\n"],
+                  cast={"Marla": "af_bella", "Owen": "am_adam"})
+        self.attributed()                      # made when the chapter had two quoted runs
+        books.render_chapter("b1", 0)
+        assert fake_tts[0]["runs"] is None
+        assert chapter("b1")["state"] == "ready"
+
+    # One quoted run, a paragraph too long to share a segment with anything, and a second run:
+    # three segments, with a run in the first and the last.
+    APART = "“First line here.”\n" + "word " * 2000 + "\n“Second line here.”\n"
+
+    def test_the_run_numbers_carry_across_segments(self, make_book, fake_tts):
+        """A chapter is rendered a segment at a time; the attribution is one list for all of
+        it."""
+        make_book(names=["One"], texts=[self.APART],
+                  cast={"Marla": "af_bella", "Owen": "am_adam"})
+        self.attributed()
+        books.render_chapter("b1", 0)
+        spoken = [(t.strip(), v) for call in fake_tts for t, v in call["runs"]]
+        assert ("“First line here.”", "af_bella") in spoken
+        assert ("“Second line here.”", "am_adam") in spoken
+
+    def test_a_resumed_render_counts_past_what_it_skips(self, make_book, fake_tts):
+        """The parts already on disk are not re-made, and the run numbers are the chapter's — so
+        the voices in the last part depend on having counted the ones before it anyway."""
+        make_book(names=["One"], texts=[self.APART],
+                  cast={"Marla": "af_bella", "Owen": "am_adam"})
+        self.attributed()
+        books.render_chapter("b1", 0)
+        made = len(fake_tts)
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="pending"))
+        os.remove(books.book_dir("b1", "audio", files("b1")[-1]))     # lose only the last part
+        books.render_chapter("b1", 0)
+        again = fake_tts[made:]
+        assert len(again) == 1
+        assert [v for _t, v in again[0]["runs"]] == ["am_adam"]
+
+
+class TestACastChangeDuringARender:
+    """The third thing that can move under a render. A character's voice is anywhere in the
+    chapter, so unlike a respelling it takes the whole chapter with it."""
+
+    def test_it_is_left_pending_rather_than_ready(self, make_book, monkeypatch):
+        # not "“One.”": a chapter named One has that line stripped off the top as its heading
+        make_book(names=["One"], texts=["“Ready when you are.”\n" + LONG + "\n“Not yet.”\n"],
+                  cast={"Marla": "af_bella"})
+        books.write_attribution("b1", 0, {"lines": [
+            {"n": 1, "speaker": "Marla", "gender": "female", "how": "tag"},
+            {"n": 2, "speaker": "Marla", "gender": "female", "how": "tag"}]})
+        made = []
+
+        def recast_midway(text, voice, out_path, intro=None, tail_pause=0, respellings=None,
+                          lang="", runs=None):
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            open(out_path, "wb").write(b"\0" * 64)
+            made.append(os.path.basename(out_path))
+            if len(made) == 1:
+                books.update_book("b1", lambda b: b.update(cast={"Marla": "af_nova"}))
+
+        monkeypatch.setattr(books, "_render_segment", recast_midway)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
+        books.render_chapter("b1", 0)
+
+        assert chapter("b1")["state"] == "pending"
+        assert files("b1") == []                # her voice is in every part of it, so all of it
+        books.render_chapter("b1", 0)
+        assert chapter("b1")["state"] == "ready"
+
+    def test_casting_another_chapter_does_not_throw_this_one_away(self, make_book, monkeypatch):
+        """Attributing chapter two adds names to the map without touching anyone already in it,
+        and must not discard the render of chapter one that was running at the time."""
+        make_book(names=["One"], texts=[LONG], cast={"Marla": "af_bella"})
+        books.write_attribution("b1", 0, {"lines": [
+            {"n": 1, "speaker": "Marla", "gender": "female", "how": "tag"}]})
+        made = []
+
+        def add_a_name_midway(text, voice, out_path, intro=None, tail_pause=0, respellings=None,
+                              lang="", runs=None):
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            open(out_path, "wb").write(b"\0" * 64)
+            made.append(os.path.basename(out_path))
+            if len(made) == 1:
+                books.update_book("b1", lambda b: b.update(
+                    cast={"Marla": "af_bella", "Owen": "am_adam"}))
+
+        monkeypatch.setattr(books, "_render_segment", add_a_name_midway)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
         books.render_chapter("b1", 0)
         assert chapter("b1")["state"] == "ready"
