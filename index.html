@@ -218,19 +218,24 @@
      on a phone the name was squeezed to an ellipsis — and a growing list is read by its names.
      Scoped to the list it belongs to: a bare .cast also matched the 🎭 button on a chapter row,
      which turned it into a grid a whole row wide. */
-  #castList .castrow { display:grid; grid-template-columns:minmax(0,1fr) 46px; gap:4px 8px;
-                       align-items:center; padding:8px 0; font-size:14px;
+  #castList .castrow { display:grid; grid-template-columns:minmax(0,1fr) 46px 46px; gap:6px 8px;
+                       align-items:center; padding:9px 0; font-size:14px;
                        border-top:1px solid var(--line); }
   #castList .castrow:first-child { border-top:none; }
-  #castList .who { grid-column:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* The name and where you meet them get the width; the picker and its buttons the line below.
+     A <select> sizes itself to its widest option, so sharing a line with one squeezed the name to
+     an ellipsis — and a list you read by its names is no use then. */
+  #castList .who { grid-column:1 / -1; overflow:hidden; text-overflow:ellipsis;
+                   white-space:nowrap; }
+  #castList .who .n { color:var(--muted); font-size:12px; margin-left:8px; }
   #castList select { grid-column:1; min-width:0; }
-  #castList .iconbtn { grid-column:2; grid-row:1 / span 2; height:100%; }
-  /* Side by side once there's room for both to be readable. */
-  @media (min-width: 560px) {
-    #castList .castrow { grid-template-columns:minmax(8em,1fr) minmax(0,1.2fr) 46px; }
-    #castList select { grid-column:2; }
-    #castList .iconbtn { grid-column:3; grid-row:1; }
-  }
+  /* What they say, under their own row and out of the way until asked for. */
+  #castList .said { grid-column:1 / -1; margin-top:2px; max-height:40vh; overflow-y:auto;
+                    border-left:2px solid var(--line); padding-left:10px; }
+  #castList .said .line { font-size:13px; line-height:1.5; padding:4px 0;
+                          -webkit-user-select:text; user-select:text; }
+  #castList .said .at { color:var(--muted); font-size:11.5px; margin-right:6px;
+                        white-space:nowrap; }
   /* ---- chat ---- */
   .chatbar { display:flex; gap:8px; align-items:center; }
   .chatbar select { flex:1; min-width:0; }
@@ -1821,7 +1826,9 @@ async function openBook(id){
   // across would be a change you'd forgotten you were making.
   RESPELL = {...(BOOK.respell || {})};
   renderRespellings();
+  CAST = [];
   renderCast();
+  loadCast();
   renderEpub();
   $("#bookOpening").value = BOOK.opening || "";
   showAbout();
@@ -3028,19 +3035,47 @@ function renderRespellings(){
 // the same in all four. So this list grows as chapters are worked out, and changing a voice here
 // re-narrates the chapters that character is in and no others.
 const CAST_LABELS = {reading: "Reading the chapter…"};
+// The cast as the server has it: everyone who speaks, not only the ones given a voice, with where
+// you first meet them. Fetched rather than read off BOOK, which carries the voice map alone.
+let CAST = [];
+let SAYS = {};              // speaker -> their lines, once asked for
+
+async function loadCast(){
+  if(!BOOK) return;
+  const id = BOOK.id;
+  const r = await fetch(`/api/books/${id}/cast`);
+  const d = r.ok ? await r.json() : {};
+  if(!BOOK || BOOK.id !== id) return;      // another book was opened while this was in flight
+  CAST = d.cast || [];
+  SAYS = {};
+  renderCast();
+}
+
+// "first in Chapter Two · part 1 · 32 lines" — a name on its own says nothing about who they are,
+// and where they first speak is somewhere you can go and listen.
+function castMeta(e){
+  const where = e.first ? `first in ${e.first.name || "chapter " + (e.first.chapter + 1)}`
+                        + (e.first.part == null ? "" : ` · part ${e.first.part + 1}`) : "";
+  const many = `${e.lines} line${e.lines === 1 ? "" : "s"}`
+             + (e.chapters > 1 ? ` in ${e.chapters} chapters` : "");
+  return [where, many].filter(Boolean).join(" · ");
+}
+
 function renderCast(){
   const casting = (BOOK && BOOK.cast) || {};
-  const names = Object.keys(casting).sort((a, b) => a.localeCompare(b));
   const box = $("#castList");
-  if(!names.length){
+  if(!CAST.length){
     box.innerHTML = `<div class="hint">Nobody yet — 🎭 on a chapter finds out who is in it.</div>`;
     return;
   }
-  box.innerHTML = names.map(n =>
-    `<div class="castrow"><div class="who">${esc(n)}</div>
-       <select class="castVoice" data-who="${esc(n)}"></select>
-       <button class="iconbtn hearCast" data-who="${esc(n)}" title="Hear this voice"
-               aria-label="Hear this voice">▶</button></div>`).join("");
+  box.innerHTML = CAST.map(e =>
+    `<div class="castrow"><div class="who">${esc(e.name)}<span class="n">${esc(castMeta(e))}</span></div>
+       <select class="castVoice" data-who="${esc(e.name)}"></select>
+       <button class="iconbtn hearCast" data-who="${esc(e.name)}" title="Hear this voice"
+               aria-label="Hear this voice">▶</button>
+       <button class="iconbtn saysCast" data-who="${esc(e.name)}" title="What they say"
+               aria-label="What they say">💬</button>
+       <div class="said" data-who="${esc(e.name)}" hidden></div></div>`).join("");
   box.querySelectorAll(".castVoice").forEach(sel => {
     // Kokoro only: the pool a character is cast from is the narrator's own accent, and Piper's
     // Dutch voices aren't in it.
@@ -3050,6 +3085,29 @@ function renderCast(){
     back.value = ""; back.textContent = "the narrator";
     sel.insertBefore(back, sel.firstChild);
   });
+}
+
+// What one character says, under their row. The point is to see an attribution is wrong without
+// listening to an hour of narration, so it says which part each line is in — that's where you'd go
+// to hear it.
+async function showWhatTheySay(who, panel, btn){
+  if(!panel.hidden){ panel.hidden = true; btn.classList.remove("on"); return; }
+  btn.classList.add("on");
+  panel.hidden = false;
+  if(!SAYS[who]){
+    panel.innerHTML = `<div class="hint">Reading the book…</div>`;
+    const r = await fetch(`/api/books/${BOOK.id}/cast/says?speaker=`
+                          + encodeURIComponent(who));
+    const d = await r.json();
+    if(!r.ok) return void (panel.innerHTML = `<div class="hint">${esc(d.msg || "couldn't read it")}</div>`);
+    SAYS[who] = d;
+  }
+  const d = SAYS[who];
+  panel.innerHTML = (d.said || []).map(l =>
+    `<div class="line"><span class="at">${esc(l.chapter_name || "chapter " + (l.chapter + 1))}`
+    + `${l.part == null ? "" : " · part " + (l.part + 1)}</span> ${esc(l.text)}</div>`).join("")
+    + (d.more ? `<div class="hint">…and ${d.more} more.</div>` : "")
+    + (!(d.said || []).length ? `<div class="hint">Nothing — every line of theirs has gone.</div>` : "");
 }
 async function setCastVoice(who, voice){
   const r = await fetch("/api/books/cast/voice", {method:"POST",
@@ -3072,6 +3130,11 @@ $("#castList").addEventListener("change", e => {
   if(sel && BOOK) setCastVoice(sel.dataset.who, sel.value);
 });
 $("#castList").addEventListener("click", e => {
+  const says = e.target.closest(".saysCast");
+  if(says && BOOK){
+    const row = says.closest(".castrow");
+    return showWhatTheySay(says.dataset.who, row.querySelector(".said"), says);
+  }
   const btn = e.target.closest(".hearCast");
   if(!btn || !BOOK) return;
   const sel = $("#castList").querySelector(`.castVoice[data-who="${btn.dataset.who}"]`);
@@ -3094,7 +3157,7 @@ async function castChapter(i, btn){
     if(!r.ok) throw new Error(d.msg || r.status);
     const done = await waitForJob(d.job_id, CAST_LABELS, setStatus);
     setStatus("");
-    await openBook(BOOK.id);
+    await openBook(BOOK.id);          // which reloads the cast with the new chapter's people in it
     const heard = (done.cast || []).filter(s => s.voice !== BOOK.voice).length;
     // Say the cost out loud when there was audio: it was made in one voice, so it has gone and
     // the chapter is on the queue again.

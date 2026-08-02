@@ -331,6 +331,14 @@ characters sharing a voice is worse than one narrator reading both.
 is the only way to see an attribution is wrong without listening to an hour of narration. Changing a
 character's voice re-narrates the chapters they speak in and no others.
 
+**The cast list says where you meet them** — *first in Chapter Two · part 1 · 32 lines* — because a
+name on its own is no help deciding what somebody should sound like, and a part is a thing you can go
+and press play on. **💬** opens their lines under their row, each with the part it's in: that's how you
+tell *the man* is Leighton before he gives his name, without listening for it. Forty lines at a time,
+and it says how many it left. Everyone who speaks is listed, including the ones the narrator reads —
+the voice map holds only the names that were given a voice, and "who is this" is a question about all
+of them.
+
 **A book with a cast keeps it.** Once one chapter has been worked out, any chapter narrated after it
 is worked out first — the render asks for that itself rather than reading it in one voice. That
 matters because narration is mostly not asked for by hand: playing a chapter asks for the next one, to

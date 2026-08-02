@@ -1995,6 +1995,83 @@ def api_book_retry():
 
 # ---- more than one voice ----
 
+# How many of a character's lines are handed back at once. Enough to recognise them by and to see
+# whether the attribution is right; a character with four hundred lines is not read in a panel.
+SAYS_LINES = 40
+
+def part_of_run(book, index, n, segments=None):
+    """Which part of a chapter the nth quoted run falls in, or None.
+
+    Counted over the segments rather than the chapter text, because a part is what you'd press play
+    on — and it's the same walk the render does to know which voice reads what."""
+    seen = 0
+    for si, seg in enumerate(segments if segments is not None else chapter_segments(book, index)):
+        seen += len(cast.quote_spans(seg))
+        if seen >= n:
+            return si
+    return None
+
+def book_cast(book):
+    """Everyone the book has been through, with how much they say and where they first turn up.
+
+    Built from the attributions on disk rather than from the voice map, which holds only the names
+    that were given a voice: somebody read by the narrator is still in the cast, and still the
+    answer to "who is this". Ordered by where they first speak, which is the order you meet them.
+    """
+    voices = book.get("cast") or {}
+    found, parts = {}, {}
+    for c in book.get("chapters") or []:
+        data = load_attribution(book["id"], chapter_key(c))
+        for line in (data or {}).get("lines") or []:
+            name = line.get("speaker")
+            if not name or name in (cast.NOT_SPEECH, cast.UNKNOWN):
+                continue
+            e = found.setdefault(name, {"name": name, "lines": 0, "chapters": set(),
+                                        "first": {"chapter": c["i"], "name": c.get("name") or "",
+                                                  "n": line["n"]}})
+            e["lines"] += 1
+            e["chapters"].add(c["i"])
+    # The segments of a chapter are worked out once however many characters first speak in it.
+    for e in found.values():
+        at = e["first"]
+        if at["chapter"] not in parts:
+            parts[at["chapter"]] = chapter_segments(book, at["chapter"])
+        at["part"] = part_of_run(book, at["chapter"], at["n"], parts[at["chapter"]])
+    return [e | {"chapters": len(e["chapters"]), "voice": voices.get(e["name"]) or ""}
+            for e in sorted(found.values(),
+                            key=lambda e: (e["first"]["chapter"], e["first"]["n"]))]
+
+def what_they_say(book, who, limit=SAYS_LINES):
+    """A character's lines, in order, with the chapter and part each is in.
+
+    Stops as soon as it has enough: a chapter's text is only read when the attribution says they
+    speak in it, and a book of two hundred chapters isn't walked to fill a panel of forty lines."""
+    out, more = [], 0
+    for c in book.get("chapters") or []:
+        data = load_attribution(book["id"], chapter_key(c))
+        mine = [l for l in (data or {}).get("lines") or [] if l.get("speaker") == who]
+        if not mine:
+            continue
+        if len(out) >= limit:
+            more += len(mine)
+            continue
+        try:
+            with open(text_file(book["id"], chapter_key(c))) as f:
+                text = chapter_text(book, c["i"], f.read())
+        except OSError:
+            continue
+        spans = cast.quote_spans(text)
+        segments = chapter_segments(book, c["i"])
+        for line in mine:
+            if len(out) >= limit:
+                more += 1
+                continue
+            start, end = spans[line["n"] - 1] if line["n"] - 1 < len(spans) else (0, 0)
+            out.append({"chapter": c["i"], "chapter_name": c.get("name") or "",
+                        "part": part_of_run(book, c["i"], line["n"], segments),
+                        "how": line.get("how"), "text": text[start:end]})
+    return out, more
+
 def voices_here(speakers, casting):
     """How many of a chapter's speakers have a voice of their own — what the page shows on the row.
 
@@ -2110,6 +2187,35 @@ def api_book_cast():
     threading.Thread(target=cast_worker, args=(jid, book["id"], index, model),
                      daemon=True).start()
     return jsonify(ok=True, job_id=jid)
+
+@app.get("/api/books/<book_id>/cast")
+def api_book_cast_all(book_id):
+    """The book's whole cast: who speaks, how much, where you first meet them, and who reads them.
+
+    Where they first speak is the question the list couldn't answer — a name on its own is no help
+    deciding what a character should sound like, and "Chapter Two, part 1" is a thing you can go
+    and listen to."""
+    book = find_book(book_id)
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    return jsonify(ok=True, narrator=book.get("voice") or "af_heart", cast=book_cast(book))
+
+@app.get("/api/books/<book_id>/cast/says")
+def api_book_cast_says(book_id):
+    """What one character says, in order — the other half of deciding whether an attribution is
+    right, and the only way to see it without listening to an hour of narration."""
+    book = find_book(book_id)
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    who = (request.args.get("speaker") or "").strip()
+    if not who:
+        return jsonify(ok=False, msg="which speaker?"), 400
+    try:
+        limit = max(1, min(int(request.args.get("limit") or SAYS_LINES), 200))
+    except ValueError:
+        limit = SAYS_LINES
+    said, more = what_they_say(book, who, limit)
+    return jsonify(ok=True, speaker=who, said=said, more=more)
 
 @app.get("/api/books/<book_id>/cast/<int:index>")
 def api_book_cast_get(book_id, index):

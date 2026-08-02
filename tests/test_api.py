@@ -1753,3 +1753,110 @@ class TestWorkingOutAChapterThatWasAlreadyNarrated:
         job, queued = self.run_it(monkeypatch)
         assert job["renarrating"] is True
         assert queued == [("b1", 0)]
+
+
+class TestTheBooksWholeCast:
+    """A name on its own is no help deciding what a character should sound like. Where you first
+    meet them — chapter and part — is somewhere you can go and listen, and their lines are the only
+    way to see an attribution is wrong without sitting through an hour of narration."""
+
+    # One quoted line, then a paragraph too long to share a segment with anything, then two more:
+    # the runs land in different parts of the same chapter.
+    APART = ("“I am first,” said Marla.\n" + "word " * 2000 + "\n"
+             "“And I am second,” said Owen.\n“Third,” said Marla.\n")
+
+    def attributed(self, book_id, index, *speakers):
+        lines = [{"n": i, "speaker": s, "gender": g, "how": "model"}
+                 for i, (s, g) in enumerate(speakers, 1)]
+        books.write_attribution(book_id, index, {
+            "model": "test", "made": 1, "quotes": len(lines), "lines": lines, "tagged": 0,
+            "speakers": []})
+
+    def test_nobody_attributed_is_an_empty_cast(self, client, make_book):
+        make_book(names=["One"], texts=[self.APART])
+        got = client.get("/api/books/b1/cast").get_json()
+        assert got["ok"] is True and got["cast"] == []
+
+    def test_unknown_book(self, client):
+        assert client.get("/api/books/nope/cast").status_code == 404
+
+    def test_where_each_of_them_first_speaks(self, client, make_book):
+        make_book(names=["One", "Two"], texts=[self.APART, "“Later,” said Owen.\n"],
+                  cast={"Marla": "af_bella"})
+        self.attributed("b1", 0, ("Marla", "female"), ("Owen", "male"), ("Marla", "female"))
+        self.attributed("b1", 1, ("Owen", "male"))
+        cast = {e["name"]: e for e in client.get("/api/books/b1/cast").get_json()["cast"]}
+        assert cast["Marla"]["first"]["chapter"] == 0
+        assert cast["Marla"]["first"]["part"] == 0
+        # Owen's first line is in the same chapter but a later part of it
+        assert cast["Owen"]["first"]["chapter"] == 0
+        assert cast["Owen"]["first"]["part"] > 0
+        assert cast["Owen"]["first"]["name"] == "One"
+
+    def test_how_much_they_say_and_where(self, client, make_book):
+        make_book(names=["One", "Two"], texts=[self.APART, "“Later,” said Owen.\n"])
+        self.attributed("b1", 0, ("Marla", "female"), ("Owen", "male"), ("Marla", "female"))
+        self.attributed("b1", 1, ("Owen", "male"))
+        cast = {e["name"]: e for e in client.get("/api/books/b1/cast").get_json()["cast"]}
+        assert cast["Marla"]["lines"] == 2 and cast["Marla"]["chapters"] == 1
+        assert cast["Owen"]["lines"] == 2 and cast["Owen"]["chapters"] == 2
+
+    def test_in_the_order_you_meet_them(self, client, make_book):
+        make_book(names=["One"], texts=[self.APART])
+        self.attributed("b1", 0, ("Marla", "female"), ("Owen", "male"), ("Marla", "female"))
+        assert [e["name"] for e in
+                client.get("/api/books/b1/cast").get_json()["cast"]] == ["Marla", "Owen"]
+
+    def test_somebody_read_by_the_narrator_is_still_in_the_cast(self, client, make_book):
+        """The voice map holds only the names that were given a voice of their own, and "who is
+        this" is a question about everyone who speaks."""
+        make_book(names=["One"], texts=[self.APART], cast={"Marla": "af_bella"})
+        self.attributed("b1", 0, ("Marla", "female"), ("Owen", "male"), ("Marla", "female"))
+        cast = {e["name"]: e for e in client.get("/api/books/b1/cast").get_json()["cast"]}
+        assert cast["Owen"]["voice"] == ""
+        assert cast["Marla"]["voice"] == "af_bella"
+
+    def test_captions_and_gaps_are_not_people(self, client, make_book):
+        make_book(names=["One"], texts=[self.APART])
+        self.attributed("b1", 0, ("none", "unknown"), ("unknown", "unknown"), ("Marla", "female"))
+        assert [e["name"] for e in
+                client.get("/api/books/b1/cast").get_json()["cast"]] == ["Marla"]
+
+
+class TestWhatOneCharacterSays:
+    APART = TestTheBooksWholeCast.APART
+    attributed = TestTheBooksWholeCast.attributed
+
+    def says(self, client, who, book="b1", **args):
+        q = "&".join(f"{k}={v}" for k, v in args.items())
+        return client.get(f"/api/books/{book}/cast/says?speaker={who}" + ("&" + q if q else ""))
+
+    def test_their_lines_in_order_with_where_each_one_is(self, client, make_book):
+        make_book(names=["One", "Two"], texts=[self.APART, "“Later,” said Marla.\n"])
+        self.attributed("b1", 0, ("Marla", "female"), ("Owen", "male"), ("Marla", "female"))
+        self.attributed("b1", 1, ("Marla", "female"))
+        said = self.says(client, "Marla").get_json()["said"]
+        assert [s["text"] for s in said] == ["“I am first,”", "“Third,”", "“Later,”"]
+        assert [s["chapter"] for s in said] == [0, 0, 1]
+        assert said[0]["part"] == 0 and said[1]["part"] > 0
+        assert said[2]["chapter_name"] == "Two"
+
+    def test_somebody_who_says_nothing(self, client, make_book):
+        make_book(names=["One"], texts=[self.APART])
+        self.attributed("b1", 0, ("Marla", "female"), ("Owen", "male"), ("Marla", "female"))
+        got = self.says(client, "Nobody").get_json()
+        assert got["said"] == [] and got["more"] == 0
+
+    def test_it_stops_at_the_limit_and_says_how_many_it_left(self, client, make_book):
+        """A character with four hundred lines is not read in a panel."""
+        make_book(names=["One"], texts=[self.APART])
+        self.attributed("b1", 0, ("Marla", "female"), ("Marla", "female"), ("Marla", "female"))
+        got = self.says(client, "Marla", limit=2).get_json()
+        assert len(got["said"]) == 2 and got["more"] == 1
+
+    def test_which_speaker(self, client, make_book):
+        make_book(names=["One"], texts=[self.APART])
+        assert client.get("/api/books/b1/cast/says").status_code == 400
+
+    def test_unknown_book(self, client):
+        assert self.says(client, "Marla", book="nope").status_code == 404
