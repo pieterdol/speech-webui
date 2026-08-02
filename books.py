@@ -2351,6 +2351,43 @@ def api_book_clear():
     shutil.rmtree(book_dir(book["id"], "export"), ignore_errors=True)
     return jsonify(ok=True, book=find_book(book["id"]))
 
+@app.post("/api/books/clear_part")
+def api_book_clear_part():
+    """Throw away one part of one chapter, keeping the rest.
+
+    The granularity that was missing: *Clear narration* is the whole book and ↻ is a whole chapter,
+    and neither is any use when one part came out wrong — a sentence mangled, a file that ended
+    early — while the nine around it are an hour of work that is perfectly good.
+
+    The parts *after* the one cleared stay on disk. A render reuses every part it finds, so
+    finishing the chapter costs the one part rather than everything from here on; the index
+    meanwhile stops at the gap, because playback walks the list in order and can't step over one.
+    """
+    d = request.get_json(force=True, silent=True) or {}
+    book = find_book(d.get("id") or "")
+    if not book:
+        return jsonify(ok=False, msg="unknown book"), 404
+    chapters = book.get("chapters") or []
+    try:
+        index, part = int(d.get("chapter")), int(d.get("part"))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, msg="which part?"), 400
+    if not (0 <= index < len(chapters)):
+        return jsonify(ok=False, msg="no such chapter"), 404
+    # Same rule as ↻: the render holds the files it is writing, and deleting one underneath it
+    # would have it publish a part that isn't there.
+    if chapters[index].get("state") == "rendering":
+        return jsonify(ok=False, msg="that chapter is being narrated now"), 409
+    key = chapter_key(chapters[index])
+    path = audio_file(book["id"], key, part)
+    if part < 0 or not os.path.exists(path):
+        return jsonify(ok=False, msg="that part isn't narrated"), 404
+    os.remove(path)
+    kept = segments_on_disk(book["id"], key)
+    update_book(book["id"], lambda b: b["chapters"][index].update(
+        state="pending", segments=kept, done=len(kept), seconds=None, error=None))
+    return jsonify(ok=True, book=find_book(book["id"]), kept=len(kept))
+
 @app.post("/api/books/rescan")
 def api_book_rescan():
     """Re-read the stored EPUB — for when extraction has improved since the book was added.

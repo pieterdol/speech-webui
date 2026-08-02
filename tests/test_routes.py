@@ -21,6 +21,7 @@ EXPECTED = {
     ("/api/books/cast", "POST"),
     ("/api/books/cast/voice", "POST"),
     ("/api/books/clear", "POST"),
+    ("/api/books/clear_part", "POST"),
     ("/api/books/cover", "POST"),
     ("/api/books/delete", "POST"),
     ("/api/books/describe", "POST"),

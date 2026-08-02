@@ -95,6 +95,13 @@ which is what makes resuming cheap but means asking for a finished chapter again
 asks first, and it refuses while that chapter is being narrated: the render holds the files it's
 writing.
 
+**⊘ on a part** throws away that one ten-minute file and nothing else — the granularity between *Clear
+narration*, which is the whole book, and ↻, which is a whole chapter. It's for the part that came out
+wrong while the nine around it are an hour of work worth keeping. The parts *after* it stay on disk and
+are reused, so finishing the chapter costs the one part; the index stops at the gap, because playback
+walks the list in order and can't step over one, so the row reads "1 of 6 parts ready" until the
+chapter is narrated again. Refused mid-render, for the same reason ↻ is.
+
 **🎧** renders the announcement and the first ~600 characters, one call to the engine. Every expensive
 mistake is in that minute: the wrong narrator, a name the voice mangles, a title that reads badly out
 loud, an opening note with a line in it you'd rather not hear. It's made through the same code a

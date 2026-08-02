@@ -155,7 +155,8 @@ full book is hours of work.
 - **Left out of the narration** lists what extraction dropped and why. **⤒** puts a section's words
   into *Read this at the start*; **＋** puts it back as a chapter of its own, where the book has it.
 - **⊘ leaves a chapter out** and **↩** puts it back, for apparatus no pattern can tell from prose.
-  **↻** narrates a chapter again from nothing.
+  **↻** narrates a chapter again from nothing, and **⊘ on a part** clears that one file — for when a
+  single part came out wrong and the rest of the chapter is worth keeping.
 - **🎧 hears how a chapter will start** — its announcement and the first ~600 characters, about a
   minute of audio — before committing hours to the wrong narrator, title or pronunciation.
 - **Narrator** — the same picker as everywhere else, Kokoro English and Piper Dutch. A book declaring

@@ -2303,8 +2303,15 @@ function partsPanel(c){
     row.className = "seg " + (s ? "can" : "wait");     // markPlayingPart adds the highlight
     row.innerHTML = `<div class="n">${s ? '<span class="play">▶</span> ' : "○ "}Part ${si + 1}</div>
       <div class="d">${s ? fmt(s.seconds) : (c.state === "rendering" && si === segs.length
-                                             ? "narrating…" : "not yet")}</div>`;
+                                             ? "narrating…" : "not yet")}</div>`
+      // ⊘ on a part that exists and isn't being written: one part came out wrong and the rest of
+      // the chapter is an hour of work worth keeping.
+      + (s && c.state !== "rendering"
+         ? `<button class="drop" title="Clear this part and narrate it again"
+                    aria-label="Clear this part">⊘</button>` : "");
     if(s) row.addEventListener("click", e => { e.stopPropagation(); playChapter(c.i, si, 0); });
+    const drop = row.querySelector(".drop");
+    if(drop) drop.addEventListener("click", e => { e.stopPropagation(); clearPart(c.i, si); });
     list.appendChild(row);
   }
   // A chapter that stopped part-way can't be resumed by tapping it any more — tapping now
@@ -2368,6 +2375,23 @@ async function toggleSkip(i){
 
 // Narrate one again from nothing, throwing away what it has. The parts it already made are what
 // a normal render would keep, so this is the only way to replace audio that is itself the problem.
+// One part of one chapter. The parts after it stay on disk and are reused, so finishing the
+// chapter costs this part rather than everything from here on — which is the whole reason to have
+// it, and worth saying in the toast.
+async function clearPart(i, si){
+  const c = BOOK.chapters[i];
+  if(!confirm(`Clear part ${si + 1} of “${c.name}”? It's re-made when you narrate the chapter`
+              + ` again; the parts around it are kept.`)) return;
+  const r = await fetch("/api/books/clear_part", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: BOOK.id, chapter: i, part: si})});
+  const d = await r.json();
+  if(!r.ok) return toast("❌ " + esc(d.msg || "couldn't clear it"));
+  BOOK = d.book;
+  renderChapterList();
+  toast(`Cleared part ${si + 1} of “${esc(c.name)}” — 📖 narrates it again.`);
+}
+
 async function redoChapter(i){
   const c = BOOK.chapters[i];
   const mins = workMin(c.words);

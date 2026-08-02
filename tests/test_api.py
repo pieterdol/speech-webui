@@ -1860,3 +1860,89 @@ class TestWhatOneCharacterSays:
 
     def test_unknown_book(self, client):
         assert self.says(client, "Marla", book="nope").status_code == 404
+
+
+class TestClearingOnePart:
+    """The granularity that was missing. Clear narration is the whole book and ↻ is a whole
+    chapter; neither is any use when one part came out wrong and the nine around it are an hour of
+    work that is perfectly good."""
+
+    @pytest.fixture(autouse=True)
+    def readable_audio(self, monkeypatch):
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 9.0)
+
+    def narrated(self, book_id="b1", index=0, parts=4):
+        segs = []
+        for si in range(parts):
+            name = f"ch{index:03d}-s{si:02d}.opus"
+            p = books.book_dir(book_id, "audio", name)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            open(p, "wb").write(b"\0" * 128)
+            segs.append({"file": name, "seconds": 9.0})
+        books.update_book(book_id, lambda b: b["chapters"][index].update(
+            state="ready", segments=segs, seconds=9.0 * parts, total=parts, done=parts))
+        return segs
+
+    def clear(self, client, part, chapter=0, book="b1"):
+        return client.post("/api/books/clear_part",
+                           json={"id": book, "chapter": chapter, "part": part})
+
+    def files(self, book_id="b1"):
+        d = books.book_dir(book_id, "audio")
+        return sorted(os.listdir(d)) if os.path.isdir(d) else []
+
+    def test_only_that_part_is_deleted(self, client, make_book):
+        make_book(names=["One"], texts=["word " * 40])
+        self.narrated()
+        assert self.clear(client, 1).get_json()["ok"] is True
+        assert self.files() == ["ch000-s00.opus", "ch000-s02.opus", "ch000-s03.opus"]
+
+    def test_the_chapter_goes_back_to_pending(self, client, make_book):
+        make_book(names=["One"], texts=["word " * 40])
+        self.narrated()
+        self.clear(client, 1)
+        c = books.find_book("b1")["chapters"][0]
+        assert c["state"] == "pending"
+        assert c["seconds"] is None
+
+    def test_the_index_stops_at_the_gap(self, client, make_book):
+        """Playback walks the list in order and can't step over a hole, so the list says what can
+        actually be played — while the parts after it stay on disk for the render to reuse."""
+        make_book(names=["One"], texts=["word " * 40])
+        self.narrated()
+        got = self.clear(client, 1).get_json()
+        assert got["kept"] == 1
+        assert [s["file"] for s in books.find_book("b1")["chapters"][0]["segments"]] \
+            == ["ch000-s00.opus"]
+        assert "ch000-s03.opus" in self.files()          # not thrown away with it
+
+    def test_the_last_part_leaves_the_rest_playable(self, client, make_book):
+        make_book(names=["One"], texts=["word " * 40])
+        self.narrated()
+        assert self.clear(client, 3).get_json()["kept"] == 3
+
+    def test_a_part_that_was_never_narrated(self, client, make_book):
+        make_book(names=["One"], texts=["word " * 40])
+        self.narrated(parts=2)
+        assert self.clear(client, 5).status_code == 404
+
+    def test_not_while_the_chapter_is_being_narrated(self, client, make_book):
+        """The render holds the files it's writing, and deleting one underneath it would have it
+        publish a part that isn't there."""
+        make_book(names=["One"], texts=["word " * 40])
+        self.narrated()
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="rendering"))
+        assert self.clear(client, 1).status_code == 409
+        assert len(self.files()) == 4
+
+    def test_no_such_chapter(self, client, make_book):
+        make_book(names=["One"], texts=["word " * 40])
+        self.narrated()
+        assert self.clear(client, 0, chapter=9).status_code == 404
+
+    def test_unknown_book(self, client):
+        assert self.clear(client, 0, book="nope").status_code == 404
+
+    def test_which_part(self, client, make_book):
+        make_book(names=["One"], texts=["word " * 40])
+        assert client.post("/api/books/clear_part", json={"id": "b1"}).status_code == 400

@@ -1265,3 +1265,23 @@ class TestTheWorkerCannotWedgeTheQueue:
             assert token["done"].wait(timeout=20)
             books.write_books([])
         assert books.render_queue == []
+
+
+class TestAPartClearedOutOfTheMiddle:
+    """Clearing one part leaves a hole with real audio on both sides of it. Finishing the chapter
+    has to cost that part and not everything from there on."""
+
+    def test_only_the_missing_part_is_made_again(self, make_book, fake_tts):
+        make_book(names=["One"], texts=[LONG])
+        books.render_chapter("b1", 0)
+        made = len(fake_tts)
+        assert made >= 4                          # otherwise there is no middle to clear
+        os.remove(books.book_dir("b1", "audio", "ch000-s01.opus"))
+        books.update_book("b1", lambda b: b["chapters"][0].update(
+            state="pending", segments=books.segments_on_disk("b1", 0)))
+
+        books.render_chapter("b1", 0)
+        again = fake_tts[made:]
+        assert [os.path.basename(c["out"]) for c in again] == ["ch000-s01.opus"]
+        assert chapter("b1")["state"] == "ready"
+        assert len(chapter("b1")["segments"]) == made      # and the whole chapter is playable
