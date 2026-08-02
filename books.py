@@ -645,7 +645,7 @@ def discard_render(book_id, index, audio_dir, made):
         shutil.rmtree(book_dir(book_id), ignore_errors=True)
     else:
         update_book(book_id, lambda b: b["chapters"][index].update(
-            state="pending", segments=[], error=None))
+            state="pending", segments=[], error=None, keep=[]))
 
 def render_status():
     """What the narrator is on and what is behind it. Composed from books.json each time
@@ -815,6 +815,17 @@ def render_chapter(book_id, index):
         stale = audio_file(book_id, key, 0)
         if os.path.exists(stale):
             os.remove(stale)
+    # Which parts this render is going to keep rather than make. The segment list above is emptied
+    # and refilled as parts finish, which is right — it is what can be played, and a part being
+    # rewritten can't be — but on its own it says "0 of 6 parts" for as long as the one part being
+    # re-made takes, and that reads as a chapter that has just been thrown away. Renaming a book
+    # re-records its opening and nothing else; the page should be able to say so.
+    #
+    # Recorded after the stale opening has gone, so it never counts a file that is about to be
+    # deleted, and while the render still holds the lock, so nothing has moved underneath it.
+    keeping = [si for si in range(len(segments))
+               if os.path.exists(audio_file(book_id, key, si))]
+    update_book(book_id, lambda b: b["chapters"][index].update(keep=keeping))
     made = []
     at = 0                  # how far into the attribution the segments have got
     try:
@@ -852,7 +863,7 @@ def render_chapter(book_id, index):
             if stragglers(book_id, index, respellings, cast_used):
                 return
             update_book(book_id, lambda b: b["chapters"][index].update(
-                state="ready", error=None,
+                state="ready", error=None, keep=[],
                 seconds=round(sum(s["seconds"] for s in made), 1)))
             return
     except Exception as e:
@@ -860,7 +871,7 @@ def render_chapter(book_id, index):
         # "No such file or directory" is the delete working, not a fault to report.
         if not render_cancelled(book_id, gen):
             update_book(book_id, lambda b: b["chapters"][index].update(
-                state="error", error=str(e)[:200]))
+                state="error", error=str(e)[:200], keep=[]))
             return
     # Cancelled, however we got here: finished, broke out of the loop, or threw.
     discard_render(book_id, index, audio_dir, made)

@@ -113,7 +113,15 @@ since there's one `<audio>` element behind all three.
 ## Rendering, queueing and playing
 
 **Rendering** is per chapter, in **~10-minute parts**, each appearing as soon as it's finished. At the
-measured 2.4× realtime, a 5-minute chapter takes about 2 minutes. A part or whole-book run can be
+measured 2.4× realtime, a 5-minute chapter takes about 2 minutes.
+
+A render **empties the part list and refills it** as parts finish, because the list is what can be
+played and a part being rewritten can't be. On its own that made a chapter losing nothing read as one
+that had been thrown away: renaming a book re-records its opening and keeps the rest, and for the
+three minutes that takes the row said *0 of 6 parts*. So the render also publishes **which parts it is
+going to reuse** — recorded after any stale opening has been deleted, so it never counts a file that
+is about to go — and the row says *narrating part 1 of 6 · 5 parts kept*, with the panel marking those
+parts `kept` rather than `not yet`. A part or whole-book run can be
 stopped, a single chapter can't, so anything over ten minutes of work asks first.
 
 **The queue is global**: renders are serialized *across* books, so what's holding this one up can be

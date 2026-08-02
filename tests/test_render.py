@@ -1285,3 +1285,51 @@ class TestAPartClearedOutOfTheMiddle:
         assert [os.path.basename(c["out"]) for c in again] == ["ch000-s01.opus"]
         assert chapter("b1")["state"] == "ready"
         assert len(chapter("b1")["segments"]) == made      # and the whole chapter is playable
+
+
+class TestWhatARenderIsGoingToKeep:
+    """A render empties the segment list and refills it as parts finish — right for playback,
+    since a part being rewritten can't be played, and wrong as the only thing the page has to go
+    on: for as long as the one part being re-made takes, a chapter that is losing nothing reads as
+    "0 of 6 parts", which is what a chapter looks like after being thrown away."""
+
+    def test_it_says_which_parts_it_will_reuse(self, make_book, fake_tts, monkeypatch):
+        seen = []
+
+        def watch(text, voice, out_path, intro=None, tail_pause=0, respellings=None, lang="",
+                  runs=None):
+            seen.append(dict(books.find_book("b1")["chapters"][0]))
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            open(out_path, "wb").write(b"\0")
+
+        make_book(names=["Chapter One"], texts=[LONG], announce=True)
+        books.render_chapter("b1", 0)
+        n = len(files("b1"))
+        assert n >= 4
+        # what a rename leaves behind: the opening is stale, the rest is untouched
+        books.update_book("b1", lambda b: b.update(spoken_title="Said Differently"))
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="pending"))
+        monkeypatch.setattr(books, "_render_segment", watch)
+        monkeypatch.setattr(books, "audio_seconds", lambda p: 1.0)
+        seen.clear()
+        books.render_chapter("b1", 0)
+
+        assert len(seen) == 1                       # only the opening was re-made
+        assert seen[0]["keep"] == list(range(1, n))  # …and the page was told the rest is kept
+        assert seen[0]["segments"] == []            # while none of it is playable yet
+
+    def test_the_part_being_rewritten_is_not_counted_as_kept(self, make_book, fake_tts):
+        """It is deleted before the count is taken: a part about to be re-recorded is not one the
+        render is keeping, however much of it is still on disk when it starts."""
+        make_book(names=["Chapter One"], texts=[LONG], announce=True)
+        books.render_chapter("b1", 0)
+        books.update_book("b1", lambda b: b.update(spoken_title="Said Differently"))
+        books.update_book("b1", lambda b: b["chapters"][0].update(state="pending"))
+        books.render_chapter("b1", 0)
+        assert 0 not in (chapter("b1").get("keep") or [])
+
+    def test_a_finished_chapter_carries_no_list(self, make_book, fake_tts):
+        make_book(names=["One"], texts=[LONG])
+        books.render_chapter("b1", 0)
+        assert chapter("b1")["state"] == "ready"
+        assert chapter("b1")["keep"] == []

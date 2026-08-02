@@ -2201,8 +2201,14 @@ function chapterRow(c, grouped){
   // screen — the row it came from looked as untouched as before, so the queue it had joined was
   // only visible in the panel above, if you thought to fold it open.
   const asked = QUEUED.asked.has(c.i);
+  // What it's doing, not what it can play. A render empties the segment list and refills it as
+  // parts finish, so "0 of 6 parts" is what a chapter looks like while one part of it is being
+  // re-recorded — and that reads as a chapter somebody has just thrown away. Renaming a book
+  // re-records its opening and keeps the rest; say that.
+  const keeping = (c.keep || []).filter(si => si >= segs.length).length;
   if(c.state === "rendering")
-    note = `⏳ narrating… ${segs.length}/${c.total || "?"} parts`;
+    note = `⏳ narrating part ${Math.min(segs.length + 1, c.total || 1)} of ${c.total || "?"}`
+         + (keeping ? ` · ${keeping} part${keeping === 1 ? "" : "s"} kept` : "");
   else if(c.state === "ready"){ note = `${fmt(c.seconds)} · ready`; plays = true; }
   else if(c.state === "error") note = "❌ " + (c.error || "failed");
   else if(segs.length){
@@ -2302,8 +2308,10 @@ function partsPanel(c){
     const row = document.createElement("div");
     row.className = "seg " + (s ? "can" : "wait");     // markPlayingPart adds the highlight
     row.innerHTML = `<div class="n">${s ? '<span class="play">▶</span> ' : "○ "}Part ${si + 1}</div>
-      <div class="d">${s ? fmt(s.seconds) : (c.state === "rendering" && si === segs.length
-                                             ? "narrating…" : "not yet")}</div>`
+      <div class="d">${s ? fmt(s.seconds)
+                          : c.state === "rendering" && si === segs.length ? "narrating…"
+                          : (c.keep || []).includes(si) ? "kept"
+                          : "not yet"}</div>`
       // ⊘ on a part that exists and isn't being written: one part came out wrong and the rest of
       // the chapter is an hour of work worth keeping.
       + (s && c.state !== "rendering"
